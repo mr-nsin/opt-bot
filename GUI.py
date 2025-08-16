@@ -20,6 +20,7 @@ time.sleep(1)
 
 
 default_expiry = ["current", "next"]
+index_expiry = ["0DTE", "1DTE"]
 order_expiry_timer = ["ON", "OFF"]
 order_transmit = ["True", "False"]
 candle_time_set = ["5 mins", "3 mins", "1 min", "15 mins", "30 mins", "1 hour", "2 hours", "3 hours", "4 hours", "1 day"]
@@ -90,7 +91,7 @@ class Ui_Frame(object):
         pixmap = QtGui.QPixmap("C:/Users/Administrator/Desktop/BOT_Cris/test-img/Level Up (White _ Gold Transparent).png")
         #Frame.setWindowIcon(icon)
         Frame.setStyleSheet("background-color: rgb(0, 0, 0);")
-        Frame.setWindowTitle("Uprety Capital Securities, LP")
+        Frame.setWindowTitle("QuantDrift FinTech")
 
         self.groupBox = QtWidgets.QGroupBox(Frame)
         self.groupBox.setGeometry(QtCore.QRect(10, 10, 871, 91))
@@ -528,7 +529,8 @@ class Ui_Frame(object):
 "font: 11pt 'MS Shell Dlg 2';")
         self.comboBox.setEditable(True)
         self.comboBox.setObjectName("comboBox")
-        self.comboBox.setCurrentText("same as expiry")
+        #self.comboBox.setCurrentText("same as expiry")
+        self.comboBox.addItems(index_expiry)
 
         self.textEdit_20 = QtWidgets.QTextEdit(self.groupBox_2)
         self.textEdit_20.setGeometry(QtCore.QRect(210, 290, 161, 41))
@@ -880,10 +882,10 @@ class Runnable(QRunnable):
         #print("Assign data = {}\n\n".format(self.data))
         
         self.data["expiryToTrade"] = expiry
-        if "same" in spy_qqq_expiry:
-            self.data["SPY_QQQ_EXPIRY"] = getExpiry(expiry)
-        else:
-            self.data["SPY_QQQ_EXPIRY"] = "20230623"
+        #if "same" in spy_qqq_expiry:
+        #    self.data["SPY_QQQ_EXPIRY"] = getExpiry("same")
+        #else:
+        self.data["SPY_QQQ_EXPIRY"] = spy_qqq_expiry
         self.data["USE_DIFF_EXPIRY_INDEX"] = "yes"
         self.data["IP"] = ip
         self.data["PORT"] = int(port)

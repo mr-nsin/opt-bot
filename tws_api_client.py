@@ -99,6 +99,9 @@ class TwsApiClient(EWrapper, EClient):
         contract.symbol = symbol
         contract.secType = "STK"
         contract.exchange = "SMART"
+        if "spx" in symbol.lower():
+            contract.secType = "IND"
+            contract.exchange = "CBOE"
         contract.currency = "USD"
 
         result = self.get_contract_detail(contract=contract)
@@ -128,7 +131,10 @@ class TwsApiClient(EWrapper, EClient):
             contract = self.get_stock_contract(symbol=symbol)
         
         ticker_id = self.nextTickerId()
-        self.reqSecDefOptParams(ticker_id, symbol,"", "STK", contract.conId)
+        if symbol.lower() == "spx":
+            self.reqSecDefOptParams(ticker_id, symbol,"", "IND", contract.conId)
+        else:
+            self.reqSecDefOptParams(ticker_id, symbol,"", "STK", contract.conId)
 
         self.ticker_strike_fetched = False
         while self.ticker_strike_fetched != True:
@@ -181,7 +187,8 @@ class TwsApiClient(EWrapper, EClient):
                 ticker_id = self.nextTickerId()
                 self.ticker_id_contract_cache[ticker] = ticker_id
                 self.tick_cache[ticker_id] = self.tick_cache[temp_ticker_id]
-        
+
+        logger.info(f"Subscribing contract {contract} ticker_id {ticker_id}")
         self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=snapshot,regulatorySnapshot= False, mktDataOptions=[])
         
         # logger.info(f'subscribe: {contract.localSymbol}, TickerId: {ticker_id}')
@@ -359,9 +366,9 @@ class TwsApiClient(EWrapper, EClient):
         """
         logger.info(f"get_PNL for account : {account}")
         logger.info(f"PNL Data for account : {self.pnl_cache}")
-        #pnl_cache
-        return self.pnl_cache
-    
+        return self.pnl_cache.get("daily", 0.0)
+        
+
     def get_options_position(self, symbol: str, expiry: str, right: str, strike: float) -> Position:
         """
         Get the open position for a given symbol.
@@ -502,18 +509,31 @@ class TwsApiClient(EWrapper, EClient):
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         print(reqId, start, end)
         
-    @iswrapper
+    """@iswrapper
     def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):
-        self.pnl_cache[reqId] = {
+        self.pnl_cache.update({
             "daily": dailyPnL,
             "unrealized": unrealizedPnL,
             "realized": realizedPnL
-        }
-        print(f"PNL Update for Req {reqId} - Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}")
-
+        })
+        print(f"PNL Update for Req {reqId} - Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}")"""
+        
     @iswrapper
+    def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):
+        self.pnl_cache.update({
+            "daily": dailyPnL,
+            "unrealized": unrealizedPnL,
+            "realized": realizedPnL
+        })
+        print(f"PNL Update for Req {reqId} - Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}")
+        """if not hasattr(self, "_pnl_cancelled"):
+            self.cancelPnL(reqId)
+            self._pnl_cancelled = True"""
+
+
+    """@iswrapper
     def pnlSingle(self, reqId: int, pos: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float, value: float):
-        print(f"PNL Single Req {reqId} - Pos: {pos}, Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}, Value: {value}")
+        print(f"PNL Single Req {reqId} - Pos: {pos}, Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}, Value: {value}")"""
 
 
     @iswrapper 

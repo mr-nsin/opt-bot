@@ -11,21 +11,36 @@ def getExpiry(EXPIRY):
     import datetime
     today = datetime.date.today()
     todayDate = today.strftime("%Y%m%d")
+
     friday = today + datetime.timedelta((4 - today.weekday()))
     fridayNext = today + datetime.timedelta((4 - today.weekday()) + 7)
     expiryCurr = friday.strftime("%Y%m%d")
     expiryNext = fridayNext.strftime("%Y%m%d")
 
+    if today.weekday() == 4:  # Friday
+        next_trade_date = today + datetime.timedelta(days=3)  # Monday
+    elif today.weekday() == 5:  # Saturday
+        next_trade_date = today + datetime.timedelta(days=2)  # Monday
+    else:  # Sunday to Thursday
+        next_trade_date = today + datetime.timedelta(days=1)
+
+    print(f"tody - {todayDate}")
+    print(f"next_trade_date - {next_trade_date}")
+
     # Have current and next expiry
 
     # Only Current Expiry
     if EXPIRY.lower() in ["current", "next"]:
-        tradeExpiry = [expiryCurr if EXPIRY.lower() == "current" else expiryNext][0]
+        tradingExpiry = [expiryCurr if EXPIRY.lower() == "current" else expiryNext][0]
+    elif "0DTE" in EXPIRY:
+        tradingExpiry = todayDate
+    elif "1DTE" in EXPIRY:
+        tradingExpiry = next_trade_date.strftime("%Y%m%d")
     else:
-        tradeExpiry = EXPIRY
-    logger.info(f"expiry To Trade is = {tradeExpiry}")
+        tradingExpiry = EXPIRY
+    logger.info(f"expiry To Trade is = {tradingExpiry}")
 
-    return tradeExpiry
+    return tradingExpiry
 
 def MarketOrder(action: str, totalQuantity: int)-> Order:
     """

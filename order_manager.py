@@ -168,6 +168,9 @@ class OrderManager:
         if order.exit_order == True:
             # Assign last trade time
             option_tick.last_trade_time = datetime.datetime.now()
+            key = f"{order.symbol}_{order.right}"
+            recent_trade_closures[key] = option_tick.last_trade_time
+            logger.info(f"Cooldown recorded for {key} at {recent_trade_closures[key]}")
 
             # Find the corresponding entry order and deactivate it
             entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)

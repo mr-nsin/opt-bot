@@ -34,7 +34,14 @@ from data_access import DAL
 PROCESSORS_COUNT = 4
 
 global client, client_thread, NY_TZ, event_queue, order_mgr, reconnect_time, dataStrike, signal_dict
-global trade_time_dict
+global trade_time_dict, recent_trade_times, TRADE_COOLDOWN_SECONDS, tradeExpiry_val
+global starting_profit, starting_loss
+starting_profit = 0
+starting_loss = 0
+
+# Trade cooldown tracking (entry or exit)
+recent_trade_times = {}  # key = f"{symbol}_{right}" → datetime
+#TRADE_COOLDOWN_SECONDS = 300  # 5 minutes
 
 client = None
 client_thread = None
@@ -55,7 +62,8 @@ with open("config.json", "r") as fopen:
     fileData = json.loads(fileDataGet)
 
 # Connection Details - IP, PORT, ClientID
-global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK, VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, SPY_QQQ_EXPIRY, PROFIT_INCREMENT, DISTANCE_BETWEEN_TRADE, EXPIRY, tradeExpiry
+global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK, VOLUME_CHECK, ATR_CHECKS
+global ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val, profit_amount_day, loss_amount_day
 
 
 # -- LICENSE SYSTEM --
@@ -105,14 +113,36 @@ def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
 def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
     print("calling init_api_client")
     _client = TwsApiClient(event_queue=_event_queue, callback=_order_mgr.process_trade)
-    _client.connect(host="127.0.0.1",port=PORT, clientId=CLIENTID)
+    _client.connect(host="127.0.0.1", port=PORT, clientId=CLIENTID)
     _order_mgr.set_client(client=_client)
     time.sleep(0.5)
     if _client is None or not _client.isConnected():
         logger.error("TWS not connected")
         return
-    
     return _client
+    
+"""def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
+    global client
+    if client and client.isConnected():
+        logger.info("TWS already connected.")
+        return client
+    
+    _client = TwsApiClient(event_queue=_event_queue, callback=_order_mgr.process_trade)
+    try:
+        _client.connect(host=IP, port=PORT, clientId=CLIENTID)
+    except Exception as e:
+        logger.error(f"TWS connection failed: {e}")
+        return None
+
+    _order_mgr.set_client(client=_client)
+    time.sleep(0.5)
+    if not _client.isConnected():
+        logger.error("TWS not connected.")
+        return None
+
+    client = _client
+    return _client"""
+
 
 def start_client(_client: TwsApiClient)-> None:
     print("calling start_client")
@@ -141,7 +171,7 @@ data = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
 def wwma(values, n):
     return values.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
 
-def check_distance_between_trade(stockName, rightMatch) -> bool:
+def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch) -> bool:
     """
     Check if the time since the last trade exceeds the minimum distance between trades.
 
@@ -156,7 +186,7 @@ def check_distance_between_trade(stockName, rightMatch) -> bool:
         last_trade_time = trade_time_dict["{}_{}".format(stockName, rightMatch)]
         time_since_last_trade = datetime.now() - last_trade_time
         logger.info(f"{stockName}: time_since_last_trade: {int(time_since_last_trade.total_seconds())}")
-        return int(time_since_last_trade.total_seconds()) < DISTANCE_BETWEEN_TRADE
+        return int(time_since_last_trade.total_seconds()) < TRADE_COOLDOWN_SECONDS
     return False
 
 
@@ -297,6 +327,14 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
     
     if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
         return "orderAlreadyPresent"
+        
+    key = f"{symbol}_{right}"
+    last_trade_time = recent_trade_times.get(key)
+    if last_trade_time:
+        seconds_since = (datetime.now() - last_trade_time).total_seconds()
+        if seconds_since < TRADE_COOLDOWN_SECONDS:
+            logger.info(f"[{key}] Trade skipped. Cooldown active ({int(seconds_since)}s < {TRADE_COOLDOWN_SECONDS}s)")
+            return "cooldownPeriodHit"
 
     result =  placeOrder(symbol=symbol, 
                         expiry=expiry, 
@@ -740,7 +778,6 @@ def get_delta_volume(stock, strike, right, expiry):
 
     deltaVolData = []
     market_data = client.get_options_data(symbol=stock, expiry=expiry, right=right, strike=strike)
-    logger.info(f"Delta Market Data = {market_data}")
 
     # Check if the market data is not None, then add delta and volume of the options to deltaVolData
     if market_data:
@@ -757,6 +794,7 @@ def get_delta_volume(stock, strike, right, expiry):
 def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     isPreviousNeutralCandles = False
     timeCheck = timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
+    #timeCheck = timeCheckAndCloseProgram()
     if timeCheck:
         sys.exit(0)
     from datetime import datetime
@@ -844,6 +882,7 @@ def updateStockMapper(stockName, value):
         f2.write(f"{updateVal}")
 
 def checkConditionsAndTrade(dataValueSet, stock_tick):
+    #global tradeExpiry
     logger.info(f"Stock {dataValueSet[0][2].upper()} checkConditionsAndTrade - start")
     
     # from datetime import datetime
@@ -859,6 +898,9 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
     signalStrength = stockData[3].lower()
 
     dataReturn = "None"
+    tradeExpiry = tradeExpiry_val
+    if "spy" in stockName.lower() or "qqq" in stockName.lower():
+        tradeExpiry = spy_qqq_tradeExpiry
     
     position = client.get_open_position(symbol=stockName)
     logger.info(f"get_open_position: {stockName}: {position}")
@@ -900,14 +942,14 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     deltaVolDataReturn = deltaVolDataReturn1[0]
                     options_tick = deltaVolDataReturn1[1]
                     # If the distance between trades check fails
-                    if check_distance_between_trade(stockName, rightMatch):
-                        logger.info(f"{stockName} distance between trade check failed, DISTANCE_BETWEEN_TRADE {DISTANCE_BETWEEN_TRADE}")
+                    if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch):
+                        logger.info(f"{stockName} distance between trade check failed, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
                         continue
                     else:
                         tradeKey = '{}_{}'.format(stockName, rightMatch)
                         #logger.info("trade_time_dict = {}".format(trade_time_dict))
                         if len(trade_time_dict.keys()) != 0:
-                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {trade_time_dict[tradeKey]}, DISTANCE_BETWEEN_TRADE {DISTANCE_BETWEEN_TRADE}")
+                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {trade_time_dict[tradeKey]}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
 
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1002,14 +1044,14 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     deltaVolDataReturn = deltaVolDataReturn1[0]
                     options_tick = deltaVolDataReturn1[1]
                     # If the distance between trades check fails
-                    if check_distance_between_trade(stockName, rightMatch):
-                        logger.info(f"{stockName} distance between trade check failed, DISTANCE_BETWEEN_TRADE {DISTANCE_BETWEEN_TRADE}")
+                    if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch):
+                        logger.info(f"{stockName} distance between trade check failed, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
                         continue
                     else:
                         tradeKey = '{}_{}'.format(stockName, rightMatch)
                         #logger.info("trade_time_dict = {}".format(trade_time_dict))
                         if len(trade_time_dict.keys()) != 0:
-                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {trade_time_dict[tradeKey]}, DISTANCE_BETWEEN_TRADE {DISTANCE_BETWEEN_TRADE}")
+                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {trade_time_dict[tradeKey]}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
                     
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1124,7 +1166,8 @@ def cancel_all_orders():
 
 
 ## This Function is a Check if Market time is 3.30PM or above then Close the existing orders at market price and close the program execution also
-def timeCheckAndCloseProgram(account_id, close_bot_profit, close_bot_loss):
+#def timeCheckAndCloseProgram():
+def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day):
     """
     Check if the current time is past the end time of the trading day, and if so, cancel all open orders and square
     off any existing positions. If an error occurs during this process, log the error and advise the user to close
@@ -1133,8 +1176,10 @@ def timeCheckAndCloseProgram(account_id, close_bot_profit, close_bot_loss):
     Returns:
         bool: True if the program should be closed, False otherwise.
     """
+    logger.info(f"Checking timeCheckAndCloseProgram")
     tradeMarketTime = False
-    pnlData = client.get_pnl(account_id)
+    pnlData = client.get_pnl(SUB_ACCOUNT_ID)
+    logger.info(f"Account {SUB_ACCOUNT_ID} PNL is {pnlData}")
     try:
         marketTime = datetime.now().astimezone(NY_TZ).strftime("%H-%M")
         if marketTime.replace("-", "") > endTime:
@@ -1143,13 +1188,14 @@ def timeCheckAndCloseProgram(account_id, close_bot_profit, close_bot_loss):
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
-        elif len(pnlData)!=0 and (pnlData["daily"] >= close_bot_profit or pnlData["daily"] <= close_bot_profit):
+        elif pnlData >= profit_amount_day or pnlData <= -loss_amount_day:
             tradeMarketTime = True
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price as Daily Profit/StopLoss Target HIT.")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
         else:
             logger.info(f"timeCheckAndCloseProgram:=>> Market Time is = {marketTime} <={endTime}. Keep Going Trade")
+            logger.info(f"Accoun Current: ${pnlData} SL: -${loss_amount_day} TP: ${profit_amount_day}...")
     except Exception as lastError:
         logger.info(f"Got error during final call of day is = {lastError}")
         logger.info("Please Close All Positions Manually")
@@ -1193,7 +1239,7 @@ def timeDecayDiff(expiryDate):
     todayDate = today.strftime("%Y%m%d")
     logger.info("Today date is = {}".format(todayDate))
     
-    diffTimedecay = int(tradeExpiry) - int(todayDate)
+    diffTimedecay = int(tradeExpiry_val) - int(todayDate)
     
     logger.info("\n\n Time Decay Days Diff remaing from expiry is = {}\n\n".format(diffTimedecay))
     
@@ -1251,7 +1297,10 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         # ProfitPrice
         profitPrice = round(tradePrice + float(atrVale), 2)
         timeDiffMultiplyVal = 0.13
-        TimeDecayDiffVal = timeDecayDiff(tradeExpiry)
+        TimeDecayDiffVal = timeDecayDiff(tradeExpiry_val)
+        
+        if "spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower():
+            TimeDecayDiffVal = -1
         if tradePrice<=0.2 and TimeDecayDiffVal == 0 and marketTime >= "1301" and marketTime <= "1401":
             profitPrice = round(tradePrice + float(0.05), 2)
             auxPrice = round(tradePrice - float(tradPrice*0.04), 2)
@@ -1497,11 +1546,11 @@ def init_data_feed():
         for stock_contract in stock_contracts:
             client.subscribe(contract=stock_contract)
             client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize=candleTime)
-            #client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="3 mins")
-            client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="5 mins")
+            # client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="3 mins")
+            #client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="5 mins")
             #client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="15 mins")
 
-        time.sleep(4.0)
+        time.sleep(3.0)
 
         # Generate the strikes_map for each stock
         strikes_map = get_strikes_map(stock_list=stockList)
@@ -1516,11 +1565,14 @@ def init_data_feed():
             # Select the strikes nearest to the underlying price
             strikes = strikes_map[stock_contract.symbol]["Strike"]
             logger.info(f"{stock_contract.symbol} UNDERLYING PRICE IS = {market_data.last}")
-            ls, hs = get10StrikesNearUnderlying(strikeList=strikes, undPrc=market_data.last, range_limit=5)
+            ls, hs = get10StrikesNearUnderlying(strikeList=strikes, undPrc=market_data.last, range_limit=4)
             selected_strikes = ls + hs
 
             # Create call and put options contracts for each selected strike
             for strike in selected_strikes:
+                tradeExpiry = tradeExpiry_val
+                if "spy" in stock_contract.symbol.lower() or "qqq" in stock_contract.symbol.lower():
+                    tradeExpiry = spy_qqq_tradeExpiry
                 call_option = client.get_options_contract(stock_contract.symbol, tradeExpiry, "C", strike)
                 put_option = client.get_options_contract(stock_contract.symbol, tradeExpiry, "P", strike)
 
@@ -1631,7 +1683,7 @@ def init_start_event_processors():
     processors = None
     if client.isConnected():
         # Create the specified number of event processors
-        processors = [Thread(target=event_processor,args=(event_queue, count,)) for count in range(PROCESSORS_COUNT)]
+        processors = [Thread(target=event_processor, args=(event_queue, count,)) for count in range(PROCESSORS_COUNT)]
         # Start the event processors
         for processor in processors:
             processor.start()
@@ -1750,11 +1802,39 @@ def synchronize_orders():
             # logs a message to indicate that the order has been successfully synchronized
             logger.info(f"Order synchronized: {order.option_symbol} {order}")
 
+def account_pnl_monitor(account_id, ACCOUNT_TP, ACCOUNT_SL):
+    while True:
+        try:
+            daily_pnl = client.get_pnl(account_id)
+            if daily_pnl >= ACCOUNT_TP:
+                logger.info(f"Account profit target reached (${daily_pnl} >= ${ACCOUNT_TP}), closing all positions...")
+                client.cancel_all_orders()
+                check_and_close_all_open_positions()
+                break
+            elif daily_pnl <= -ACCOUNT_SL:
+                logger.info(f"Account stop-loss hit (${daily_pnl} <= ${ACCOUNT_SL}), closing all positions...")
+                client.cancel_all_orders()
+                check_and_close_all_open_positions()
+                break
+            else:
+                logger.info(f"Accoun Current: ${daily_pnl} SL: ${ACCOUNT_SL} TP: ${ACCOUNT_TP}...")
+        except Exception as e:
+            logger.error(f"PnL monitor error: {e}")
+        time.sleep(1)  # check every 1 sec
+    sys.exit(0)
+    sys.exit(1)
+    sys._exit(1)
+
+
 def main_call(data):
     logger.info("Starting BOT")
     print("DATA is = {}\n\n\n".format(data))
-    global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK, VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, SPY_QQQ_EXPIRY, PROFIT_INCREMENT, DISTANCE_BETWEEN_TRADE, EXPIRY, tradeExpiry
+    global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
+    global VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val
     global trade_time_dict, signal_dict, profit_amount_day, loss_amount_day
+    global starting_profit, starting_loss
+    starting_profit = 0
+    starting_loss = 0
     
     IP = data["IP"]
     PORT = data["PORT"]
@@ -1795,9 +1875,12 @@ def main_call(data):
     USE_DIFF_EXPIRY_INDEX = fileData["USE_DIFF_EXPIRY_INDEX"]
     SPY_QQQ_EXPIRY = fileData["SPY_QQQ_EXPIRY"]
     PROFIT_INCREMENT = fileData["profit_increment"]
-    DISTANCE_BETWEEN_TRADE = fileData["distance_between_trade"]
+    TRADE_COOLDOWN_SECONDS = fileData["distance_between_trade"]
 
-    tradeExpiry = getExpiry(EXPIRY)
+    tradeExpiry_val = getExpiry(EXPIRY)
+    spy_qqq_tradeExpiry = getExpiry(SPY_QQQ_EXPIRY)
+    
+    pnl_thread = None
     
     for each in stockList:
         trade_time_dict.update({"{}_{}".format(each, "CALL"):datetime.now(), "{}_{}".format(each, "PUT"):datetime.now()})
@@ -1810,29 +1893,31 @@ def main_call(data):
     
     print("PORT = {}".format(PORT))
     global client, client_thread, NY_TZ, event_queue, order_mgr, reconnect_time, dataStrike
+    
+    client_thread = None
+    client = None
+    event_queue = Queue()
+    db = DAL()
+    order_mgr = OrderManager(db=db)
+    client = init_api_client(_event_queue=event_queue, _order_mgr = order_mgr)
+
+    # Start the TWS client connection
+    start_client(_client=client)
+
     while True:
-        client_thread = None
-        client = None
-        event_queue = Queue()
-        db = DAL()
-        order_mgr = OrderManager(db=db)
-        client = init_api_client(_event_queue=event_queue, _order_mgr = order_mgr)
-        
         if client is None:
-            time.sleep(10.0)
+            time.sleep(3.0)
             continue
-
-        # Start the TWS client connection
-        start_client(_client=client)
-
+        
         # Start the timer to check and close the program if needed
         timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
+        #timeCheckAndCloseProgram()
         
         # Initialize the order requests
         init_order_requests()
 
         # wait 3 seconds to get response of orders & positions request
-        time.sleep(8.0)
+        time.sleep(2.0)
 
         # Initialize the data feed
         init_data_feed()
@@ -1849,6 +1934,10 @@ def main_call(data):
         # set the flag to start putting market data in the event queue
         client.initialization_done = True
         
+        """if pnl_thread is None or not pnl_thread.is_alive():
+            pnl_thread = Thread(target=account_pnl_monitor, args=(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day), daemon=True)
+            pnl_thread.start()"""
+
         try:
             for processor in processors:
                 processor.join()
