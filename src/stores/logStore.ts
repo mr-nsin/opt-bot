@@ -1,0 +1,33 @@
+import { create } from "zustand";
+import type { LogEntry } from "@/lib/types";
+
+interface LogState {
+  logs: LogEntry[];
+  filterLevel: string | null;
+  filterCategory: string | null;
+  autoScroll: boolean;
+
+  addLog: (entry: LogEntry) => void;
+  setLogs: (logs: LogEntry[]) => void;
+  clearLogs: () => void;
+  setFilterLevel: (level: string | null) => void;
+  setFilterCategory: (category: string | null) => void;
+  setAutoScroll: (auto: boolean) => void;
+}
+
+export const useLogStore = create<LogState>((set) => ({
+  logs: [],
+  filterLevel: null,
+  filterCategory: null,
+  autoScroll: true,
+
+  addLog: (entry) =>
+    set((state) => ({
+      logs: [...state.logs, entry].slice(-500), // Keep last 500 logs
+    })),
+  setLogs: (logs) => set({ logs }),
+  clearLogs: () => set({ logs: [] }),
+  setFilterLevel: (level) => set({ filterLevel: level }),
+  setFilterCategory: (category) => set({ filterCategory: category }),
+  setAutoScroll: (auto) => set({ autoScroll: auto }),
+}));

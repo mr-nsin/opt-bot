@@ -1,0 +1,27 @@
+"""
+Message type definitions for the JSON-RPC protocol between Rust and Python.
+"""
+
+# Request methods (Rust -> Python)
+START_TRADING = "start_trading"
+STOP_TRADING = "stop_trading"
+EMERGENCY_STOP = "emergency_stop"
+GET_STATUS = "get_status"
+GET_POSITIONS = "get_positions"
+CLOSE_POSITION = "close_position"
+CLOSE_ALL = "close_all"
+UPDATE_CONFIG = "update_config"
+PING = "ping"
+
+# Event types (Python -> Rust)
+TICK_UPDATE = "tick_update"
+POSITION_UPDATE = "position_update"
+ORDER_UPDATE = "order_update"
+PNL_UPDATE = "pnl_update"
+SIGNAL_DETECTED = "signal_detected"
+TRADE_EXECUTED = "trade_executed"
+TRADE_CLOSED = "trade_closed"
+LOG_MESSAGE = "log_message"
+ERROR = "error"
+ENGINE_STATUS = "engine_status"
+CONNECTION_STATUS = "connection_status"

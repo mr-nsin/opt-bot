@@ -11,6 +11,13 @@ from threading import Timer
 from multiprocessing import Pool
 from pathlib import Path
 import base64
+import signal
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import logging
+logging.getLogger().handlers.clear()
+
 
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
@@ -31,6 +38,11 @@ from common import OptionOrder, logger, Tick, getExpiry
 from tws_api_client import TwsApiClient
 from order_manager import OrderManager
 from data_access import DAL
+
+from multiprocessing import Process
+
+_process = None
+
 PROCESSORS_COUNT = 4
 
 global client, client_thread, NY_TZ, event_queue, order_mgr, reconnect_time, dataStrike, signal_dict
@@ -38,6 +50,13 @@ global trade_time_dict, recent_trade_times, TRADE_COOLDOWN_SECONDS, tradeExpiry_
 global starting_profit, starting_loss
 starting_profit = 0
 starting_loss = 0
+
+STOP_TRADING = False
+DAILY_LIMIT_HIT = False
+DAY_LOCKED = False
+CLOSE_ALL_ORDERS = False
+START_DAY_PNL = None
+
 
 # Trade cooldown tracking (entry or exit)
 recent_trade_times = {}  # key = f"{symbol}_{right}" → datetime
@@ -56,7 +75,7 @@ signal_dict = {}
 
 #def get_file_data()
 filePath = os.getcwd() + "\\config.json"
-with open("config.json", "r") as fopen:
+with open("config.json", "r",  encoding="utf-8") as fopen:
     fileDataGet = fopen.read()
     ####### GET DATA FROM CONFIG FILE #######
     fileData = json.loads(fileDataGet)
@@ -70,6 +89,17 @@ global ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDay
 LICENSE_FILE = "license.json"
 LICENSE_KEY = "TraderNova_987_90_1"
 
+def hard_exit():
+    logger.error("HARD EXIT: Daily limit hit, terminating process")
+    os.kill(os.getpid(), signal.SIGTERM)
+    
+def init_day_pnl(account_id):
+    global START_DAY_PNL
+    START_DAY_PNL, START_REALI_DAILY_PNL = client.get_pnl(account_id)
+    logger.info(f"Day PnL baseline captured: {START_REALI_DAILY_PNL}")
+
+
+
 def encrypt_string(plain_text):
     return base64.b64encode(plain_text.encode()).decode()
     
@@ -79,15 +109,15 @@ def decrypt_string(encoded_text):
 def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
     try:
         if not Path(file_path).exists():
-            print("License file not found/Deleted.\nPlease Contact Support Team at 'treetechconsultancy@gmail.com'")
-            time.slee(10)
+            print("License file not found/Deleted.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
+            time.sleep(10)
             sys.exit()
             sys.exit(0)
             sys.exit(1)
         elif Path(file_path).exists():
             print("License file present, Validating it")
 
-        with open(file_path, "r") as f:
+        with open(file_path, "r",  encoding="utf-8") as f:
             license_data = json.load(f)
 
         issued_str = base64.b64decode(license_data["issued"]).decode()
@@ -99,10 +129,8 @@ def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
             print("License is valid.")
             return True
         else:
-            print("Your License has expired.\nPlease Contact Support Team at 'treetechconsultancy@gmail.com'")
+            print("Your License has expired.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
             time.sleep(20)
-            sys.exit()
-            sys.exit(0)
             sys.exit(1)
 
     except Exception as e:
@@ -112,8 +140,13 @@ def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
 
 def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
     print("calling init_api_client")
-    _client = TwsApiClient(event_queue=_event_queue, callback=_order_mgr.process_trade)
-    _client.connect(host="127.0.0.1", port=PORT, clientId=CLIENTID)
+    #_client = TwsApiClient(event_queue=_event_queue, callback=_order_mgr.process_trade)
+    _client = TwsApiClient(
+        host=IP, port=PORT, clientId=CLIENTID,
+        event_queue=_event_queue,
+        callback=_order_mgr.process_trade
+    )
+    _client.connect(host=IP, port=PORT, clientId=CLIENTID)
     _order_mgr.set_client(client=_client)
     time.sleep(0.5)
     if _client is None or not _client.isConnected():
@@ -151,7 +184,7 @@ def start_client(_client: TwsApiClient)-> None:
         logger.error("TWS not connected")
         return
     
-    client_thread = Thread(target=_client.run)
+    client_thread = Thread(target=_client.run, daemon=True)
     client_thread.start()
 
 def getOrderExpiryTime():
@@ -232,8 +265,14 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                 totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                 profitPrice=0, conIdDetails=None, legPrices=None, 
                 options_tick: Tick = None,
-                stock_tick:Tick = None, closing_order: bool = False):
-    
+                stock_tick:Tick = None, closing_order: bool = False, is_sqare_off=False):
+                    
+    if DAY_LOCKED and CLOSE_ALL_ORDERS:
+        logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
+        return "DayLocked"
+
+    option_order = None
+
     logger.info("Checking for Order Place condition")
 
     logger.info("Order Data 1 ")
@@ -247,9 +286,8 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 
     logger.info("Enter order")
     logger.info("\n\nOrder Details\n\n")
-    logger.info(
-        f"ORDER_PLACE -> Stock = {symbol}\nAction = {action}\nOrderType = {orderType}\nQuantity = {totalQuantity}\nLMT Price = {lmtPrice}\nProfit Price = {profitPrice}\nSL Price = {auxPrice}\n\n"
-    )
+    logger.info(f"LOGS:ORDER_PLACE -> Stock = {symbol}\nAction = {action}\nOrderType = {orderType}\nQuantity = {totalQuantity}\nLMT Price = {lmtPrice}\nProfit Price = {profitPrice}\nSL Price = {auxPrice}\n\n")
+
     # orderExryTimer = getOrderExpiryTime()
     contract = client.get_options_contract(symbol, expiry, right, strike)
     order = Order()
@@ -263,6 +301,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
         logger.info(f"\n USE_TIMER_IN_ORDER is ON for stock = {symbol}\n")
         orderExryTimer = getOrderExpiryTime()
         order.tif = "GTD"
+        #order.tif = "DAY"
         order.goodTillDate = orderExryTimer
     nextorderId = client.nextOrderId()
     order.orderId = nextorderId
@@ -270,54 +309,83 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
     order.eTradeOnly = False
     order.firmQuoteOnly = False
 
-    option_order = OptionOrder(id= order.orderId, 
-        symbol=symbol, 
-        expiration=expiry,
-        strike=strike, 
-        right=right, 
-        order_type=orderType, 
-        order_side=action,
-        order_qty=totalQuantity, 
-        order_price=lmtPrice,
-        order_status="Pending",
-        contract=contract,
-        profit_price=profitPrice,
-        stoploss_price=auxPrice,
-        current_profit_price=profitPrice,
-        profit_increment=PROFIT_INCREMENT,
-        profit_trigger=False,
-        active=True)
+    if not closing_order:
+        option_order = OptionOrder(
+            id= order.orderId, 
+            symbol=symbol, 
+            expiration=expiry,
+            strike=strike, 
+            right=right, 
+            order_type=orderType, 
+            order_side=action,
+            order_qty=totalQuantity, 
+            order_price=lmtPrice,
+            order_status="Pending",
+            contract=contract,
+            profit_price=profitPrice,
+            stoploss_price=auxPrice,
+            current_profit_price=profitPrice,
+            profit_increment=PROFIT_INCREMENT,
+            profit_trigger=False,
+            active=True)
 
-    logger.info(option_order)
+        logger.info(f"Created option_order: {option_order}")
+        logger.info(f"Profit settings - Target: ${profitPrice:.2f}, Increment: ${PROFIT_INCREMENT:.2f}, StopLoss: ${auxPrice:.2f}")
 
 
-    if not client.isConnected():
+    """if not client.isConnected():
         # raise ConnectionError("Some Error in API connection. Closing Scripts. Please Look Manually for the placed order.")
         logger.error("Some Error in API connection.")
-        return "TWS API connection error"
+        return "TWS API connection error"""
+        
+    if not client.isConnected():
+        logger.warning("Client disconnected. Trying to reconnect...")
+        client.try_reconnect()
+        if not client.isConnected():
+            return "TWS API connection error"
     
     try:
-        if not closing_order:
+        if not closing_order and option_order:
+            logger.info("Adding entry order")
             options_tick.active_order = option_order
+            order_mgr.add_entry_order(option_order, option_tick=options_tick)
 
-        order_mgr.add_entry_order(option_order, option_tick=options_tick)
+        #order_mgr.add_entry_order(option_order, option_tick=options_tick)
+        logger.info("ORDER ON PLACE")
 
         client.placeOrder(order.orderId, contract, order)
-        logger.info("\nORDER PLACED SUCCESSFULLY\n")
-        order_mgr.save_order(order=option_order)
+        logger.info("\n<NEW ORDER> PLACED SUCCESSFULLY\n")
+        if option_order is not None:
+            order_mgr.save_order(order=option_order)
+        
+        # FIX: Unlock the tick after successful order
+        if options_tick:
+            options_tick.locked = False
+
         return order.orderId
     except Exception as ex:
-        if not closing_order:
-            options_tick.active_order = None
+        if not closing_order and option_order:
+            if options_tick:
+                options_tick.active_order = None
+            order_mgr.del_entry_order(order=option_order, option_tick=options_tick)
+            
+        # FIX: Unlock the tick after successful order
+        if options_tick:
+            options_tick.locked = False
 
-        order_mgr.del_entry_order(order=option_order, option_tick=options_tick)
+        #order_mgr.del_entry_order(order=option_order, option_tick=options_tick)
         logger.error(f"Error in Placing Order: {ex}", exc_info=True)
+        return None
 
 
 def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=None,
                         totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                         profitPrice=0, conIdDetails=None, legPrices=None, options_tick: Tick=None,
                         stock_tick: Tick=None):
+                            
+    if DAY_LOCKED and CLOSE_ALL_ORDERS:
+        logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
+        return "DayLocked"
 
     if options_tick.locked == True:
         return "optionsTickLocked"
@@ -325,18 +393,20 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
     options_tick.locked = True
     logger.info("Creating Orders")
     
-    if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
-        return "orderAlreadyPresent"
+    try:
+        if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
+            return "orderAlreadyPresent"
         
-    key = f"{symbol}_{right}"
-    last_trade_time = recent_trade_times.get(key)
-    if last_trade_time:
-        seconds_since = (datetime.now() - last_trade_time).total_seconds()
-        if seconds_since < TRADE_COOLDOWN_SECONDS:
-            logger.info(f"[{key}] Trade skipped. Cooldown active ({int(seconds_since)}s < {TRADE_COOLDOWN_SECONDS}s)")
-            return "cooldownPeriodHit"
+        key = f"{symbol}_{right}"
+        last_trade_time = trade_time_dict.get(key)
+    
+        if last_trade_time:
+            seconds_since = (datetime.now() - last_trade_time).total_seconds()
+            if seconds_since < TRADE_COOLDOWN_SECONDS:
+                logger.info(f"[{key}] Trade skipped. Cooldown active ({int(seconds_since)}s < {TRADE_COOLDOWN_SECONDS}s)")
+                return "cooldownPeriodHit"
 
-    result =  placeOrder(symbol=symbol, 
+        result =  placeOrder(symbol=symbol, 
                         expiry=expiry, 
                         strike=strike, 
                         right=right, 
@@ -350,8 +420,12 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
                         legPrices=legPrices, 
                         options_tick=options_tick,
                         stock_tick=stock_tick)
-    options_tick.locked = False
-    return result
+        return result
+    except Exception as ex:
+        logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
+        return "error"
+    finally:
+        options_tick.locked = False
 
 def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
     from datetime import datetime
@@ -383,14 +457,14 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
         super_trend_signal = indi.BOTSingal(new_df)[["Date","Close","ST_BUY_SELL"]]
         
         logger.info("stock = {}, signal is = {}***\n".format(stock, super_trend_signal))
-        logger.info("#####*********\nstock = {}, current signal is = {} and last signal is = {}***\n".format(stock, super_trend_signal["ST_BUY_SELL"][::-1].iloc[1], super_trend_signal["ST_BUY_SELL"][::-1].iloc[2]))
+        logger.info("#####*********\nstock = {}, current signal is = {} and last signal is = {}***\n".format(stock, super_trend_signal["ST_BUY_SELL"][::-1].iloc[0], super_trend_signal["ST_BUY_SELL"][::-1].iloc[1]))
         
         ############################################################################################################################################################    
         ################# WE ARE UPDATING SIGNAL OF LAST CLOSED CANDLE SO CURRENT CANDLE IS DEPEND ON PREVIOUS CANDLE TO TRADE #####################################
         ############################################################################################################################################################
         
-        signal_dict[stock]['last_signal'] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[2]
-        signal_dict[stock]['current_signal'] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[1]
+        signal_dict[stock]['last_signal'] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[1]
+        signal_dict[stock]['current_signal'] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[0]
         logger.info("Updated signal_dict = {}".format(signal_dict))
         
         if signal_dict[stock]['last_signal'] != signal_dict[stock]['current_signal']:
@@ -465,7 +539,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
         candle_5_low = float(candle_5.low)
         candle_6_low = float(candle_6.low)
         
-        
+        #AI_function() # match the pattern
         if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
             candle_6_vol>= candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.65:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-AAAAA-StrongBUY>> meet. Return TRUE \
@@ -792,6 +866,10 @@ def get_delta_volume(stock, strike, right, expiry):
     return deltaVolData
 
 def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
+    if DAY_LOCKED and CLOSE_ALL_ORDERS:
+        logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
+        return "DayLocked"
+
     isPreviousNeutralCandles = False
     timeCheck = timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
     #timeCheck = timeCheckAndCloseProgram()
@@ -867,7 +945,7 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
 
 def updateStockMapper(stockName, value):
     logger.info(f"\n updateStockMapper for stock = {stockName}\n")
-    with open(f"{stockName}.txt", "r") as f1_2:
+    with open(f"{stockName}.txt", "r",  encoding="utf-8") as f1_2:
         f1_2_data = f1_2.read()
     valuePresent = f1_2_data.split(",")
     valuePresent[0] = str(value)
@@ -878,7 +956,7 @@ def updateStockMapper(stockName, value):
         f"\n STOCK = {stockName} updateStockMapper UPDATE VALUES ARE  AFTER JOIN= {updateVal}\n"
     )
 
-    with open(f"{stockName}.txt", "w") as f2:
+    with open(f"{stockName}.txt", "w",  encoding="utf-8") as f2:
         f2.write(f"{updateVal}")
 
 def checkConditionsAndTrade(dataValueSet, stock_tick):
@@ -1178,18 +1256,19 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
     """
     logger.info(f"Checking timeCheckAndCloseProgram")
     tradeMarketTime = False
-    pnlData = client.get_pnl(SUB_ACCOUNT_ID)
+    pnlData, realizedPNL = client.get_pnl(SUB_ACCOUNT_ID)
     logger.info(f"Account {SUB_ACCOUNT_ID} PNL is {pnlData}")
     try:
         marketTime = datetime.now().astimezone(NY_TZ).strftime("%H-%M")
-        if marketTime.replace("-", "") > endTime:
+        if marketTime.replace("-", "") > endTime.toString("HHmm"):
             logger.info(f"Market Time is ={marketTime} > {endTime}.So Closing All Placed Orders if Any Or Closing Execution if no Orders Present")
             tradeMarketTime = True
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
-        elif pnlData >= profit_amount_day or pnlData <= -loss_amount_day:
+        elif pnlData >= profit_amount_day or pnlData <= loss_amount_day:
             tradeMarketTime = True
+            logger.info(f"Day PNL Target HIT. Either {pnlData} is Greater than Profit Target {profit_amount_day} or Less than Loss Target {loss_amount_day}")
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price as Daily Profit/StopLoss Target HIT.")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
@@ -1214,23 +1293,41 @@ def squareOffAll():
     
 
 def getAndBuyAfterMarketEnd():
-    OPEN_POSITION = client.get_all_positions()
-    if len(OPEN_POSITION) == 0:
-        logger.info("No Options Positions is present in Portfolio, so exiting the program now only")
-    else:
+    try:
+        OPEN_POSITION = client.get_all_positions()
+        logger.info(f"Current Open Positions are {OPEN_POSITION}\nClosing all of them")
+
+        if len(OPEN_POSITION) == 0:
+            logger.info("No Options Positions is present in Portfolio, so exiting the program now only")
+            return
+
         for ePos in OPEN_POSITION:
             totalQty = int(abs(ePos.position))
+
             if totalQty > 0:
                 action = "SELL"
+                
+                options_tick = client.get_options_data(
+                    symbol=ePos.symbol,
+                    expiry=ePos.expiry,
+                    right=ePos.right,
+                    strike=ePos.strike
+                )
+                
+
                 allSquareOffOrderId = placeOrder(symbol=ePos.symbol,
                                                     expiry=ePos.expiry, 
                                                     strike=ePos.strike,
                                                     right=ePos.right, 
                                                     action=action, 
                                                     totalQuantity=totalQty,
-                                                    orderType="MKT")
-            else:
-                logger.info("No Open Quantities are present for any Options, So exiting now with BOT")
+                                                    orderType="MKT",
+                                                    options_tick=options_tick,
+                                                    closing_order=True,
+                                                    is_sqare_off=True)
+                logger.info(f"Square off order placed: {allSquareOffOrderId}")
+    except Exception as ex:
+        logger.error(f"Error in getAndBuyAfterMarketEnd: {ex}", exc_info=True)
     
 def timeDecayDiff(expiryDate):
     logger.info("Current Expiry data is = {}".format(expiryDate))
@@ -1244,8 +1341,14 @@ def timeDecayDiff(expiryDate):
     logger.info("\n\n Time Decay Days Diff remaing from expiry is = {}\n\n".format(diffTimedecay))
     
     return diffTimedecay
+    
+
 
 def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick):
+    if DAY_LOCKED and CLOSE_ALL_ORDERS:
+        logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
+        return "DayLocked"
+
     logger.info(f"All Algo's conditions meet, now doing a check for Options Price must be ${MAX_CONTRACT_AMOUNT} or low")
     # tick = client.get_options_data(symbol=takeTick, expiry=takeExpiry, right=takeRight, strike=takeStrike)
     
@@ -1258,6 +1361,12 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     askPrice = options_tick.ask
     lastPrice = options_tick.last
     activeVol = options_tick.volume
+    
+    midPrice = (bidPrice + askPrice)/2
+    spreadGap = askPrice - bidPrice
+    
+    if spreadGap >=0.12:
+        return "SpreadGapHighOver0.12ComingOut"
 
     if bidPrice == -1.0:
         bidPrice = lastPrice - 0.02
@@ -1281,17 +1390,33 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         tradePrice = round(bidPrice, 2)
 
     logger.info(f"Current tradePrice is = {tradePrice}")
+    
+    # ============ PROFIT/STOPLOSS CALCULATION - THIS IS CRITICAL ============
+    marketTime = datetime.now().astimezone(pytz.timezone("America/New_York")).strftime("%H-%M")
+    marketTime = marketTime.replace("-", "")
+    marketTimeInt = int(marketTime)
+    
+    TimeDecayDiffVal = timeDecayDiff(tradeExpiry_val)
+    if "spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower():
+        TimeDecayDiffVal = -1
+        
+    # Log the calculation parameters
+    logger.info(f"""
+    ═══════════════════════════════════════════════════════
+    PROFIT/LOSS CALCULATION for {stock_symbol}
+    ═══════════════════════════════════════════════════════
+    Entry Price: ${tradePrice:.2f}
+    ATR Value: ${atrVale:.4f}
+    Market Time: {marketTime}
+    Time to Expiry: {TimeDecayDiffVal} days
+    Is SPY/QQQ: {"spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower()}
+    """)
 
     if atrVale <= 0.01:
         profitPrice = round(tradePrice + 0.02, 2)
         auxPrice = round(tradePrice - 0.01, 2)
+        logger.info(f"Low ATR case: Profit=${profitPrice:.2f}, StopLoss=${auxPrice:.2f}")
     else:
-        marketTime = (
-            datetime.now()
-            .astimezone(pytz.timezone("America/New_York"))
-            .strftime("%H-%M")
-        )
-        marketTime = marketTime.replace("-", "")
         atrVale = atrVale * ATR_VALUE
 
         # ProfitPrice
@@ -1299,9 +1424,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         timeDiffMultiplyVal = 0.13
         TimeDecayDiffVal = timeDecayDiff(tradeExpiry_val)
         
-        if "spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower():
-            TimeDecayDiffVal = -1
-        if tradePrice<=0.2 and TimeDecayDiffVal == 0 and marketTime >= "1301" and marketTime <= "1401":
+        """if tradePrice<=0.2 and TimeDecayDiffVal == 0 and marketTime >= "1301" and marketTime <= "1401":
             profitPrice = round(tradePrice + float(0.05), 2)
             auxPrice = round(tradePrice - float(tradPrice*0.04), 2)
             if auxPrice <= 0.0:
@@ -1458,7 +1581,189 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                     profitPrice = round(tradePrice - float(tradePrice * 7)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 10)/100, 2)
             elif marketTime >= "1445":
+                return "0dte2ndhalfnotrade"""
+                
+        if tradePrice<=0.2 and TimeDecayDiffVal == 0 and marketTimeInt >= 1301 and marketTimeInt <= 1401:
+            profitPrice = round(tradePrice + 0.05, 2)
+            auxPrice = round(tradePrice - (tradePrice*0.04), 2)
+            if auxPrice <= 0.0:
+                auxPrice = 0.01
+        elif tradePrice<=0.2 and TimeDecayDiffVal == 0 and marketTimeInt >= 1201:
+            profitPrice = round(tradePrice + 0.04, 2)
+            auxPrice = round(tradePrice - (tradePrice*0.03), 2)
+            if auxPrice <= 0.0:
+                auxPrice = 0.01
+        elif tradePrice>=0.2 and tradePrice<=0.4 and TimeDecayDiffVal == 0 and marketTimeInt < 1301:
+            profitPrice = round(tradePrice + (tradePrice*0.15), 2)
+            auxPrice = round(tradePrice - (tradePrice*0.14), 2)
+        elif tradePrice>=0.2 and tradePrice<=0.4 and TimeDecayDiffVal == 0 and marketTimeInt >= 1301:
+            profitPrice = round(tradePrice + (tradePrice*0.13), 2)
+            auxPrice = round(tradePrice - (tradePrice*0.12), 2)
+        elif atrVale < 0.235:
+            if marketTimeInt >= 1201:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.7
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.65
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.6
+                profitPrice = round(tradePrice + (atrVale * 0.65), 2)
+            elif marketTimeInt < 1201:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.75
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.68
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.59
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+        elif atrVale >= 0.235 and atrVale < 0.485:
+            if marketTimeInt >= 1201:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.7
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.64
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.56
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+            elif marketTimeInt < 1201:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.85
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.68
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.55
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+        elif atrVale >= 0.485 and atrVale < 1.05:
+            if marketTimeInt >= 1201:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.48
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.42
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.35
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+            elif marketTimeInt < 1200:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.5
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.44
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.35
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+        elif atrVale >= 1.05:
+            if marketTimeInt >= 1201:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.35
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.31
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.25
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+            elif marketTimeInt < 1200:
+                if TimeDecayDiffVal >=4:
+                    timeDiffMultiplyVal = 0.41
+                elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                    timeDiffMultiplyVal = 0.36
+                elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                    timeDiffMultiplyVal = 0.3
+                profitPrice = round(tradePrice + (atrVale * timeDiffMultiplyVal), 2)
+
+        # ========== STOPLOSS CALCULATION ==========
+        # (Your existing logic)
+        auxPrice = round(tradePrice - atrVale, 2)
+        if atrVale < 0.235:
+            if TimeDecayDiffVal >=4:
+                timeDiffMultiplyVal = 0.8
+            elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                 timeDiffMultiplyVal = 0.75
+            elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                timeDiffMultiplyVal = 0.7
+            auxPrice = round(tradePrice - (atrVale * timeDiffMultiplyVal), 2)
+        elif atrVale >= 0.235 and atrVale < 0.485:
+            if TimeDecayDiffVal >=4:
+                timeDiffMultiplyVal = 0.75
+            elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                 timeDiffMultiplyVal = 0.69
+            elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                timeDiffMultiplyVal = 0.6
+            auxPrice = round(tradePrice - (atrVale * timeDiffMultiplyVal), 2)
+        elif atrVale >= 0.485 and atrVale < 1.05:
+            if TimeDecayDiffVal >=4:
+                timeDiffMultiplyVal = 0.55
+            elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                 timeDiffMultiplyVal = 0.49
+            elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                timeDiffMultiplyVal = 0.4
+            auxPrice = round(tradePrice - (atrVale * timeDiffMultiplyVal), 2)
+        elif atrVale >= 1.05:
+            if TimeDecayDiffVal >=4:
+                timeDiffMultiplyVal = 0.4
+            elif TimeDecayDiffVal < 4 and TimeDecayDiffVal >=2:
+                 timeDiffMultiplyVal = 0.33
+            elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
+                timeDiffMultiplyVal = 0.25
+            auxPrice = round(tradePrice - (atrVale * timeDiffMultiplyVal), 2)
+            
+        # Special 0DTE handling
+        if TimeDecayDiffVal == 0:
+            if marketTimeInt <= 1130:
+                if tradePrice <= 0.1:
+                    return "0dtepricebelow10cent"
+                elif tradePrice <= 0.2:
+                    profitPrice = round(tradePrice + (tradePrice * 0.2), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.2), 2)
+                elif tradePrice <= 0.3 and tradePrice > 0.2:
+                    profitPrice = round(tradePrice + (tradePrice * 0.22), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.25), 2)
+                elif tradePrice > 0.3 and tradePrice <= 0.75:
+                    profitPrice = round(tradePrice + (tradePrice * 0.19), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.21), 2)
+                elif tradePrice > 0.75 and tradePrice <= 1.5:
+                    profitPrice = round(tradePrice + (tradePrice * 0.14), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.16), 2)
+                elif tradePrice > 1.5 and tradePrice <= 3.5:
+                    profitPrice = round(tradePrice + (tradePrice * 0.10), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.12), 2)
+            elif marketTimeInt > 1130 and marketTimeInt <= 1300:
+                if tradePrice <= 0.1:
+                    return "0dtepricebelow10cent"
+                elif tradePrice <= 0.2:
+                    profitPrice = round(tradePrice + (tradePrice * 0.2), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.2), 2)
+                elif tradePrice <= 0.3 and tradePrice > 0.2:
+                    profitPrice = round(tradePrice + (tradePrice * 0.17), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.23), 2)
+                elif tradePrice > 0.3 and tradePrice <= 0.75:
+                    profitPrice = round(tradePrice + (tradePrice * 0.14), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.19), 2)
+                elif tradePrice > 0.75 and tradePrice <= 1.5:
+                    profitPrice = round(tradePrice + (tradePrice * 0.10), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.14), 2)
+                elif tradePrice > 1.5 and tradePrice <= 3.5:
+                    profitPrice = round(tradePrice + (tradePrice * 0.07), 2)
+                    auxPrice = round(tradePrice - (tradePrice * 0.10), 2)
+            elif marketTimeInt >= 1445:
                 return "0dte2ndhalfnotrade"
+
+    # Ensure stoploss is never negative
+    if auxPrice < 0.01:
+        auxPrice = 0.01
+        
+    # ============ LOG FINAL CALCULATED VALUES ============
+    profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
+    loss_pct = ((tradePrice - auxPrice) / tradePrice * 100) if tradePrice > 0 else 0
+    
+    logger.info(f"""
+    ═══════════════════════════════════════════════════════
+    FINAL PROFIT/LOSS TARGETS for {stock_symbol}
+    ═══════════════════════════════════════════════════════
+    Entry Price:     ${tradePrice:.2f}
+    Take Profit:     ${profitPrice:.2f}  (+{profit_pct:.1f}%)
+    Stop Loss:       ${auxPrice:.2f}     (-{loss_pct:.1f}%)
+    Profit Increment: ${PROFIT_INCREMENT:.2f}
+    Risk/Reward:     1:{(profitPrice-tradePrice)/(tradePrice-auxPrice):.2f}
+    ═══════════════════════════════════════════════════════
+    """)
 
     logger.info(f"\n\nCurrent Options Price is = {lastPrice} And Current Active Volume = {activeVol}")
 
@@ -1467,24 +1772,28 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         if totalQty==0:
             totalQty = 1
 
-        logger.info(f"Amount to Use is = {useAmount} and Quantities to trade is = useAmount/tradPrice = {totalQty}")
+        #logger.info(f"Amount to Use is = {useAmount} and Quantities to trade is = useAmount/tradPrice = {totalQty}")
+        logger.info(f"Amount to Use is = {useAmount[stock_symbol]['amount']} and Quantities to trade = {totalQty}")
 
         # action = "BUY"
-        currentOrderId = placeAndVerifyOrder(symbol=stock_symbol, 
-                                        expiry=expiry,
-                                        strike=strike, 
-                                        right=right, 
-                                        action="BUY", 
-                                        totalQuantity=totalQty,
-                                        orderType=ORDER_TYPE, 
-                                        lmtPrice=tradePrice, 
-                                        profitPrice=profitPrice,
-                                        auxPrice=auxPrice,
-                                        options_tick=options_tick,
-                                        stock_tick=stock_tick)
+        currentOrderId = placeAndVerifyOrder(
+                            symbol=stock_symbol, 
+                            expiry=expiry,
+                            strike=strike, 
+                            right=right, 
+                            action="BUY", 
+                            totalQuantity=totalQty,
+                            orderType=ORDER_TYPE, 
+                            lmtPrice=tradePrice, 
+                            profitPrice=profitPrice,
+                            auxPrice=auxPrice,
+                            options_tick=options_tick,
+                            stock_tick=stock_tick)
 
         logger.info("\nupdating new time for last trade\n")
+        trade_key = "{}_{}".format(stock_symbol, right)
         trade_time_dict.update({trade_key:datetime.now()})
+        
         #options_tick.last_trade_time = datetime.now()
         logger.info(f"currentOrderId is = {currentOrderId}")
         return "orderPlaced"
@@ -1554,7 +1863,7 @@ def init_data_feed():
 
         # Generate the strikes_map for each stock
         strikes_map = get_strikes_map(stock_list=stockList)
-        with open("expiryStrike.json", "w") as fp:
+        with open("expiryStrike.json", "w",  encoding="utf-8") as fp:
             json.dump(strikes_map, fp)
 
         # Create a list of options contracts
@@ -1594,7 +1903,7 @@ def fetch_all_strike_expiries():
     logger.info(
         f"Fetching All strikes/Expiries List for all stocks. = {stockList}"
     )
-    with open("expiryStrike.json", "r") as fp:
+    with open("expiryStrike.json", "r",  encoding="utf-8") as fp:
         return [json.loads(fp.read())]
 
 def check_order_conditions(tick: Tick):
@@ -1637,6 +1946,10 @@ def event_processor(event_queue: Queue, count: int) -> None:
             # If TWS is disconnected
             if client is not None and not client.isConnected():
                 logger.error("TWS is disconnected")
+                logger.info("trying Reconnect")
+                client.try_reconnect()
+                #if not client.isConnected():
+                #return "TWS API connection error"
                 time.sleep(5.0)
                 if client.connection_closed == True:
                     keep_running = False
@@ -1692,6 +2005,39 @@ def init_start_event_processors():
         logger.error("TWS is not connected.")
 
     return processors
+    
+
+def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
+    global STOP_TRADING, DAY_LOCKED, DAY_LOCK_DATE, CLOSE_ALL_ORDERS
+
+    logger.info("PnL Watchdog started")
+
+    while True:
+        try:
+            pnl, realizedPNL = client.get_pnl(account_id)
+
+            if pnl >= day_profit_limit or pnl <= day_loss_limit:
+                logger.error(
+                    f" DAILY LIMIT HIT  PnL={pnl} "
+                    f"Limits=({day_profit_limit}, {day_loss_limit})")
+
+                STOP_TRADING = True
+                DAY_LOCKED = True
+                DAY_LOCK_DATE = datetime.now().date()
+
+                cancel_all_orders()
+                getAndBuyAfterMarketEnd()
+                CLOSE_ALL_ORDERS = True
+
+                logger.error(" Trading LOCKED for the day until manual restart")
+                break
+
+        except Exception as e:
+            logger.error(f"PnL watchdog error: {e}", exc_info=True)
+
+        time.sleep(1)
+    logger.info("CLOSE CURRENT PROCESS")
+    hard_exit()
 
 
 def synchronize_positions():
@@ -1762,8 +2108,6 @@ def synchronize_positions():
         # logs a message to indicate that the position has been successfully synchronized
         logger.info(f"Position synchronized: {order.option_symbol} {order}")
 
-
-
 def synchronize_orders():
     """
     Synchronizes the orders in the order manager with the corresponding trades in the client's trades cache.
@@ -1805,7 +2149,7 @@ def synchronize_orders():
 def account_pnl_monitor(account_id, ACCOUNT_TP, ACCOUNT_SL):
     while True:
         try:
-            daily_pnl = client.get_pnl(account_id)
+            daily_pnl, realizedpnl = client.get_pnl(account_id)
             if daily_pnl >= ACCOUNT_TP:
                 logger.info(f"Account profit target reached (${daily_pnl} >= ${ACCOUNT_TP}), closing all positions...")
                 client.cancel_all_orders()
@@ -1824,11 +2168,39 @@ def account_pnl_monitor(account_id, ACCOUNT_TP, ACCOUNT_SL):
     sys.exit(0)
     sys.exit(1)
     sys._exit(1)
+    
+# ===== ADD THIS BELOW OrderManager / helper functions =====
+
+def monitor_positions_loop():
+    logger.info("Position monitor thread started")
+    while not STOP_TRADING:
+        try:
+            open_positions = client.get_all_positions()
+            for pos in open_positions:
+                order_mgr.check_exit_conditions(pos)
+        except Exception as e:
+            logger.error(f"Position monitor error: {e}")
+        time.sleep(0.1)
+
 
 
 def main_call(data):
     logger.info("Starting BOT")
     print("DATA is = {}\n\n\n".format(data))
+    
+    # ============ RE-READ CONFIG FILE TO GET LATEST VALUES ============
+    # This ensures we get the updated values from config.json
+    try:
+        config_path = os.path.join(os.getcwd(), "config.json")
+        with open(config_path, "r", encoding="utf-8") as fopen:
+            fileData = json.loads(fopen.read())
+            logger.info("Config file reloaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to reload config file: {e}")
+        # Fall back to the module-level fileData if reload fails
+        pass
+    # ==================================================================
+    
     global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
     global VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val
     global trade_time_dict, signal_dict, profit_amount_day, loss_amount_day
@@ -1904,11 +2276,31 @@ def main_call(data):
     # Start the TWS client connection
     start_client(_client=client)
 
+    #init_day_pnl(SUB_ACCOUNT_ID)
+    pnlData, realized_start_PNL = client.get_pnl(SUB_ACCOUNT_ID)
+    if realized_start_PNL < 0:
+        starting_loss = realized_start_PNL
+        profit_amount_day = profit_amount_day - starting_loss
+        loss_amount_day = loss_amount_day + starting_loss
+    elif realized_start_PNL > 0:
+        starting_profit = realized_start_PNL
+        profit_amount_day = profit_amount_day + starting_loss
+        loss_amount_day = loss_amount_day - starting_loss
+        #logger.info(f"First time log Pnl Value is {pnlData}")
+
+    logger.info(f"First time log Pnl Value is {realized_start_PNL}")
+    logger.info(f"Profit Day based on Existing pnl is {profit_amount_day} and Loss day is {loss_amount_day}")
+    
+    #from threading import Thread
+    Thread(target=pnl_watchdog_thread, args=(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day), daemon=True).start()
+    
+    Thread(target=monitor_positions_loop, daemon=True).start()
+
     while True:
         if client is None:
             time.sleep(3.0)
             continue
-        
+            
         # Start the timer to check and close the program if needed
         timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
         #timeCheckAndCloseProgram()
@@ -1924,7 +2316,7 @@ def main_call(data):
         # Fetch all the strike expiries for all stocks
         dataStrike = fetch_all_strike_expiries()
         # synchronize positions to be monitored for closing.
-        synchronize_positions()
+        #synchronize_positions()
         # synchronize previous days open orders
         synchronize_orders()
 
@@ -1947,6 +2339,23 @@ def main_call(data):
         if client.connection_closed == True:
             logger.error(f"TWS connection is closed, trying re-connect in {reconnect_time} seconds")
 
+def start_trading(data):
+    global _process
+    if _process and _process.is_alive():
+        print("BOT already running")
+        return
+    _process = Process(target=main_call, args=(data,))
+    _process.start()
+
+    
+def stop_trading():
+    global _process
+    if _process and _process.is_alive():
+        _process.terminate()
+        _process.join()
+        _process = None
+        print("BOT process stopped")
+    
 
 """if __name__ == "__main__":
     logger.info("Starting BOT")

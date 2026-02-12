@@ -18,9 +18,12 @@ import pandas as pd
 from queue import Queue
 
 class TwsApiClient(EWrapper, EClient):
-    def __init__(self, event_queue: Queue, callback): 
+    def __init__(self, host: str, port: int, clientId: int, event_queue: Queue, callback): 
         EWrapper.__init__(self)
         EClient.__init__(self, wrapper=self)
+        self._host = host
+        self._port = port
+        self._clientId = clientId
         self.event_queue = event_queue
         self.nextValidOrderId = 0
         self.ticker_id = 0
@@ -44,15 +47,49 @@ class TwsApiClient(EWrapper, EClient):
         self.initialization_done: bool = False
         self.connection_closed: bool= False
         self.pnl_cache = {}
+        self._lock = threading.Lock()
 
     @iswrapper
     def connectAck(self):
         logger.info('TWS connected.')
-        # self.start()
+        threading.Thread(target=self.run, daemon=True).start()
+        self.start_heartbeat()
     
-    # def start(self)-> None:
-    #     t = threading.Thread(target=self.run)
-    #     t.start()
+    """def start(self)-> None:
+        t = threading.Thread(target=self.run)
+        t.start()"""
+        
+    @iswrapper
+    def connectionClosed(self):
+        logger.error("TWS connection closed. Attempting to reconnect...")
+        self.try_reconnect()
+        
+    def try_reconnect(self, max_attempts=5, delay=5):
+        self.connection_closed = True  # Signal existing thread to stop
+        attempts = 0
+    
+        while attempts < max_attempts and not self.isConnected():
+            try:
+                logger.info(f"Reconnection attempt {attempts + 1}...")
+                self.disconnect()
+                time.sleep(delay)
+                self.connect(self._host, self._port, self._clientId)
+            
+                if self.isConnected():
+                    logger.info("Successfully reconnected to TWS")
+                    self.connection_closed = False
+                    threading.Thread(target=self.run, daemon=True).start()
+                    # Re-request essential data
+                    self.reqPositions()
+                    self.reqAllOpenOrders()
+                    return True
+                
+            except Exception as e:
+                logger.error(f"Reconnect attempt {attempts + 1} failed: {e}")
+                attempts += 1
+            
+        logger.error("Max reconnect attempts reached")
+        return False
 
     @iswrapper
     def nextValidId(self, orderId: int):
@@ -60,6 +97,20 @@ class TwsApiClient(EWrapper, EClient):
         logger.info("setting nextValidOrderId: %d", orderId)
         self.nextValidOrderId = orderId
         logger.info(f"NextValidId: {orderId}")
+        
+        # Request essential data
+        self.reqPositions()
+        self.reqAllOpenOrders()
+        
+        #self.reqPnL(self.managed_account)
+    
+        # Mark as initialized after a brief delay
+        def mark_initialized():
+            time.sleep(2)
+            self.initialization_done = True
+            logger.info("Initialization complete")
+    
+        threading.Thread(target=mark_initialized, daemon=True).start()
     
     def nextOrderId(self):
         oid = self.nextValidOrderId
@@ -142,7 +193,7 @@ class TwsApiClient(EWrapper, EClient):
 
         return self.ticker_strike_cache[ticker_id]
 
-    def get_contract_detail(self, contract: Contract):
+    """def get_contract_detail(self, contract: Contract):
         reqId = self.nextTickerId()
         self.reqContractDetails(reqId=reqId, contract=contract)
         self.contract_detail_fetched = False
@@ -155,6 +206,36 @@ class TwsApiClient(EWrapper, EClient):
         
         if self.temp_contract_detail == None:
             logger.info(f"{contract} contract details not found.")
+            return contract
+
+        return self.temp_contract_detail.contract"""
+        
+    def start_heartbeat(self):
+        def heartbeat():
+            while not self.connection_closed:
+                if self.isConnected():
+                    self.reqCurrentTime()  # Simple keepalive
+                else:
+                    logger.warning("Connection lost, attempting reconnect")
+                    self.try_reconnect()
+                time.sleep(60)  # Check every minute
+    
+        threading.Thread(target=heartbeat, daemon=True).start()
+        
+    def get_contract_detail(self, contract: Contract):
+        reqId = self.nextTickerId()
+        self.reqContractDetails(reqId=reqId, contract=contract)
+        self.contract_detail_fetched = False
+        self.temp_contract_detail = None
+
+        max_wait = 5  # seconds
+        waited = 0
+        while not self.contract_detail_fetched and waited < max_wait:
+            time.sleep(0.5)
+            waited += 0.5
+    
+        if self.temp_contract_detail is None:
+            logger.warning(f"Contract details timeout for {contract}")
             return contract
 
         return self.temp_contract_detail.contract
@@ -366,7 +447,7 @@ class TwsApiClient(EWrapper, EClient):
         """
         logger.info(f"get_PNL for account : {account}")
         logger.info(f"PNL Data for account : {self.pnl_cache}")
-        return self.pnl_cache.get("daily", 0.0)
+        return self.pnl_cache.get("daily", 0.0), self.pnl_cache.get("realized", 0.0)
         
 
     def get_options_position(self, symbol: str, expiry: str, right: str, strike: float) -> Position:
@@ -422,29 +503,30 @@ class TwsApiClient(EWrapper, EClient):
         # attrib is a set of attributes that provide additional information about the price update
         
         # Get the tick data from the cache, using the reqId as a key
-        tick: Tick = self.tick_cache.get(reqId, None)
+        with self._lock:
+            tick: Tick = self.tick_cache.get(reqId, None)
 
-        # If the tick data is not found in the cache, return
-        if tick is None:
-            return
+            # If the tick data is not found in the cache, return
+            if tick is None:
+                return
 
-        # Update the bid price of the tick data, if the tickType is 1
-        if tickType == 1:
-            tick.bid = price
-            if self.initialization_done and tick.contract.secType == "OPT":
-                self.event_queue.put({"tick": tick})
-        # Update the ask price of the tick data, if the tickType is 2
-        elif tickType == 2:
-            tick.ask = price
-        # Update the last price of the tick data, if the tickType is 4
-        # Also, put an event in the event queue, which contains the tick data and the last price
-        elif tickType == 4:
-            tick.last = price
-            if self.initialization_done:
-                self.event_queue.put({"tick": tick})
-        # Update the close price of the tick data, if the tickType is 9
-        elif tickType == 9:
-            tick.close = price
+            # Update the bid price of the tick data, if the tickType is 1
+            if tickType == 1:
+                tick.bid = price
+                if self.initialization_done and tick.contract.secType == "OPT":
+                    self.event_queue.put({"tick": tick})
+            # Update the ask price of the tick data, if the tickType is 2
+            elif tickType == 2:
+                tick.ask = price
+            # Update the last price of the tick data, if the tickType is 4
+            # Also, put an event in the event queue, which contains the tick data and the last price
+            elif tickType == 4:
+                tick.last = price
+                if self.initialization_done:
+                    self.event_queue.put({"tick": tick})
+            # Update the close price of the tick data, if the tickType is 9
+            elif tickType == 9:
+                tick.close = price
 
     @iswrapper
     def tickSize(self, reqId,  tickType, size):
@@ -562,19 +644,20 @@ class TwsApiClient(EWrapper, EClient):
             logger.error(f'OrderId {orderId} not found.')
             return
 
-        status = status.lower()
+        #status = status.lower()
+        status_lower = status.lower()
 
         # check for duplicate
-        if trade.order_status == status and trade.executed_qty == filled and trade.remaining_qty == remaining:
+        if trade.order_status == status_lower and trade.executed_qty == filled and trade.remaining_qty == remaining:
             return
 
         trade.executed_qty = filled 
         trade.remaining_qty = remaining
         trade.average_price = avgFillPrice
         trade.last_fill_price = lastFillPrice
-        trade.order_status = status
+        trade.order_status = status_lower
 
-        if status in ["filled", "cancelled", "expired", "rejected", "inactive"]:
+        if status_lower in ["filled", "cancelled", "expired", "rejected", "inactive"]:
             self.openOrdersSymbol.remove(trade.contract.symbol)
             # self.allOpenOrders.pop(orderId)
 
@@ -625,9 +708,29 @@ class TwsApiClient(EWrapper, EClient):
         # return super().positionEnd()
         logger.info("positionEnd")
 
+    #@iswrapper
+    #def managedAccounts(self, accountsList: str):
+    #    logger.info(f"managed accounts: {accountsList}")
+        
     @iswrapper
     def managedAccounts(self, accountsList: str):
-        logger.info(f"managed accounts: {accountsList}")
+        accounts = accountsList.split(",")
+        self.managed_account = accounts[0]
+
+        logger.info(f"Using account for PnL: {self.managed_account}")
+
+        # Cancel existing subscription safely
+        try:
+            self.cancelPnL(1)
+        except Exception:
+            pass
+
+        # CORRECT reqPnL signature
+        self.reqPnL(
+            reqId=1,
+            account=self.managed_account,
+            modelCode=""
+        )
 
     @iswrapper
     def connectionClosed(self):

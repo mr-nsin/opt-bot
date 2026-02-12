@@ -1,0 +1,5 @@
+IP_Validate = "192.168.0.100"
+email_validate = "longnguyen347@yahoo.com"
+key_to_validate = "quant-drift-$987$-&x1$(-*0#!("
+starting_date = "2025-09-26"
+days_to_validate = 30

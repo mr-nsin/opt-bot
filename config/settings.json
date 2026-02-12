@@ -1,0 +1,103 @@
+{
+  "trading": {
+    "mode": "demo",
+    "symbol": "MNQ",
+    "symbols": [
+      "MNQU5",
+      "NQU5"
+    ],
+    "contract_month": "202506",
+    "next_contract_month": "202507",
+    "max_positions": 2,
+    "position_size": 1,
+    "risk_per_trade": 2.0,
+    "max_daily_trades": 10,
+    "time_windows": [
+      "06:50",
+      "09:30",
+      "09:45",
+      "09:50",
+      "10:00",
+      "10:30",
+      "10:45",
+      "10:50",
+      "11:30",
+      "11:45",
+      "11:50",
+      "12:00",
+      "12:30",
+      "13:30",
+      "14:30",
+      "14:50",
+      "15:00"
+    ],
+    "trade_end_time": "16:55",
+    "trading_hours": {
+      "start": "06:00",
+      "end": "17:00"
+    },
+    "daily_profit_limit": 500.0,
+    "daily_loss_limit": -300.0
+  },
+  "strategy": {
+    "name": "engulfing_atr",
+    "atr_period": 14,
+    "atr_lookback": 100,
+    "ema_length": 9,
+    "sl_multiplier": 1.9,
+    "tp_multiplier": 1.0,
+    "sl_move_profit": 0.8,
+    "sl_move_to": 0.5,
+    "high_atr_threshold": 26,
+    "volume_confirmation": {
+      "buy_volume_mult": 0.65,
+      "sell_volume_mult": 0.85
+    },
+    "trail_update": 12
+  },
+  "databento": {
+    "api_key": "your_databento_api_key_here",
+    "dataset": "GLBX.MDP3",
+    "schema": "trades",
+    "symbols": [
+      "NQ.FUT",
+      "MNQ.FUT"
+    ]
+  },
+  "tradovate": {
+    "demo_base_url": "https://demo.tradovateapi.com/v1",
+    "live_base_url": "https://live.tradovateapi.com/v1",
+    "credentials": {
+      "username": "",
+      "password": "",
+      "client_id": "",
+      "client_secret": "",
+      "app_id": "",
+      "demo_account_id": "",
+      "live_account_id": ""
+    }
+  },
+  "ui": {
+    "theme": "dark",
+    "update_interval": 1000,
+    "show_charts": true,
+    "font_size": 9,
+    "animation_duration": 300,
+    "smooth_transitions": true
+  },
+  "logging": {
+    "level": "INFO",
+    "max_file_size": "10MB",
+    "backup_count": 5
+  },
+  "database": {
+    "path": "database/trades.db",
+    "backup_enabled": true,
+    "candle_retention_days": 30
+  },
+  "broker": {
+    "host": "127.0.0.1",
+    "port": 7497,
+    "client_id": 22
+  }
+}

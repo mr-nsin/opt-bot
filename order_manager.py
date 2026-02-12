@@ -4,6 +4,10 @@ from common import MarketOrder, OptionOrder, Tick, Trade, create_order_obj, logg
 from data_access import DAL
 from tws_api_client import TwsApiClient
 
+from threading import Lock
+
+
+
 class OrderManager:
     """
     OrderManager is a class that manages orders and their caches.
@@ -25,7 +29,8 @@ class OrderManager:
         self.entry_orders_cache = {}
         self.exit_orders_cache = {}
         self.order_id_tick_lookup = {}
-
+        self.recent_trade_closures = {}  # Track cooldowns
+        self.order_lock = Lock()
 
     def set_client(self, client: TwsApiClient) -> None:
         """
@@ -37,14 +42,15 @@ class OrderManager:
         self.api_client = client
 
     def del_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
-        if self.orders_cache.get(order.id, None):
-            self.orders_cache.pop(order.id)
+        with self.order_lock:
+            if self.orders_cache.get(order.id, None):
+                self.orders_cache.pop(order.id)
 
-        if self.entry_orders_cache.get(order.symbol, None):
-            self.entry_orders_cache.pop(order.symbol)
+            if self.entry_orders_cache.get(order.symbol, None):
+                self.entry_orders_cache.pop(order.symbol)
 
-        if self.order_id_tick_lookup.get(order.id, None):
-            self.order_id_tick_lookup.pop(order.id)
+            if self.order_id_tick_lookup.get(order.id, None):
+                self.order_id_tick_lookup.pop(order.id)
         
 
     def add_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
@@ -54,19 +60,21 @@ class OrderManager:
         Args:
             order (OptionOrder): The entry order to be added.
         """
-        self.orders_cache[order.id] = order
-        self.entry_orders_cache[order.symbol] = order
-        self.order_id_tick_lookup[order.id] = option_tick
+        with self.order_lock:
+            self.orders_cache[order.id] = order
+            self.entry_orders_cache[order.symbol] = order
+            self.order_id_tick_lookup[order.id] = option_tick
 
     def del_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
-        if self.orders_cache.get(order.id, None):
-            self.orders_cache.pop(order.id)
+        with self.order_lock:
+            if self.orders_cache.get(order.id, None):
+                self.orders_cache.pop(order.id)
 
-        if self.exit_orders_cache.get(order.symbol, None):
-            self.exit_orders_cache.pop(order.symbol)
-
-        if self.order_id_tick_lookup.get(order.id, None):
-            self.order_id_tick_lookup.pop(order.id)
+            if self.exit_orders_cache.get(order.symbol, None):
+                self.exit_orders_cache.pop(order.symbol)
+ 
+            if self.order_id_tick_lookup.get(order.id, None):
+                self.order_id_tick_lookup.pop(order.id)
 
     def add_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
@@ -75,9 +83,10 @@ class OrderManager:
         Args:
             order (OptionOrder): The exit order to be added.
         """
-        self.orders_cache[order.id] = order
-        self.exit_orders_cache[order.symbol] = order
-        self.order_id_tick_lookup[order.id] = option_tick
+        with self.order_lock:
+            self.orders_cache[order.id] = order
+            self.exit_orders_cache[order.symbol] = order
+            self.order_id_tick_lookup[order.id] = option_tick
 
     def get_entry_order(self, symbol: str) -> Optional[OptionOrder]:
         """
@@ -89,7 +98,8 @@ class OrderManager:
         Returns:
             The entry order associated with the symbol, or None if the symbol is not found.
         """
-        return self.entry_orders_cache.get(symbol, None)
+        with self.order_lock:
+            return self.entry_orders_cache.get(symbol, None)
 
 
     def process_trade(self, trade: Trade) -> None:
@@ -169,8 +179,11 @@ class OrderManager:
             # Assign last trade time
             option_tick.last_trade_time = datetime.datetime.now()
             key = f"{order.symbol}_{order.right}"
-            recent_trade_closures[key] = option_tick.last_trade_time
-            logger.info(f"Cooldown recorded for {key} at {recent_trade_closures[key]}")
+            self.recent_trade_closures[key] = option_tick.last_trade_time
+            logger.info(f"Cooldown recorded for {key} at {self.recent_trade_closures[key]}")
+            
+            import BOT
+            BOT.trade_time_dict[key] = option_tick.last_trade_time
 
             # Find the corresponding entry order and deactivate it
             entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
@@ -283,23 +296,50 @@ class OrderManager:
             return
         
         tick.busy = True
+        
+        try:
+            order = tick.active_order
+            
+            # check if exit order is not already placed.
+            if order is None:
+                tick.busy = False
+                return 
 
-        order = tick.active_order
-        # check if exit order is not already placed.
-        if order.exit_placed == True:
-            logger.info(f"{order.option_symbol} EXIT order already placed.")
-            tick.busy = False
-            return
+            if order.exit_placed == True:
+                logger.info(f"{order.option_symbol} EXIT order already placed.")
+                tick.busy = False
+                return
 
-        # check if order is already filled
-        if tick.active_order.order_status == "filled":
-            # check take profit
+            # check if order is already filled
+            if order.order_status != "filled":
+                logger.info(f"{order.option_symbol} Order not filled yet: {order.order_status}")
+                tick.busy = False
+                return
+                
+            # Valdate we have valid price data
+            if tick.last <= 0 and tick.bid <= 0:
+                logger.warning(f"{order.option_symbol} No valid price data available")
+                tick.busy = False
+                return
+                
+            # ✓ ADD THIS: Log comprehensive status every time we check
+            self.log_order_status(order=order, tick=tick)
+            
             self.check_take_profit(tick=tick, order=order, option_tick=tick)
+
+
+            """if tick.active_order.order_status == "filled":
+                # check take profit
+                self.check_take_profit(tick=tick, order=order, option_tick=tick)"""
             
             # check stoploss
-            self.check_stop_loss(last_price=tick.last, order=order, option_tick=tick)
-
-        tick.busy = False
+            if not order.exit_placed:
+                self.check_stop_loss(last_price=tick.last, order=order, option_tick=tick)
+                
+        except Exception as ex:
+            logger.error(f"Error in check_and_close_position for {tick.symbol}: {ex}", exc_info=True)
+        finally:
+            tick.busy = False
 
     def check_take_profit(self, tick: Tick, order: OptionOrder, option_tick: Tick) -> None:
         """
@@ -325,23 +365,74 @@ class OrderManager:
             - If the exit price is above the current profit price, the function updates the order's profit trigger and profit price settings.
         """
         
+        # For SELL orders (closing longs), use BID price if available, else LAST
+        # BID is what you can actually sell at RIGHT NOW
+        if tick.bid > 0 and tick.bid <= tick.last:
+            exit_price = tick.bid
+        else:
+            exit_price = tick.last
+
+        if exit_price <= 0:
+            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={tick.bid}, last={tick.last}")
+            return
+        
+        # Validate prices
+        if option_tick.last == -1 or option_tick.bid == -1:
+            logger.warning(f"@@@@@@@@@@@@@@@@@@@@@@@@@@@ Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+            return
+            
+        # Log current state
+        logger.info(f"TAKE PROFIT CHECK - Order({order.id}) {order.option_symbol}: "
+            f"Exit Price: ${exit_price:.2f}, "
+            f"Bid: ${tick.bid:.2f}, "
+            f"Last: ${tick.last:.2f}, "
+            f"Initial Profit: ${order.profit_price:.2f}, "
+            f"Current Profit: ${order.current_profit_price:.2f}, "
+            f"Trigger Active: {order.profit_trigger}")
+        
         # Use the higher price, bid or last price
-        exit_price = tick.last if tick.last >= tick.bid else tick.bid
+        #exit_price = tick.last if tick.last >= tick.bid else tick.bid
+        #exit_price = option_tick.bid if option_tick.bid <= option_tick.last else option_tick.last
         
         # Log information about the exit price and the order's take profit settings
-        logger.info(f"TAKE PROFIT check_take_profit  Order({order.id}) {order.option_symbol}: Last Price: {tick.last}, Bid Price : {tick.bid}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")
+        #logger.info(f"TAKE PROFIT check_take_profit  Order({order.id}) {order.option_symbol}: Last Price: {tick.last}, Bid Price : {tick.bid}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")
             
-        if order.profit_trigger == True and exit_price <= order.current_profit_price:    
+        """"if order.profit_trigger == True and exit_price <= order.current_profit_price:    
             # If the take profit condition is met, log information about the trigger and close the position
             logger.info(f"HIT TakeProfit: Order({order.id}) {order.option_symbol}: Exit Px: {exit_price}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")
             self.close_position(order=order, option_tick=option_tick)
             return
             
-        if exit_price >= order.current_profit_price:
+        # Calculate next profit target
+        next_profit_target = round(order.current_profit_price + order.profit_increment, 2)
+            
+        if exit_price >= next_profit_target:
             # If the exit price is above the current profit price, update the profit trigger and profit price settings
             order.profit_trigger = True
-            order.current_profit_price = round(order.current_profit_price + order.profit_increment, 2)
-            logger.info(f"00000000000000000000000000000 TakeProfit Triggered: Order({order.id}) {order.option_symbol}: Exit Px: {exit_price}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")
+            old_target = order.current_profit_price
+            order.current_profit_price = next_profit_target
+            logger.info(f"00000000000000000000000000000 TakeProfit Triggered: Order({order.id}) {order.option_symbol}: Exit Px: {exit_price}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")"""
+        
+        # OPTION 2: Trailing profit (your current approach, fixed)
+        # Check if we've reached the profit target
+        if exit_price >= order.current_profit_price:
+            # Price is at or above profit target - set trigger and raise target
+            if not order.profit_trigger:
+                logger.info(f" Profit Trigger ACTIVATED: Order({order.id}) {order.option_symbol}: "
+                           f"${exit_price:.2f} >= ${order.current_profit_price:.2f}")
+        
+            order.profit_trigger = True
+            order.current_profit_price = round(exit_price + order.profit_increment, 2)
+            logger.info(f" Trailing Profit Updated: Next target: ${order.current_profit_price:.2f}")
+            self.db.update(order=order)
+            return
+    
+        # If trigger is active and price has fallen back, close the position
+        if order.profit_trigger and exit_price < (order.current_profit_price - order.profit_increment):
+            logger.info(f"✓ HIT Trailing TakeProfit: Order({order.id}) {order.option_symbol}: "
+                       f"Exit: ${exit_price:.2f} < Trailing: ${order.current_profit_price:.2f}")
+            self.close_position(order=order, option_tick=option_tick)
+            return
 
     def check_stop_loss(self, last_price: float, order: OptionOrder, option_tick: Tick) -> None:
         """
@@ -360,17 +451,42 @@ class OrderManager:
             If so, it closes the position by placing a market order to exit the position. The function takes in the last 
             traded price as well as the option order for which stop loss needs to be checked as arguments.
         """
+        
+        exit_price = option_tick.bid if option_tick.bid > 0 else option_tick.last
+        
+        if exit_price <= 0:
+            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, last={option_tick.last}")
+            return
+        
+        # Validate prices
+        if option_tick.last == -1 or option_tick.bid == -1:
+            logger.warning(f"Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+            return
+            
+        # Log current state
+        logger.info(f"STOPLOSS CHECK - Order({order.id}) {order.option_symbol}: "
+            f"Exit Price: ${exit_price:.2f}, "
+            f"Bid: ${option_tick.bid:.2f}, "
+            f"Last: ${option_tick.last:.2f}, "
+            f"StopLoss: ${order.stoploss_price:.2f}")
+        
         # Use the higher price, bid or last price
-        exit_price = option_tick.last if option_tick.last >= option_tick.bid else option_tick.bid
+        #exit_price = option_tick.last if option_tick.last >= option_tick.bid else option_tick.bid
+        #exit_price = option_tick.bid if option_tick.bid <= option_tick.last else option_tick.last
         
         # Log the current state of the order and the last traded price
-        logger.info(f"STOPLOSS check_stop_loss Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, Last Price: {option_tick.last}, Bid Price: {option_tick.bid}AuxPrice : {order.stoploss_price}")
+        #logger.info(f"STOPLOSS check_stop_loss Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, Last Price: {option_tick.last}, Bid Price: {option_tick.bid}AuxPrice : {order.stoploss_price}")
         
         # If the last traded price is less than or equal to the stoploss price, execute stop loss
         if exit_price <= order.stoploss_price:
             logger.info(f"11111111111111111111111111 HIT Stoploss: Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, AuxPrice: {order.stoploss_price}")
             # close position
             self.close_position(order=order, option_tick=option_tick)
+        
+        # Show distance to stoploss for monitoring
+        distance_to_sl = exit_price - order.stoploss_price
+        distance_pct = (distance_to_sl / order.order_price) * 100 if order.order_price > 0 else 0
+        logger.info(f"Distance to StopLoss: ${distance_to_sl:.2f} ({distance_pct:.1f}% of entry)")
 
     def save_order(self, order: OptionOrder)-> None:
         self.db.put({"item_type": "new", "order": order})
@@ -387,3 +503,38 @@ class OrderManager:
                 filled_orders.append(order)
 
         return filled_orders
+        
+        
+    # Additional helper function for debugging
+    def log_order_status(self, order: OptionOrder, tick: Tick) -> None:
+        """Helper function to log comprehensive order status for debugging"""
+        logger.info(f"""
+        ═══════════════════════════════════════════════════════
+        ORDER STATUS: {order.option_symbol}
+        ═══════════════════════════════════════════════════════
+        Order ID: {order.id}
+        Status: {order.order_status}
+        Side: {order.order_side}
+        Entry Price: ${order.order_price:.2f}
+        Quantity: {order.order_qty}
+        Executed: {order.executed_qty}
+        Avg Price: ${order.average_price:.2f}
+        ───────────────────────────────────────────────────────
+        CURRENT MARKET:
+        Last: ${tick.last:.2f}
+        Bid: ${tick.bid:.2f}
+        Ask: ${tick.ask:.2f}
+        Volume: {tick.volume}
+        ───────────────────────────────────────────────────────
+        PROFIT/LOSS TARGETS:
+        Initial Profit: ${order.profit_price:.2f}
+        Current Profit: ${order.current_profit_price:.2f}
+        Profit Increment: ${order.profit_increment:.2f}
+        Profit Trigger: {order.profit_trigger}
+        StopLoss: ${order.stoploss_price:.2f}
+        ───────────────────────────────────────────────────────
+        P&L:
+        Unrealized: ${(tick.bid - order.average_price) * order.executed_qty * 100:.2f}
+        Unrealized %: {((tick.bid - order.average_price) / order.average_price * 100) if order.average_price > 0 else 0:.2f}%
+        ═══════════════════════════════════════════════════════
+        """)
