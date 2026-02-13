@@ -111,7 +111,7 @@ class DAL:
 
     def insert_order(self, new_order: OptionOrder)-> None:
         try:
-            logger.info(f"insert_order: {new_order}")
+            logger.info(f"insert_order: id={new_order.id} {new_order.symbol} {new_order.right} {new_order.strike} qty={new_order.order_qty} status={new_order.order_status}")
             with self.lock:
                 cursor = self.conn.cursor()
                 cursor.execute('''INSERT INTO option_orders (
@@ -174,7 +174,7 @@ class DAL:
         c.execute("SELECT * FROM option_orders")
         rows = c.fetchall()
 
-        # Create a list of OptionOrder objects from the retrieved rows
+        # Create a list of OptionOrder objects from the retrieved rows (contract not stored in DB)
         option_orders = []
         for row in rows:
             option_order = OptionOrder(
@@ -196,13 +196,13 @@ class DAL:
                 profit_trigger=row[15],
                 current_profit_price=row[16],
                 profit_increment=row[17],
-                # contract=row[18],
+                # contract not in DB; use None; callers must rebuild from symbol/expiration/strike/right when needed
                 exit_placed=row[19],
                 exit_order=row[20],
                 active=row[21],
                 ref_order_id=row[22])
-            logger.info(option_order)
             option_orders.append(option_order)
+        logger.info(f"Loaded {len(option_orders)} orders from DB (these are historical; only active/synced orders are used for trading)")
 
         return option_orders
     

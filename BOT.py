@@ -872,9 +872,10 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
 
     isPreviousNeutralCandles = False
     timeCheck = timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
-    #timeCheck = timeCheckAndCloseProgram()
+    # When running as sidecar (Tauri app), do not exit process; just skip trading
     if timeCheck:
-        sys.exit(0)
+        logger.warning("Time/PnL check: skipping trade (day end or PnL limit); not exiting process")
+        return (False, 0.0, ([0], [0], [0]))
     from datetime import datetime
     toTrade = False
     logger.info("Current NewYork Trade Time is = {}".format(
@@ -882,6 +883,9 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     
     getCandlesData = client.get_bars(stock=Stock, barSize=candleTime, limit=21)
     logger.info("candle Data is = {}".format(getCandlesData))
+    if not getCandlesData or len(getCandlesData) < 2:
+        logger.warning(f"No/insufficient candle data for {Stock}; skipping algo check (historical data may not be ready)")
+        return (False, 0.0, ([0], [0], [0]))
 
     logger.info("\nVWAP_ON_OFF => {}\n".format(VWAP_ON_OFF))
     if onlyAtrCheck == "no":

@@ -315,10 +315,8 @@ class TradingEngine:
                 s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
                 for s in stock_list
             }
+            # Leave empty so first trades are not blocked by cooldown; cooldown applies after actual trades
             BOT.trade_time_dict = {}
-            for s in stock_list:
-                BOT.trade_time_dict[f"{s}_CALL"] = datetime.now()
-                BOT.trade_time_dict[f"{s}_PUT"] = datetime.now()
 
             try:
                 os.chdir(PARENT_DIR)

@@ -275,10 +275,20 @@ class OrderManager:
         orderId = self.api_client.nextOrderId()
         order.exit_placed = True
 
+        # Rebuild contract if missing (e.g. order loaded from DB); required for placeOrder
+        contract = order.contract
+        if contract is None and self.api_client:
+            contract = self.api_client.get_options_contract(
+                symbol=order.symbol, expiry=order.expiration, right=order.right, strike=order.strike
+            )
+        if contract is None:
+            logger.error(f"Close position failed: cannot get contract for order {order.id} {order.symbol}")
+            return
+
         # Create an exit order object and set its attributes
         exit_order = create_order_obj(order_id=orderId, 
                                     symbol=order.symbol,
-                                    contract=order.contract, 
+                                    contract=contract, 
                                     orderType=closing_order.orderType, 
                                     action=action,
                                     totalQuantity=order.executed_qty, 
@@ -294,7 +304,7 @@ class OrderManager:
 
             # Log the closing order details and place the order
             logger.info(f"Close Position: ({orderId}) [{order.id}] {exit_order.option_symbol} {closing_order.orderType} {action} {closing_order.totalQuantity}@MKT")
-            self.api_client.placeOrder(orderId, contract=order.contract, order=closing_order)
+            self.api_client.placeOrder(orderId, contract=contract, order=closing_order)
             self.save_order(order=exit_order)
         except Exception as ex:
             self.del_exit_order(order=exit_order, options_tick=option_tick)
