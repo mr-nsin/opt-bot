@@ -41,6 +41,39 @@ class OrderManager:
         """
         self.api_client = client
 
+    def close_position_by_symbol(self, symbol: str) -> None:
+        """
+        Close an open position by symbol (used by Tauri/sidecar when user clicks Close).
+        Looks up the entry order and optional tick, then calls close_position(order, option_tick).
+        """
+        if not self.api_client or not self.api_client.isConnected():
+            logger.warning("Cannot close position: TWS not connected")
+            return
+        with self.order_lock:
+            order = self.entry_orders_cache.get(symbol) or self.exit_orders_cache.get(symbol)
+        if not order:
+            logger.warning(f"No managed position found for symbol {symbol}")
+            return
+        option_tick = self.order_id_tick_lookup.get(order.id)
+        if option_tick is None:
+            option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
+        self.close_position(order=order, option_tick=option_tick)
+
+    def close_all_positions(self) -> None:
+        """
+        Close all managed open positions (used by Tauri/sidecar when user clicks Close All).
+        """
+        if not self.api_client or not self.api_client.isConnected():
+            logger.warning("Cannot close all positions: TWS not connected")
+            return
+        with self.order_lock:
+            symbols = list(self.entry_orders_cache.keys())
+        for symbol in symbols:
+            try:
+                self.close_position_by_symbol(symbol)
+            except Exception as ex:
+                logger.error(f"Error closing position {symbol}: {ex}", exc_info=True)
+
     def del_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         with self.order_lock:
             if self.orders_cache.get(order.id, None):

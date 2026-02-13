@@ -55,6 +55,15 @@ export function useLicense() {
     checkLicense();
   }, [checkLicense]);
 
+  // Re-validate periodically against registry (revocation / expiry)
+  useEffect(() => {
+    const intervalMs = 4 * 60 * 60 * 1000; // 4 hours
+    const id = setInterval(() => {
+      license.validate().then(setLicenseStatus).catch(() => {});
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, []);
+
   return {
     licenseStatus,
     isLicensed: licenseStatus?.valid ?? false,

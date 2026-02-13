@@ -1,8 +1,14 @@
+import os
 import sqlite3
 from typing import List
 from threading import Thread, Lock
 from queue import Queue
 from common import OptionOrder, logger
+
+# DB path: under project root (where this file lives), so it works when sidecar cwd is trading-engine/
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+_DB_DIR = os.path.join(_PROJECT_ROOT, "db")
+_DB_PATH = os.path.join(_DB_DIR, "orders.db")
 
 
 class DAL:
@@ -30,8 +36,9 @@ class DAL:
         # logs a message to indicate that the function has started
         logger.info("starting handle orders queue")
 
-        # connects to the orders database and initializes it
-        self.conn = sqlite3.connect('db/orders.db')
+        # Ensure db directory exists, then connect
+        os.makedirs(_DB_DIR, exist_ok=True)
+        self.conn = sqlite3.connect(_DB_PATH)
         self.init()
 
         # sets up the initial state of the function

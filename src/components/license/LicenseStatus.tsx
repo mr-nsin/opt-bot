@@ -13,7 +13,7 @@ export function LicenseStatus({ status }: { status: LicenseStatusType }) {
       {status.valid && (
         <div className="text-xs text-muted-foreground flex items-center gap-1.5">
           <Clock className="h-3 w-3" />
-          {status.days_remaining} days remaining
+          <span className="font-medium tabular-nums">{status.days_remaining} days left</span>
           {status.days_remaining <= 7 && <span className="text-amber-500 font-medium">(expiring soon)</span>}
         </div>
       )}

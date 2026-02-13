@@ -44,6 +44,10 @@ class TradingEngine:
         self._db = None
         self._event_queue = None
         self._engine_thread: Optional[threading.Thread] = None
+        self._last_tws_reconnect_attempt: float = 0
+        self._tws_reconnect_interval_sec: float = 10.0
+        self._data_feed_started: bool = False
+        self._event_processor_threads: list = []
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -72,9 +76,23 @@ class TradingEngine:
             return {"status": "started"}
 
         except Exception as e:
-            emit_error(f"Failed to start trading engine: {e}")
+            # Provide a very clear, user-friendly error message for missing IB API
+            msg = str(e)
+            if "No module named 'ibapi'" in msg:
+                human_msg = (
+                    "Python environment is missing the Interactive Brokers API package 'ibapi'. "
+                    "Please install trading-engine dependencies into a Python 3.9–3.11 virtualenv "
+                    "in the 'trading-engine/.venv' folder, then restart the app."
+                )
+                emit_log(human_msg, "ERROR", "system")
+                emit_error(human_msg)
+            else:
+                emit_error(f"Failed to start trading engine: {msg}")
+
+            # Ensure engine is marked idle so the UI doesn't think it's running
             self.running = False
-            raise
+            emit_engine_status("Idle", connected=False)
+            return {"status": "error", "reason": msg}
 
     def stop(self) -> dict:
         """Gracefully stop the trading engine."""
@@ -141,12 +159,11 @@ class TradingEngine:
         return positions
 
     def close_position(self, params: dict) -> dict:
-        """Close a specific position."""
+        """Close a specific position by symbol."""
         symbol = params.get("symbol", "")
         emit_log(f"Close position requested for {symbol}", "INFO", "orders")
-        # Delegate to order manager
-        if self._order_mgr and hasattr(self._order_mgr, 'close_position'):
-            self._order_mgr.close_position(symbol)
+        if self._order_mgr and hasattr(self._order_mgr, 'close_position_by_symbol'):
+            self._order_mgr.close_position_by_symbol(symbol)
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
@@ -187,7 +204,7 @@ class TradingEngine:
             raise
 
     def _init_tws_client(self):
-        """Initialize and connect the TWS API client."""
+        """Initialize and connect the TWS API client. Never raises: on failure we stay disconnected."""
         try:
             from tws_api_client import TwsApiClient
 
@@ -198,6 +215,18 @@ class TradingEngine:
                 event_queue=self._event_queue,
                 callback=self._order_mgr.process_trade if self._order_mgr else None,
             )
+            self._try_connect_tws()
+        except Exception as e:
+            self.connected = False
+            emit_connection_status(False, str(e))
+            emit_log(f"TWS client init failed (engine will run disconnected): {e}", "WARN", "system")
+            # Do not raise: keep engine running so the UI shows "Running" and user sees "TWS Disconnected"
+
+    def _try_connect_tws(self):
+        """Attempt to connect to TWS (used at init and for periodic reconnection)."""
+        if not self._client or not self.config:
+            return
+        try:
             self._client.connect(
                 host=self.config.ip,
                 port=self.config.port,
@@ -213,13 +242,123 @@ class TradingEngine:
             else:
                 self.connected = False
                 emit_connection_status(False, "Failed to connect to TWS")
-                emit_log("TWS connection failed", "ERROR", "system")
-
+                emit_log("TWS connection failed", "WARN", "system")
         except Exception as e:
             self.connected = False
             emit_connection_status(False, str(e))
-            emit_log(f"TWS client init failed: {e}", "ERROR", "system")
-            raise
+            emit_log(f"TWS connect attempt failed: {e}", "DEBUG", "system")
+
+    def _try_reconnect_tws_if_needed(self):
+        """If disconnected, try to reconnect to TWS periodically so starting TWS later is detected."""
+        if self.connected or not self._client or not self.config:
+            return
+        now = time.time()
+        if now - self._last_tws_reconnect_attempt < self._tws_reconnect_interval_sec:
+            return
+        self._last_tws_reconnect_attempt = now
+        try:
+            if hasattr(self._client, "disconnect"):
+                try:
+                    self._client.disconnect()
+                except Exception:
+                    pass
+                time.sleep(0.3)
+            self._try_connect_tws()
+        except Exception as e:
+            emit_log(f"TWS reconnection attempt failed: {e}", "DEBUG", "system")
+
+    def _start_data_feed_and_strategies(self):
+        """Start BOT data feed (TWS subscriptions) and strategy event processors. Run once when connected."""
+        if self._data_feed_started or not self._client or not self.connected or not self.config:
+            return
+        try:
+            import os
+            from datetime import datetime
+            from queue import Empty
+
+            # BOT and init_data_feed expect project root cwd (config.json, expiryStrike.json)
+            orig_cwd = os.getcwd()
+            try:
+                if os.path.isdir(PARENT_DIR):
+                    os.chdir(PARENT_DIR)
+            except Exception:
+                pass
+
+            try:
+                import BOT
+                from common import getExpiry
+            except Exception as e:
+                emit_log(f"Failed to import BOT/common: {e}", "ERROR", "system")
+                emit_error(str(e))
+                try:
+                    os.chdir(orig_cwd)
+                except Exception:
+                    pass
+                return
+
+            # Set BOT globals so init_data_feed and event_processor use our client/queue/config
+            stock_list = list(self.config.stock_list_to_trade.keys()) if self.config.stock_list_to_trade else []
+            if not stock_list:
+                emit_log("No symbols in stock_list_to_trade; skipping data feed", "WARN", "system")
+                return
+
+            BOT.client = self._client
+            BOT.order_mgr = self._order_mgr
+            BOT.event_queue = self._event_queue
+            BOT.stockList = stock_list
+            BOT.fetchValue = getattr(self.config, "fetch_value", "1 D")
+            BOT.candleTime = getattr(self.config, "candle_time", "5 mins")
+            BOT.SUB_ACCOUNT_ID = self.config.account_id or ""
+            BOT.tradeExpiry_val = getExpiry(getattr(self.config, "expiry_to_trade", "next"))
+            BOT.spy_qqq_tradeExpiry = getExpiry(getattr(self.config, "spy_qqq_expiry", "0DTE"))
+            BOT.signal_dict = {
+                s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
+                for s in stock_list
+            }
+            BOT.trade_time_dict = {}
+            for s in stock_list:
+                BOT.trade_time_dict[f"{s}_CALL"] = datetime.now()
+                BOT.trade_time_dict[f"{s}_PUT"] = datetime.now()
+
+            try:
+                os.chdir(PARENT_DIR)
+            except Exception:
+                pass
+
+            try:
+                emit_log("Initializing order requests (positions, PnL)...", "INFO", "system")
+                BOT.init_order_requests()
+                time.sleep(2.0)
+                emit_log("Initializing data feed (historical + options)...", "INFO", "system")
+                BOT.init_data_feed()
+                BOT.dataStrike = BOT.fetch_all_strike_expiries()
+                emit_log("Synchronizing orders...", "INFO", "system")
+                BOT.synchronize_orders()
+            except Exception as e:
+                emit_log(f"Data feed init failed: {e}", "ERROR", "system")
+                emit_error(str(e))
+                return
+            finally:
+                try:
+                    os.chdir(orig_cwd)
+                except Exception:
+                    pass
+
+            # Start event processor threads (consume ticks and run strategies)
+            processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
+            self._event_processor_threads = []
+            for i in range(processor_count):
+                t = threading.Thread(target=BOT.event_processor, args=(self._event_queue, i), daemon=True)
+                t.start()
+                self._event_processor_threads.append(t)
+            emit_log(f"Started {processor_count} strategy event processors", "INFO", "system")
+
+            self._client.initialization_done = True
+            self._data_feed_started = True
+            emit_log("Data feed and strategies started", "INFO", "system")
+        except Exception as e:
+            emit_log(f"Start data feed/strategies failed: {e}", "ERROR", "system")
+            emit_error(str(e))
 
     def _run_engine(self):
         """Main trading loop -- processes events from the TWS client."""
@@ -227,8 +366,28 @@ class TradingEngine:
 
         while self.running:
             try:
-                # Process events from the TWS event queue
-                if self._event_queue and not self._event_queue.empty():
+                # When disconnected, periodically try to connect so starting TWS later is detected
+                self._try_reconnect_tws_if_needed()
+
+                # Sync connection state: client may have reconnected or disconnected
+                if self._client and getattr(self._client, "isConnected", None):
+                    if self._client.isConnected() and not self.connected:
+                        self.connected = True
+                        emit_connection_status(True, "Reconnected to TWS")
+                        emit_log("TWS connection restored", "INFO", "system")
+                    elif not self._client.isConnected() and self.connected:
+                        self.connected = False
+                        self._data_feed_started = False
+                        emit_connection_status(False, "TWS disconnected")
+                        emit_log("TWS disconnected", "WARN", "system")
+
+                # When connected, start data feed and strategy processors once
+                if self.connected and not self._data_feed_started:
+                    self._start_data_feed_and_strategies()
+
+                # Process events from the TWS event queue only when BOT processors are not running
+                # (when _data_feed_started, BOT event_processor threads consume the queue)
+                if not self._data_feed_started and self._event_queue and not self._event_queue.empty():
                     try:
                         event = self._event_queue.get(timeout=0.1)
                         self._process_event(event)

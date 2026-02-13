@@ -264,3 +264,6 @@ trading-engine/**/__pycache__/
 # License files (encrypted)
 *.enc
 license_state.json
+
+# License generator: never commit private key
+license-generator/private_key.pem

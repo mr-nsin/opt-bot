@@ -14,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useConfigStore } from "@/stores/configStore";
+import { useLicense } from "@/hooks/useLicense";
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, path: "/" },
@@ -26,8 +27,10 @@ const navItems = [
 export function Sidebar() {
   const { connectedToTws, status } = useTradingStore();
   const { settings } = useConfigStore();
+  const { licenseStatus } = useLicense();
   const isRunning = status === "Running";
   const isLive = settings.trading_mode === "live";
+  const daysLeft = licenseStatus?.valid ? licenseStatus.days_remaining : null;
 
   return (
     <aside className="w-[220px] bg-sidebar flex flex-col border-r border-sidebar-border shrink-0">
@@ -118,6 +121,15 @@ export function Sidebar() {
             )}
           </div>
         </div>
+
+        {/* License: days left */}
+        {daysLeft !== null && (
+          <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs bg-emerald-500/10 text-emerald-400">
+            <Shield className="h-3.5 w-3.5" />
+            <span className="font-medium tabular-nums">{daysLeft} days left</span>
+            {daysLeft <= 7 && <span className="text-amber-400 text-2xs">(soon)</span>}
+          </div>
+        )}
 
         {/* Trading Mode */}
         <div

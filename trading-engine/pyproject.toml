@@ -1,0 +1,20 @@
+[project]
+name = "opt-bot-trading-engine"
+version = "0.1.0"
+description = "Python sidecar trading engine for QuantDrift OPT_BOT"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "ibapi",
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "yfinance>=0.2",
+    "pytz>=2024.1",
+]
+
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["engine", "protocol"]
+

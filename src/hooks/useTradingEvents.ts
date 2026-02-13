@@ -64,6 +64,24 @@ export function useTradingEvents() {
     }
   });
 
+  // ---- Engine / protocol errors ----
+  useTauriEvent("trading:error", (data: any) => {
+    const message =
+      data?.message ||
+      data?.error?.message ||
+      "Trading engine error. Check Logs for details.";
+
+    setStatus({ Error: message });
+
+    if (settings.show_notifications) {
+      addToast({
+        title: "Trading Engine Error",
+        message,
+        type: "error",
+      });
+    }
+  });
+
   // ---- Trade executed ----
   useTauriEvent("trading:trade_executed", (data: any) => {
     addTrade({

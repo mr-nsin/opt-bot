@@ -7,9 +7,17 @@ use super::hardware_id::get_hardware_id;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Secret key for HMAC signature validation. In production,
-/// this should be more securely embedded.
-const HMAC_SECRET: &[u8] = b"quantdrift-license-hmac-secret-v1-2026";
+/// Default HMAC secret (dev fallback). In production, set LICENSE_HMAC_SECRET
+/// at build or runtime so the secret is not in source.
+const HMAC_SECRET_DEFAULT: &[u8] = b"quantdrift-license-hmac-secret-v1-2026";
+
+fn hmac_secret() -> Vec<u8> {
+    std::env::var("LICENSE_HMAC_SECRET")
+        .ok()
+        .filter(|s| s.len() >= 32)
+        .map(|s| s.into_bytes())
+        .unwrap_or_else(|| HMAC_SECRET_DEFAULT.to_vec())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LicenseFeatures {
@@ -69,7 +77,12 @@ pub enum LicenseError {
     Corrupt(String),
 }
 
-/// Compute the HMAC-SHA256 signature for a license
+/// Compute the HMAC-SHA256 signature for a license (used for local storage).
+/// Uses LICENSE_HMAC_SECRET env var if set (>= 32 chars), else default (dev).
+pub fn compute_signature_for_local(license: &LicenseInfo) -> String {
+    compute_signature(license)
+}
+
 fn compute_signature(license: &LicenseInfo) -> String {
     let data = format!(
         "{}|{}|{}|{}|{}|{}",
@@ -81,10 +94,10 @@ fn compute_signature(license: &LicenseInfo) -> String {
         license.tier,
     );
 
-    let mut mac = HmacSha256::new_from_slice(HMAC_SECRET).expect("HMAC can take key of any size");
+    let secret = hmac_secret();
+    let mut mac = HmacSha256::new_from_slice(&secret).expect("HMAC key valid");
     mac.update(data.as_bytes());
-    let result = mac.finalize();
-    hex::encode(result.into_bytes())
+    hex::encode(mac.finalize().into_bytes())
 }
 
 /// Validate a license fully: signature, hardware, expiry
@@ -107,7 +120,9 @@ pub fn validate_license(license: &LicenseInfo) -> Result<LicenseStatus, LicenseE
         return Err(LicenseError::Expired);
     }
 
-    let days_remaining = (license.expires_at - now).num_days();
+    // num_days() counts full 24h periods, so e.g. 23h left → 0. Show at least 1 day when any time remains.
+    let raw_days = (license.expires_at - now).num_days();
+    let days_remaining = if raw_days == 0 { 1 } else { raw_days };
 
     Ok(LicenseStatus {
         valid: true,

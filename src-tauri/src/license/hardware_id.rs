@@ -1,20 +1,32 @@
 use sha2::{Digest, Sha256};
 use sysinfo::System;
 
+/// Normalize a string for fingerprint: trim, lowercase, collapse whitespace.
+/// Reduces false mismatches from minor hostname/OS display changes.
+fn normalize(s: &str) -> String {
+    s.trim()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Generate a unique hardware fingerprint for this machine.
 /// Combines hostname, CPU brand, total memory, and OS info into a SHA-256 hash.
+/// Bound to one machine: copying the license file to another PC will not work
+/// (different hardware_id and different decryption key).
 pub fn get_hardware_id() -> String {
     let sys = System::new_all();
 
-    let hostname = System::host_name().unwrap_or_else(|| "unknown".into());
+    let hostname = normalize(&System::host_name().unwrap_or_else(|| "unknown".into()));
     let cpu_brand = sys
         .cpus()
         .first()
-        .map(|c| c.brand().to_string())
+        .map(|c| normalize(c.brand()))
         .unwrap_or_else(|| "unknown".into());
     let total_memory = sys.total_memory();
-    let os_name = System::name().unwrap_or_else(|| "unknown".into());
-    let os_version = System::os_version().unwrap_or_else(|| "unknown".into());
+    let os_name = normalize(&System::name().unwrap_or_else(|| "unknown".into()));
+    let os_version = normalize(&System::os_version().unwrap_or_else(|| "unknown".into()));
 
     let fingerprint = format!(
         "{}|{}|{}|{}|{}|quantdrift-salt-v1",
@@ -23,8 +35,7 @@ pub fn get_hardware_id() -> String {
 
     let mut hasher = Sha256::new();
     hasher.update(fingerprint.as_bytes());
-    let result = hasher.finalize();
-    hex::encode(result)
+    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]

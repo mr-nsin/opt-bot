@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { Clock, Moon, Sun } from "lucide-react";
+import { Clock, Moon, Sun, Shield } from "lucide-react";
 import { ModeToggle } from "@/components/common/ModeToggle";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useTheme } from "@/hooks/useTheme";
+import { useLicense } from "@/hooks/useLicense";
 
 export function Header() {
   const { status, totalTrades, dailyPnl } = useTradingStore();
   const { isDark, toggleTheme } = useTheme();
+  const { licenseStatus } = useLicense();
   const [clock, setClock] = useState("");
   const [date, setDate] = useState("");
 
@@ -56,6 +58,18 @@ export function Header() {
           </div>
         )}
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          {licenseStatus?.valid && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <Shield className="h-3.5 w-3.5 text-emerald-500" />
+                <span className="text-muted-foreground/50">License:</span>
+                <span className={licenseStatus.days_remaining <= 7 ? "font-semibold text-amber-500" : "font-mono font-semibold tabular-nums text-emerald-500"}>
+                  {licenseStatus.days_remaining} days left
+                </span>
+              </div>
+              <div className="h-3 w-px bg-border" />
+            </>
+          )}
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground/50">P&L:</span>
             <span className={`font-mono font-semibold tabular-nums ${pnlColor}`}>
