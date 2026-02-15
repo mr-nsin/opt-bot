@@ -32,7 +32,8 @@ pub async fn get_logs(
     let buffer = LOG_BUFFER.lock().await;
     let limit = limit.unwrap_or(200);
 
-    let filtered: Vec<LogEntry> = buffer
+    // Collect last `limit` entries that pass filter, in chronological order (oldest first) so UI shows latest at bottom
+    let mut filtered: Vec<LogEntry> = buffer
         .iter()
         .rev()
         .filter(|log| {
@@ -49,7 +50,7 @@ pub async fn get_logs(
         .take(limit)
         .cloned()
         .collect();
-
+    filtered.reverse();
     Ok(filtered)
 }
 

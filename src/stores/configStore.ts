@@ -20,6 +20,8 @@ const defaultSettings: AppSettings = {
   show_notifications: true,
   auto_start_trading: false,
   log_level: "info",
+  update_interval: 1000,
+  show_charts: true,
 };
 
 export const useConfigStore = create<ConfigState>((set) => ({

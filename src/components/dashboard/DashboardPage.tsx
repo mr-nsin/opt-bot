@@ -1,4 +1,5 @@
 import { LiveStats } from "./LiveStats";
+import { DataFeedStatus } from "./DataFeedStatus";
 import { TradingControls } from "./TradingControls";
 import { TradeParameters } from "./TradeParameters";
 import { RiskManagement } from "./RiskManagement";
@@ -10,6 +11,8 @@ export function DashboardPage() {
   return (
     <div className="space-y-4">
       <LiveStats />
+
+      <DataFeedStatus />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <TradingControls />

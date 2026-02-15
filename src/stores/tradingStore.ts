@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TradingStatus, DailyPnL, SignalEvent, TradeRecord } from "@/lib/types";
+import type { TradingStatus, DailyPnL, SignalEvent, TradeRecord, DataStatus } from "@/lib/types";
 
 interface TradingState {
   status: TradingStatus;
@@ -11,6 +11,8 @@ interface TradingState {
   losingTrades: number;
   lastSignal: SignalEvent | null;
   todayTrades: TradeRecord[];
+  /** Last data feed status (updated every ~10s when engine is running) */
+  dataStatus: DataStatus | null;
 
   // Actions
   setStatus: (status: TradingStatus) => void;
@@ -20,6 +22,7 @@ interface TradingState {
   setTradeStats: (total: number, wins: number, losses: number) => void;
   setLastSignal: (signal: SignalEvent | null) => void;
   addTrade: (trade: TradeRecord) => void;
+  setDataStatus: (data: DataStatus | null) => void;
   reset: () => void;
 }
 
@@ -33,6 +36,7 @@ const initialState = {
   losingTrades: 0,
   lastSignal: null,
   todayTrades: [] as TradeRecord[],
+  dataStatus: null as DataStatus | null,
 };
 
 export const useTradingStore = create<TradingState>((set) => ({
@@ -47,5 +51,6 @@ export const useTradingStore = create<TradingState>((set) => ({
   setLastSignal: (signal) => set({ lastSignal: signal }),
   addTrade: (trade) =>
     set((state) => ({ todayTrades: [trade, ...state.todayTrades].slice(0, 100) })),
+  setDataStatus: (data) => set({ dataStatus: data }),
   reset: () => set(initialState),
 }));

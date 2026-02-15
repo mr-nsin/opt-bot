@@ -4,6 +4,7 @@
 
 @layer base {
   :root {
+    font-size: 14px; /* base so app resolution is readable; overridden by Settings font_size (clamped 12–24) */
     --background: 220 16% 96%;
     --foreground: 224 71% 4%;
     --card: 0 0% 100%;

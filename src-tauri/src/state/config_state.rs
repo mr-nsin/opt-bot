@@ -82,12 +82,12 @@ pub struct TradingConfig {
 impl Default for TradingConfig {
     fn default() -> Self {
         let mut stock_data = HashMap::new();
-        stock_data.insert("SPY".into(), StockConfig { amount: 350.0 });
-        stock_data.insert("QQQ".into(), StockConfig { amount: 350.0 });
+        stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+        stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
 
         let mut stock_list = HashMap::new();
-        stock_list.insert("SPY".into(), "NASDAQ".into());
-        stock_list.insert("QQQ".into(), "NASDAQ".into());
+        stock_list.insert("MNQU5".into(), "CME".into());
+        stock_list.insert("NQU5".into(), "CME".into());
 
         Self {
             profit_increment: 0.03,
@@ -138,6 +138,8 @@ pub struct AppSettings {
     pub show_notifications: bool,
     pub auto_start_trading: bool,
     pub log_level: String,
+    pub update_interval: i32,
+    pub show_charts: bool,
 }
 
 impl Default for AppSettings {
@@ -149,6 +151,8 @@ impl Default for AppSettings {
             show_notifications: true,
             auto_start_trading: false,
             log_level: "info".into(),
+            update_interval: 1000,
+            show_charts: true,
         }
     }
 }
@@ -173,40 +177,241 @@ impl Default for ConfigState {
 // ==========================================
 
 impl ConfigState {
-    /// Load TradingConfig from disk.
-    /// Tries app data dir first, then falls back to legacy ./config.json
-    pub fn load_trading_config() -> Option<TradingConfig> {
-        // Try app data dir first
-        let app_data = crate::utils::paths::app_data_dir();
-        let primary = app_data.join("config.json");
+    /// Paths to try for project config.json (BOT.py source of truth)
+    fn project_config_paths() -> Vec<std::path::PathBuf> {
+        let mut paths = vec![std::path::PathBuf::from("config.json")];
+        if let Ok(cwd) = std::env::current_dir() {
+            paths.push(cwd.join("config.json"));
+            paths.push(cwd.join("..").join("config.json"));
+        }
+        paths
+    }
 
-        if primary.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&primary) {
+    /// Load TradingConfig from disk. Tries project config.json first (BOT.py source of truth), then app data, then legacy.
+    pub fn load_trading_config() -> Option<TradingConfig> {
+        // 1) Try project config.json first so Tauri trades what BOT.py uses
+        for path in Self::project_config_paths() {
+            if !path.exists() {
+                continue;
+            }
+            let path = path.canonicalize().unwrap_or(path);
+            if let Ok(contents) = std::fs::read_to_string(&path) {
                 match serde_json::from_str::<TradingConfig>(&contents) {
-                    Ok(config) => {
-                        log::info!("Loaded config from {:?}", primary);
+                    Ok(mut config) => {
+                        if config.stock_list_to_trade.is_empty() {
+                            config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
+                            config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+                            if config.stock_data.is_empty() {
+                                config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+                                config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                            }
+                            log::info!("Config had no symbols; defaulting to MNQU5, NQU5");
+                        } else {
+                            // Only add missing NQU5/MNQU5 when list already has futures (MNQU5 or NQU5)
+                            let has_mnq = config.stock_list_to_trade.contains_key("MNQU5");
+                            let has_nq = config.stock_list_to_trade.contains_key("NQU5");
+                            if has_mnq && !has_nq {
+                                config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+                                config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                            }
+                            if has_nq && !has_mnq {
+                                config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
+                                config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+                            }
+                        }
+                        log::info!("Loaded config from project {:?} ({} symbols)", path, config.stock_list_to_trade.len());
                         return Some(config);
                     }
-                    Err(e) => log::warn!("Failed to parse config at {:?}: {}", primary, e),
+                    Err(e) => log::warn!("Failed to parse project config at {:?}: {}", path, e),
                 }
             }
         }
 
-        // Fallback to legacy config.json in current directory
-        if let Ok(contents) = std::fs::read_to_string("config.json") {
-            match serde_json::from_str::<TradingConfig>(&contents) {
-                Ok(config) => {
-                    log::info!("Loaded config from legacy ./config.json");
+        // 2) App data dir
+        let app_data = crate::utils::paths::app_data_dir();
+        let primary = app_data.join("config.json");
+        if primary.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&primary) {
+                if let Ok(mut config) = serde_json::from_str::<TradingConfig>(&contents) {
+                    if config.stock_list_to_trade.is_empty() {
+                        config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
+                        config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+                        if config.stock_data.is_empty() {
+                            config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+                            config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                        }
+                    } else {
+                        let has_mnq = config.stock_list_to_trade.contains_key("MNQU5");
+                        let has_nq = config.stock_list_to_trade.contains_key("NQU5");
+                        if has_mnq && !has_nq {
+                            config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+                            config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                        }
+                        if has_nq && !has_mnq {
+                            config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
+                            config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+                        }
+                    }
+                    log::info!("Loaded config from app data {:?} ({} symbols)", primary, config.stock_list_to_trade.len());
                     return Some(config);
                 }
-                Err(e) => log::warn!("Failed to parse legacy config.json: {}", e),
+            }
+        }
+
+        // 3) Legacy ./config.json
+        if let Ok(contents) = std::fs::read_to_string("config.json") {
+            if let Ok(mut config) = serde_json::from_str::<TradingConfig>(&contents) {
+                if config.stock_list_to_trade.is_empty() {
+                    config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
+                    config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+                    if config.stock_data.is_empty() {
+                        config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+                        config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                    }
+                } else {
+                    let has_mnq = config.stock_list_to_trade.contains_key("MNQU5");
+                    let has_nq = config.stock_list_to_trade.contains_key("NQU5");
+                    if has_mnq && !has_nq {
+                        config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+                        config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                    }
+                    if has_nq && !has_mnq {
+                        config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
+                        config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
+                    }
+                }
+                log::info!("Loaded config from legacy ./config.json ({} symbols)", config.stock_list_to_trade.len());
+                return Some(config);
             }
         }
 
         None
     }
 
-    /// Save TradingConfig to app data directory
+    /// Try to load config/settings.json (project-style) and merge into trading config and app settings.
+    /// Paths tried: ./config/settings.json, then app_data_dir/../config/settings.json.
+    /// Merges: trading.symbols -> stock_list_to_trade (CME), broker -> ip/port/client_id,
+    /// trading.daily_profit_limit/loss -> profit_amount_day/loss_amount_day, ui -> settings.
+    pub fn try_merge_settings_file(config: &mut ConfigState) {
+        #[derive(serde::Deserialize)]
+        struct SettingsFile {
+            #[serde(default)]
+            trading: SettingsTrading,
+            #[serde(default)]
+            broker: SettingsBroker,
+            #[serde(default)]
+            ui: SettingsUi,
+        }
+        #[derive(serde::Deserialize, Default)]
+        struct SettingsTrading {
+            #[serde(default)]
+            symbols: Vec<String>,
+            #[serde(default)]
+            daily_profit_limit: Option<f64>,
+            #[serde(default)]
+            daily_loss_limit: Option<f64>,
+            #[serde(default)]
+            mode: String,
+        }
+        #[derive(serde::Deserialize, Default)]
+        struct SettingsBroker {
+            #[serde(default)]
+            host: String,
+            #[serde(default)]
+            port: Option<u16>,
+            #[serde(default)]
+            client_id: Option<i32>,
+        }
+        #[derive(serde::Deserialize, Default)]
+        struct SettingsUi {
+            #[serde(default)]
+            theme: String,
+            #[serde(default)]
+            font_size: Option<i32>,
+            #[serde(default)]
+            update_interval: Option<i32>,
+            #[serde(default)]
+            show_charts: Option<bool>,
+        }
+
+        // Try multiple paths so config/settings.json is found (dev: cwd may be project root or src-tauri)
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        paths.push(std::path::PathBuf::from("config").join("settings.json"));
+        if let Ok(cwd) = std::env::current_dir() {
+            paths.push(cwd.join("config").join("settings.json"));
+            paths.push(cwd.join("..").join("config").join("settings.json"));
+        }
+        paths.push(
+            crate::utils::paths::app_data_dir()
+                .parent()
+                .map(|p| p.join("config").join("settings.json"))
+                .unwrap_or_else(|| std::path::PathBuf::from("config").join("settings.json")),
+        );
+        for path in &paths {
+            if !path.exists() {
+                continue;
+            }
+            let path = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let path_for_log = path.clone();
+            let contents = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let file: SettingsFile = match serde_json::from_str(&contents) {
+                Ok(f) => f,
+                Err(e) => {
+                    log::warn!("Failed to parse config/settings.json at {:?}: {}", path_for_log, e);
+                    continue;
+                }
+            };
+            log::info!("Merging config from {:?}", path_for_log);
+            let c = &mut config.trading;
+            let s = &mut config.settings;
+            // Only overwrite symbols from settings.json when config has none (project config.json wins)
+            if !file.trading.symbols.is_empty() && c.stock_list_to_trade.is_empty() {
+                for sym in &file.trading.symbols {
+                    c.stock_list_to_trade.insert(sym.clone(), "CME".into());
+                }
+                for sym in c.stock_list_to_trade.keys().cloned().collect::<Vec<_>>() {
+                    c.stock_data.entry(sym).or_insert(StockConfig { amount: 350.0 });
+                }
+            }
+            if let Some(v) = file.trading.daily_profit_limit {
+                c.profit_amount_day = v;
+            }
+            if let Some(v) = file.trading.daily_loss_limit {
+                c.loss_amount_day = v;
+            }
+            if !file.broker.host.is_empty() {
+                c.ip = file.broker.host.clone();
+            }
+            if let Some(p) = file.broker.port {
+                c.port = p;
+            }
+            if let Some(id) = file.broker.client_id {
+                c.client_id = id;
+            }
+            if !file.ui.theme.is_empty() {
+                s.theme = file.ui.theme.clone();
+            }
+            if let Some(fs) = file.ui.font_size {
+                // Clamp to readable range so config/settings.json font_size=9 doesn't make UI tiny
+                s.font_size = fs.clamp(12, 24);
+            }
+            if let Some(ui) = file.ui.update_interval {
+                s.update_interval = ui;
+            }
+            if let Some(sc) = file.ui.show_charts {
+                s.show_charts = sc;
+            }
+            if !file.trading.mode.is_empty() {
+                s.trading_mode = file.trading.mode.clone();
+            }
+            return;
+        }
+    }
+
+    /// Save TradingConfig to app data directory (and to project config.json in BOT.py format when writable)
     pub fn save_trading_config(config: &TradingConfig) -> Result<(), String> {
         let app_data = crate::utils::paths::app_data_dir();
         if !app_data.exists() {
@@ -217,7 +422,83 @@ impl ConfigState {
             serde_json::to_string_pretty(config).map_err(|e| format!("Serialize: {}", e))?;
         std::fs::write(&path, json).map_err(|e| format!("Write config: {}", e))?;
         log::info!("Config saved to {:?}", path);
+
+        // Also write to project config.json so BOT.py and UI stay in sync (BOT.py key names)
+        Self::save_trading_config_to_project(config);
         Ok(())
+    }
+
+    /// Write config to project config.json using BOT.py key names (IP, PORT, stockListToTrade, etc.)
+    fn save_trading_config_to_project(config: &TradingConfig) {
+        use serde_json::Value;
+        let stock_data_map: std::collections::BTreeMap<String, Value> = config
+            .stock_data
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!({ "amount": v.amount })))
+            .collect();
+        let stock_list_map: std::collections::BTreeMap<String, Value> = config
+            .stock_list_to_trade
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
+        let bot_json = serde_json::json!({
+            "profit_increment": config.profit_increment,
+            "expiryToTrade": config.expiry_to_trade,
+            "SPY_QQQ_EXPIRY": config.spy_qqq_expiry,
+            "USE_DIFF_EXPIRY_INDEX": config.use_diff_expiry_index,
+            "IP": config.ip,
+            "PORT": config.port,
+            "CLIENTID": config.client_id,
+            "ACCOUNT_ID": config.account_id,
+            "marketStartTime": config.market_start_time,
+            "scriptStartTime": config.script_start_time,
+            "scriptEndTime": config.script_end_time,
+            "VWAP_ON_OFF": config.vwap_on_off,
+            "ORDER_TRANSMIT": config.order_transmit,
+            "USE_TIMER_IN_ORDER": config.use_timer_in_order,
+            "ORDER_EXPIRY_TIMER": config.order_expiry_timer,
+            "CALL_DELTA_CHECK": config.call_delta_check,
+            "PUT_DELTA_CHECK": config.put_delta_check,
+            "VOLUME_CHECK": config.volume_check,
+            "ATR_CHECKS": config.atr_checks,
+            "ACTIVE_VOLUME": config.active_volume,
+            "MAX_CONTRACT_AMOUNT": config.max_contract_amount,
+            "ATR_VALUE": config.atr_value,
+            "SHARE_VOLUME": config.share_volume,
+            "BODY": config.body,
+            "MIDPOINT_OFFSET": config.midpoint_offset,
+            "QUANTITY": config.quantity,
+            "fetchValue": config.fetch_value,
+            "candleTime": config.candle_time,
+            "distance_between_trade": config.distance_between_trade,
+            "AVG_VOLUMNS_CANDLES": config.avg_volumes_candles,
+            "stockData": stock_data_map,
+            "stockListToTrade": stock_list_map,
+            "perDayTrades": config.per_day_trades,
+            "loss_amount_day": config.loss_amount_day,
+            "profit_amount_day": config.profit_amount_day,
+        });
+        let json = match serde_json::to_string_pretty(&bot_json) {
+            Ok(j) => j,
+            Err(e) => {
+                log::warn!("Serialize project config: {}", e);
+                return;
+            }
+        };
+        for path in Self::project_config_paths() {
+            if path.exists() {
+                if std::fs::write(&path, &json).is_ok() {
+                    log::info!("Config saved to project {:?}", path);
+                    return;
+                }
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            let path = cwd.join("config.json");
+            if std::fs::write(&path, &json).is_ok() {
+                log::info!("Config saved to project {:?}", path);
+            }
+        }
     }
 
     /// Load AppSettings from disk
@@ -237,6 +518,28 @@ impl ConfigState {
             }
         }
 
+        None
+    }
+
+    /// Read config/settings.json (project-style) if present; returns raw JSON for UI display.
+    pub fn read_settings_file_raw() -> Option<serde_json::Value> {
+        let mut paths: Vec<std::path::PathBuf> = vec![
+            std::path::PathBuf::from("config").join("settings.json"),
+        ];
+        if let Ok(cwd) = std::env::current_dir() {
+            paths.push(cwd.join("config").join("settings.json"));
+            paths.push(cwd.join("..").join("config").join("settings.json"));
+        }
+        for path in &paths {
+            if !path.exists() {
+                continue;
+            }
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    return Some(v);
+                }
+            }
+        }
         None
     }
 

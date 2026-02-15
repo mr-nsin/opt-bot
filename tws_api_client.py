@@ -159,6 +159,60 @@ class TwsApiClient(EWrapper, EClient):
         self.ticker_contract_cache[contract.symbol] = result
         return result
 
+    # IB futures month code -> number (F=Jan .. Z=Dec)
+    _FUT_MONTH = {"F": "01", "G": "02", "H": "03", "J": "04", "K": "05", "M": "06",
+                  "N": "07", "Q": "08", "U": "09", "V": "10", "X": "11", "Z": "12"}
+
+    def get_futures_contract(self, symbol: str, exchange: str = "CME"):
+        """Build a FUT contract for symbols like NQU5, MNQU5 (root + month letter + year digit).
+        If the parsed expiry is in the past (e.g. NQU5 = Sep 2025 when we're in 2026), use next front-quarter expiry
+        so TWS will stream data (expired contracts get no ticks)."""
+        contract = Contract()
+        contract.secType = "FUT"
+        contract.exchange = exchange
+        contract.currency = "USD"
+        # Parse e.g. NQU5 -> root=NQ, month=U (Sep), year=5 (2025) -> 202509
+        if len(symbol) >= 4 and symbol[-1].isdigit() and symbol[-2].isalpha():
+            year_digit = symbol[-1]
+            month_letter = symbol[-2].upper()
+            root = symbol[:-2]
+            year = "202" + year_digit if year_digit in "456789" else "203" + year_digit  # 5->2025, 0->2030
+            month = self._FUT_MONTH.get(month_letter, "01")
+            expiry_ym = int(year + month)
+            # If expiry is in the past, use next CME quarter (Mar/Jun/Sep/Dec) so we get live data
+            now = datetime.utcnow()
+            current_ym = now.year * 100 + now.month
+            if expiry_ym < current_ym:
+                quarters = [3, 6, 9, 12]  # CME NQ/MNQ quarterly
+                y, m = now.year, now.month
+                next_q = None
+                for q in quarters:
+                    if y * 100 + q > current_ym:
+                        next_q = (y, q)
+                        break
+                if next_q is None:
+                    next_q = (y + 1, 3)
+                year, month = str(next_q[0]), f"{next_q[1]:02d}"
+                contract.symbol = root
+                contract.lastTradeDateOrContractMonth = f"{year}{month}"
+                logger.info(f"Futures {symbol} expiry was in the past; using front quarter {year}{month}")
+            else:
+                contract.symbol = root
+                contract.lastTradeDateOrContractMonth = f"{year}{month}"
+        else:
+            contract.symbol = symbol
+            contract.lastTradeDateOrContractMonth = ""
+        contract.localSymbol = symbol  # display symbol for UI (e.g. MNQU5)
+        try:
+            result = self.get_contract_detail(contract=contract)
+            cache_key = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}"
+            self.ticker_contract_cache[cache_key] = result
+            return result
+        except Exception as e:
+            logger.warning(f"get_futures_contract detail for {symbol} failed: {e}, using unresolved contract")
+            self.ticker_contract_cache[getattr(contract, "symbol", symbol) + getattr(contract, "lastTradeDateOrContractMonth", "")] = contract
+            return contract
+
     def get_options_contract(self, symbol, expiry, right, strike, exchange= "SMART", currency="USD", multiplier = 100):
         contract = Contract()
         contract.symbol = symbol
@@ -245,6 +299,8 @@ class TwsApiClient(EWrapper, EClient):
         ticker = contract.symbol
         if contract.secType == "OPT":
             ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+        elif contract.secType == "FUT":
+            ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
         
         # check if contract is already subscribed.
         # ticker_id = self.ticker_id_contract_cache.get(contract.conId, None)
@@ -261,6 +317,7 @@ class TwsApiClient(EWrapper, EClient):
             if contract.secType == "OPT":
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract, option_symbol=ticker)
             else:
+                # STK/FUT: display symbol for logs (FUT: use original e.g. NQU5)
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract)
         else:
             if snapshot == False:
@@ -310,6 +367,8 @@ class TwsApiClient(EWrapper, EClient):
         ticker = contract.symbol
         if contract.secType == "OPT":
             ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+        elif contract.secType == "FUT":
+            ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
 
         # ticker_id: TickerId = self.ticker_id_contract_cache.get(contract.conId, None)
         ticker_id: TickerId = self.ticker_id_contract_cache.get(ticker, None)
@@ -331,6 +390,8 @@ class TwsApiClient(EWrapper, EClient):
         # If the security type is an option, create a unique ticker symbol by combining the symbol, last trade date, right and strike
         if contract.secType == "OPT":
             ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+        elif contract.secType == "FUT":
+            ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
             
         # Check if the ticker is in the ticker ID to contract cache
         ticker_id: TickerId = self.ticker_id_contract_cache.get(ticker, None)

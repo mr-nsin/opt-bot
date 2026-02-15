@@ -17,6 +17,15 @@
       "expires_at": "2026-02-14T16:18:39Z",
       "tier": "pro",
       "signature": "1471993a01024f559e0c44cca3af6d8887d1030a9e360469fbb31d913c5ff57ee65cca397386004dae2ba41a7f4d7064dd3b9c63928355d54b657ea873cdf306"
+    },
+    {
+      "license_key": "BM42-GNRN-HS93-AB9T",
+      "email": "singhal.nitin108@gmail.com",
+      "hardware_id": "70bcde0f3e9893bcc8b5bddbc74ed7deb5a6baaaba5ed188965d1ed1b69752a2",
+      "issued_at": "2026-02-15T03:32:53Z",
+      "expires_at": "2026-02-16T03:32:53Z",
+      "tier": "pro",
+      "signature": "3f987da0719559be7d8b595bcdeb2a469f5eee32fde3b9be15c451adefb22c43e42fea79bf846c05cce295b10d8fc14904012c5594e0fed9549b5a80e44bbf05"
     }
   ]
 }

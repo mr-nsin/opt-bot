@@ -28,8 +28,33 @@ function AppContent() {
   useEffect(() => {
     const initialize = async () => {
       try {
-        const tradingConfig = await config.get();
-        setTradingConfig(tradingConfig);
+        let tradingConfig = await config.get();
+        const list = tradingConfig?.stock_list_to_trade || {};
+        const symbols = Object.keys(list);
+        const defaultFutures = { MNQU5: "CME", NQU5: "CME" };
+        const defaultData = { MNQU5: { amount: 350 }, NQU5: { amount: 350 } };
+        if (!symbols.length) {
+          tradingConfig = {
+            ...tradingConfig,
+            stock_list_to_trade: { ...defaultFutures },
+            stock_data: { ...(tradingConfig?.stock_data || {}), ...defaultData },
+          };
+          setTradingConfig(tradingConfig);
+          await config.save(tradingConfig);
+        } else {
+          // Ensure both default futures (MNQU5, NQU5) are present when either is present
+          const needNQU5 = list["MNQU5"] !== undefined && list["NQU5"] === undefined;
+          const needMNQU5 = list["NQU5"] !== undefined && list["MNQU5"] === undefined;
+          if (needNQU5 || needMNQU5) {
+            const nextList = { ...list, ...(needNQU5 && { NQU5: "CME" }), ...(needMNQU5 && { MNQU5: "CME" }) };
+            const nextData = { ...(tradingConfig?.stock_data || {}), ...(needNQU5 && { NQU5: { amount: 350 } }), ...(needMNQU5 && { MNQU5: { amount: 350 } }) };
+            tradingConfig = { ...tradingConfig, stock_list_to_trade: nextList, stock_data: nextData };
+            setTradingConfig(tradingConfig);
+            await config.save(tradingConfig);
+          } else {
+            setTradingConfig(tradingConfig);
+          }
+        }
       } catch (err) {
         console.warn("Failed to load trading config, using defaults:", err);
       }
@@ -55,9 +80,10 @@ function AppContent() {
     initialize();
   }, [setTradingConfig, setSettings, setLogs]);
 
-  // Apply font size setting to the document root
+  // Apply font size setting to the document root (clamp so UI never looks too small or large)
   useEffect(() => {
-    document.documentElement.style.fontSize = `${settings.font_size}px`;
+    const size = Math.max(12, Math.min(24, settings.font_size));
+    document.documentElement.style.fontSize = `${size}px`;
   }, [settings.font_size]);
 
   return (

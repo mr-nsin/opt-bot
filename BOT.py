@@ -1849,54 +1849,57 @@ def init_data_feed():
             logger.info("TWS not connected.")
             return
 
-        # Create a list of stock contracts
+        # STK = stocks, FUT = futures (e.g. MNQU5, NQU5), OPT = options (calls/puts on STK underlyings).
+        stock_list_to_trade = globals().get("stock_list_to_trade", None) or {}
+        logger.info(f"Subscribing to underlyings: {stockList}. Then options (OPT) on stocks for strategy.")
+
+        # Create a list of underlying contracts (STK or FUT)
         stock_contracts = []
         for symbol in stockList:
-            stock_contract = client.get_stock_contract(symbol)
+            exchange = stock_list_to_trade.get(symbol, "SMART")
+            is_future = (exchange == "CME") or (len(symbol) >= 4 and symbol[-1].isdigit() and symbol[-2].isalpha())
+            if is_future:
+                stock_contract = client.get_futures_contract(symbol, exchange)
+            else:
+                stock_contract = client.get_stock_contract(symbol)
             stock_contracts.append(stock_contract)
 
-        # Subscribe to the historical data for each stock
+        # Subscribe to live and historical data for each underlying
         for stock_contract in stock_contracts:
             client.subscribe(contract=stock_contract)
             client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize=candleTime)
-            # client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="3 mins")
-            #client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="5 mins")
-            #client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize="15 mins")
-
         time.sleep(3.0)
 
-        # Generate the strikes_map for each stock
-        strikes_map = get_strikes_map(stock_list=stockList)
+        # Build strikes_map only for stocks (options chain); futures have no options in this flow
+        stock_only_list = [c.symbol for c in stock_contracts if getattr(c, "secType", "") == "STK"]
+        strikes_map = get_strikes_map(stock_list=stock_only_list) if stock_only_list else {}
         with open("expiryStrike.json", "w",  encoding="utf-8") as fp:
             json.dump(strikes_map, fp)
 
-        # Create a list of options contracts
+        # Create and subscribe to options contracts only for STK underlyings
         options_contracts = []
         for stock_contract in stock_contracts:
+            if getattr(stock_contract, "secType", "") != "STK":
+                continue
             market_data = client.get_data(contract=stock_contract)
-
-            # Select the strikes nearest to the underlying price
+            if not market_data or stock_contract.symbol not in strikes_map:
+                continue
             strikes = strikes_map[stock_contract.symbol]["Strike"]
             logger.info(f"{stock_contract.symbol} UNDERLYING PRICE IS = {market_data.last}")
             ls, hs = get10StrikesNearUnderlying(strikeList=strikes, undPrc=market_data.last, range_limit=4)
             selected_strikes = ls + hs
 
-            # Create call and put options contracts for each selected strike
             for strike in selected_strikes:
                 tradeExpiry = tradeExpiry_val
                 if "spy" in stock_contract.symbol.lower() or "qqq" in stock_contract.symbol.lower():
                     tradeExpiry = spy_qqq_tradeExpiry
                 call_option = client.get_options_contract(stock_contract.symbol, tradeExpiry, "C", strike)
                 put_option = client.get_options_contract(stock_contract.symbol, tradeExpiry, "P", strike)
-
-                # Subscribe to the snapshot data for each option contract
                 client.subscribe(contract=call_option, snapshot=True)
                 client.subscribe(contract=put_option, snapshot=True)
                 options_contracts.extend((call_option, put_option))
-        
-        time.sleep(10)
 
-        # # Subscribe to the live data for each option contract
+        time.sleep(10)
         for contract in options_contracts:
             client.subscribe(contract=contract)
     except Exception as ex:

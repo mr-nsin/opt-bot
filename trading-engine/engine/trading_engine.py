@@ -25,6 +25,7 @@ from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
     emit_pnl, emit_position, emit_signal, emit_trade_executed,
     emit_trade_closed, emit_order_update, emit_error,
+    emit_data_status,
 )
 from engine.models import TradingConfig
 
@@ -48,6 +49,8 @@ class TradingEngine:
         self._tws_reconnect_interval_sec: float = 10.0
         self._data_feed_started: bool = False
         self._event_processor_threads: list = []
+        self._last_data_status_time: float = 0
+        self._data_status_interval_sec: float = 10.0
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -55,9 +58,10 @@ class TradingEngine:
             return {"status": "already_running"}
 
         try:
-            # Parse configuration
+            # Parse configuration (symbols come from UI – sidecar subscribes to these)
             self.config = TradingConfig.from_dict(config_data)
-            emit_log(f"Configuration loaded: {len(self.config.stock_list_to_trade)} symbols")
+            sym_list = list(self.config.stock_list_to_trade.keys()) if self.config.stock_list_to_trade else []
+            emit_log(f"Configuration loaded: {len(sym_list)} symbols from UI: {', '.join(sym_list) or '(none)'}")
 
             # Initialize components
             self._event_queue = Queue()
@@ -301,11 +305,16 @@ class TradingEngine:
             if not stock_list:
                 emit_log("No symbols in stock_list_to_trade; skipping data feed", "WARN", "system")
                 return
+            exchanges = list(self.config.stock_list_to_trade.values()) if self.config.stock_list_to_trade else []
+            all_futures = len(exchanges) > 0 and all(e == "CME" for e in exchanges)
+            mode = "FUT (futures only)" if all_futures else "OPT (stocks + options chain)"
+            emit_log(f"Trading mode: {mode} for symbols: {', '.join(stock_list)}", "INFO", "system")
 
             BOT.client = self._client
             BOT.order_mgr = self._order_mgr
             BOT.event_queue = self._event_queue
             BOT.stockList = stock_list
+            BOT.stock_list_to_trade = getattr(self.config, "stock_list_to_trade", None) or {s: "SMART" for s in stock_list}
             BOT.fetchValue = getattr(self.config, "fetch_value", "1 D")
             BOT.candleTime = getattr(self.config, "candle_time", "5 mins")
             BOT.SUB_ACCOUNT_ID = self.config.account_id or ""
@@ -329,6 +338,8 @@ class TradingEngine:
                 time.sleep(2.0)
                 emit_log("Initializing data feed (historical + options)...", "INFO", "system")
                 BOT.init_data_feed()
+                # Log what underlyings (STK/FUT) were received from TWS so user sees data is working (like BOT.py)
+                self._log_tws_underlyings_received()
                 BOT.dataStrike = BOT.fetch_all_strike_expiries()
                 emit_log("Synchronizing orders...", "INFO", "system")
                 BOT.synchronize_orders()
@@ -357,6 +368,47 @@ class TradingEngine:
         except Exception as e:
             emit_log(f"Start data feed/strategies failed: {e}", "ERROR", "system")
             emit_error(str(e))
+
+    def _log_tws_underlyings_received(self):
+        """Log each underlying (STK/FUT) and its price from TWS tick cache so user sees data was fetched (OPT bot: underlyings feed options)."""
+        if self._client is None:
+            return
+        try:
+            raw_cache = getattr(self._client, "tick_cache", None) or {}
+            lock = getattr(self._client, "_lock", None)
+            rows = []
+
+            def collect():
+                for tick in raw_cache.values():
+                    c = getattr(tick, "contract", None)
+                    if not c:
+                        continue
+                    stype = getattr(c, "secType", "") or ""
+                    if stype not in ("STK", "FUT"):
+                        continue
+                    sym = getattr(c, "localSymbol", "") or getattr(c, "symbol", "") or ""
+                    last = getattr(tick, "last", -1)
+                    bid = getattr(tick, "bid", -1)
+                    ask = getattr(tick, "ask", -1)
+                    rows.append((sym, last, bid, ask))
+
+            if lock is not None:
+                with lock:
+                    collect()
+            else:
+                collect()
+
+            if rows:
+                emit_log("TWS data received (underlyings for OPT):", "INFO", "system")
+                for sym, last, bid, ask in rows:
+                    l = last if last not in (-1, None) else "—"
+                    b = bid if bid not in (-1, None) else "—"
+                    a = ask if ask not in (-1, None) else "—"
+                    emit_log(f"  {sym}: last={l} bid={b} ask={a}", "INFO", "system")
+            else:
+                emit_log("TWS data: no underlyings in cache yet; prices may arrive in a few seconds.", "INFO", "system")
+        except Exception as e:
+            emit_log(f"Log TWS underlyings failed: {e}", "WARN", "system")
 
     def _run_engine(self):
         """Main trading loop -- processes events from the TWS client."""
@@ -396,6 +448,12 @@ class TradingEngine:
                 if self._client and self.connected:
                     self._emit_pnl_update()
 
+                # Every 10s: emit data status so user can see what is being fetched
+                now = time.time()
+                if now - self._last_data_status_time >= self._data_status_interval_sec:
+                    self._last_data_status_time = now
+                    self._emit_data_status()
+
                 time.sleep(0.05)  # 50ms loop
 
             except Exception as e:
@@ -425,3 +483,200 @@ class TradingEngine:
                         )
         except Exception:
             pass  # Silently skip P&L errors
+
+    def _emit_data_status(self):
+        """Emit a snapshot of what data is being fetched (every ~10s) so the user can see if anything is running."""
+        try:
+            symbols = []
+            if self.config and self.config.stock_list_to_trade:
+                symbols = list(self.config.stock_list_to_trade.keys())
+
+            queue_size = 0
+            if self._event_queue is not None:
+                try:
+                    queue_size = self._event_queue.qsize()
+                except Exception:
+                    pass
+
+            tick_count = 0
+            stk_count = 0
+            fut_count = 0
+            opt_count = 0
+            stock_ticks = []
+            symbol_last = {}  # symbol -> last price (or absent); used for log line
+            stk_full = []     # full TWS data per STK/FUT symbol for logging
+            opt_sample = []   # sample of OPT (options) data received for logging (OPT bot)
+            bar_count = 0
+
+            if self._client is not None:
+                try:
+                    # Snapshot tick data under lock (TWS updates tick_cache from another thread)
+                    raw_cache = getattr(self._client, "tick_cache", None) or {}
+                    tick_count = len(raw_cache)
+                    stk_snapshot = []  # list of (symbol, last, bid, ask, close, volume) for STK/FUT
+                    lock = getattr(self._client, "_lock", None)
+
+                    def capture_stk(tick):
+                        c = getattr(tick, "contract", None)
+                        if not c:
+                            return
+                        stype = getattr(c, "secType", None) or ""
+                        if stype not in ("STK", "FUT"):
+                            return
+                        # Use localSymbol for display (e.g. MNQU5) when present, else symbol
+                        sym = getattr(c, "localSymbol", "") or getattr(c, "symbol", "") or getattr(tick, "symbol", "")
+                        last = getattr(tick, "last", -1)
+                        bid = getattr(tick, "bid", -1)
+                        ask = getattr(tick, "ask", -1)
+                        close = getattr(tick, "close", -1)
+                        vol = getattr(tick, "volume", -1)
+                        stk_snapshot.append((sym, last, bid, ask, close, vol))
+                        stk_full.append({
+                            "symbol": sym,
+                            "last": last, "bid": bid, "ask": ask, "close": close, "volume": vol,
+                        })
+
+                    def capture_opt(tick):
+                        c = getattr(tick, "contract", None)
+                        if not c:
+                            return
+                        if getattr(c, "secType", "") != "OPT":
+                            return
+                        # Readable OPT label: symbol expiry right strike (e.g. SPY 20250221C450)
+                        sym = getattr(c, "symbol", "") or ""
+                        exp = getattr(c, "lastTradeDateOrContractMonth", "") or ""
+                        right = getattr(c, "right", "") or ""
+                        strike = getattr(c, "strike", 0) or 0
+                        label = f"{sym} {exp}{right[0] if right else ''}{strike}"
+                        last = getattr(tick, "last", -1)
+                        bid = getattr(tick, "bid", -1)
+                        ask = getattr(tick, "ask", -1)
+                        opt_sample.append({"label": label, "last": last, "bid": bid, "ask": ask})
+
+                    if lock is not None:
+                        with lock:
+                            for tick in raw_cache.values():
+                                try:
+                                    stype = getattr(getattr(tick, "contract", None), "secType", "") or ""
+                                    if stype == "STK":
+                                        stk_count += 1
+                                    elif stype == "OPT":
+                                        opt_count += 1
+                                        capture_opt(tick)
+                                    elif stype == "FUT":
+                                        fut_count += 1
+                                    capture_stk(tick)
+                                except Exception:
+                                    pass
+                    else:
+                        for tick in raw_cache.values():
+                            try:
+                                stype = getattr(getattr(tick, "contract", None), "secType", "") or ""
+                                if stype == "STK":
+                                    stk_count += 1
+                                elif stype == "OPT":
+                                    opt_count += 1
+                                    capture_opt(tick)
+                                elif stype == "FUT":
+                                    fut_count += 1
+                                capture_stk(tick)
+                            except Exception:
+                                pass
+                    # Limit OPT sample so log is readable (OPT bot: show options data is flowing)
+                    opt_sample = opt_sample[:15]
+                    # Build symbol -> price; use bid/ask when last not set (TWS often sends bid/ask before last)
+                    symbol_last = {}
+                    for sym, last, bid, ask, _close, _vol in stk_snapshot:
+                        if not sym:
+                            continue
+                        price = None
+                        if last != -1 and last is not None:
+                            price = round(float(last), 2)
+                        elif bid not in (-1, None) and ask not in (-1, None):
+                            price = round((float(bid) + float(ask)) / 2, 2)
+                        elif ask not in (-1, None):
+                            price = round(float(ask), 2)
+                        elif bid not in (-1, None):
+                            price = round(float(bid), 2)
+                        if price is not None:
+                            symbol_last[sym] = price
+                        elif sym not in symbol_last:
+                            symbol_last[sym] = None
+                    # Ordered list for event (symbols from config first, then any extra)
+                    for sym in symbols:
+                        if sym in symbol_last and symbol_last[sym] is not None:
+                            stock_ticks.append({"symbol": sym, "last": symbol_last[sym]})
+                    for sym, last in symbol_last.items():
+                        if last is not None and sym not in symbols:
+                            stock_ticks.append({"symbol": sym, "last": last})
+                    stock_ticks = stock_ticks[:15]
+                except Exception:
+                    pass
+                try:
+                    history_cache = getattr(self._client, "history_cache", None) or {}
+                    bar_count = len(history_cache)
+                except Exception:
+                    pass
+
+            emit_data_status(
+                connected=self.connected,
+                data_feed_started=self._data_feed_started,
+                symbols=symbols,
+                queue_size=queue_size,
+                tick_count=tick_count,
+                stock_ticks=stock_ticks,
+                bar_count=bar_count,
+            )
+
+            # Log one-line summary with latest price per configured symbol (or "—" if no tick yet)
+            feed = "yes" if self._data_feed_started else "no"
+            stk_opt = f" ({stk_count} STK, {fut_count} FUT, {opt_count} OPT)" if (stk_count or opt_count or fut_count) else ""
+            summary = (
+                f"Data status: TWS={self.connected}, feed={feed}, symbols={len(symbols)}, "
+                f"queue={queue_size}, ticks={tick_count}{stk_opt}, bars={bar_count}"
+            )
+            if symbols:
+                price_parts = [f"{sym}={symbol_last.get(sym) if symbol_last.get(sym) is not None else '—'}" for sym in symbols[:12]]
+                summary += " | Latest prices: " + ", ".join(price_parts)
+            elif stock_ticks:
+                sample = ", ".join(f"{t['symbol']}={t['last']}" for t in stock_ticks[:10])
+                summary += f" | Latest prices: {sample}"
+            else:
+                summary += " | Latest prices: (waiting for ticks)"
+            emit_log(summary, "INFO", "system")
+
+            # Log TWS data received: underlyings (STK/FUT) and options (OPT) so user sees data is working
+            if stk_full:
+                emit_log("TWS data (underlyings):", "INFO", "system")
+                for d in stk_full:
+                    emit_log(
+                        f"  {d['symbol']}: last={d['last']} bid={d['bid']} ask={d['ask']} close={d['close']} volume={d['volume']}",
+                        "INFO", "system"
+                    )
+            if opt_sample:
+                emit_log("TWS data (options sample):", "INFO", "system")
+                for o in opt_sample:
+                    emit_log(
+                        f"  {o['label']}: last={o['last']} bid={o['bid']} ask={o['ask']}",
+                        "INFO", "system"
+                    )
+            if not stk_full and not opt_sample:
+                if stk_count == 0 and fut_count == 0 and opt_count == 0:
+                    emit_log(
+                        f"TWS data: no subscriptions in cache (ticks={tick_count}). "
+                        "Ensure Symbols to trade were sent from UI (e.g. SPY, QQQ for OPT; MNQU5, NQU5 for FUT).",
+                        "INFO", "system"
+                    )
+                elif stk_count == 0 and fut_count == 0:
+                    emit_log(
+                        f"TWS data: {opt_count} OPT subscribed but no underlyings (STK/FUT) in cache. "
+                        "OPT bot needs underlyings (stocks) for options chain; add symbols like SPY, QQQ.",
+                        "INFO", "system"
+                    )
+                else:
+                    emit_log(
+                        f"TWS data: {stk_count} STK, {fut_count} FUT subscribed but no prices received yet (bid/ask/last still -1). TWS may send them shortly.",
+                        "INFO", "system"
+                    )
+        except Exception as e:
+            emit_log(f"Data status error: {e}", "WARN", "system")

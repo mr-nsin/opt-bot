@@ -121,3 +121,25 @@ def emit_error(message: str, code: int = -1):
         "message": message,
         "timestamp": datetime.now().isoformat(),
     })
+
+
+def emit_data_status(
+    connected: bool,
+    data_feed_started: bool,
+    symbols: list,
+    queue_size: int,
+    tick_count: int,
+    stock_ticks: list,
+    bar_count: int,
+):
+    """Emit a periodic snapshot of what data is being fetched (every ~10s)."""
+    send_event("data_status", {
+        "timestamp": datetime.now().isoformat(),
+        "connected": connected,
+        "data_feed_started": data_feed_started,
+        "symbols": symbols,
+        "event_queue_size": queue_size,
+        "tick_subscriptions": tick_count,
+        "stock_ticks_sample": stock_ticks,
+        "history_bars_count": bar_count,
+    })

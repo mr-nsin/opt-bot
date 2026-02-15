@@ -22,9 +22,21 @@ export const useLogStore = create<LogState>((set) => ({
   autoScroll: true,
 
   addLog: (entry) =>
-    set((state) => ({
-      logs: [...state.logs, entry].slice(-500), // Keep last 500 logs
-    })),
+    set((state) => {
+      // Dedupe: avoid duplicate lines (e.g. same event delivered twice or from Rust buffer + event)
+      const prev = state.logs[state.logs.length - 1];
+      if (
+        prev &&
+        prev.timestamp === entry.timestamp &&
+        prev.message === entry.message &&
+        prev.category === entry.category
+      ) {
+        return state;
+      }
+      return {
+        logs: [...state.logs, entry].slice(-500), // Keep last 500 logs
+      };
+    }),
   setLogs: (logs) => set({ logs }),
   clearLogs: () => set({ logs: [] }),
   setFilterLevel: (level) => set({ filterLevel: level }),

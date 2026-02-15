@@ -81,7 +81,7 @@
     "theme": "dark",
     "update_interval": 1000,
     "show_charts": true,
-    "font_size": 9,
+    "font_size": 14,
     "animation_duration": 300,
     "smooth_transitions": true
   },

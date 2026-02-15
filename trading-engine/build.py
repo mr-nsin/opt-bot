@@ -14,7 +14,8 @@ ROOT_DIR = os.path.dirname(SCRIPT_DIR)
 
 
 def get_target_triple():
-    """Get the Tauri-compatible target triple for the current platform."""
+    """Get the Tauri-compatible target triple for the current platform.
+    On Windows, PyInstaller will add .exe to the output name automatically."""
     machine = platform.machine().lower()
     system = platform.system().lower()
 
@@ -53,9 +54,10 @@ def build():
         "pytz",
     ]
 
-    # Also include the existing project modules
+    # Also include the existing project modules (BOT.py required by trading_engine)
     data_additions = [
         f"{ROOT_DIR}/common.py{os.pathsep}.",
+        f"{ROOT_DIR}/BOT.py{os.pathsep}.",
         f"{ROOT_DIR}/tws_api_client.py{os.pathsep}.",
         f"{ROOT_DIR}/order_manager.py{os.pathsep}.",
         f"{ROOT_DIR}/data_access.py{os.pathsep}.",

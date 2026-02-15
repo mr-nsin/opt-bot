@@ -46,3 +46,9 @@ pub async fn save_settings(
 
     Ok("Settings saved".into())
 }
+
+/// Read config/settings.json from project if present (trading, strategy, databento, etc.) for UI display.
+#[tauri::command]
+pub async fn get_settings_file() -> Result<Option<serde_json::Value>, String> {
+    Ok(ConfigState::read_settings_file_raw())
+}

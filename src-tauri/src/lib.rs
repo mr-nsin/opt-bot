@@ -40,6 +40,7 @@ pub fn run() {
             commands::config::save_config,
             commands::config::get_settings,
             commands::config::save_settings,
+            commands::config::get_settings_file,
             // Position commands
             commands::positions::get_positions,
             commands::positions::close_position,
@@ -77,6 +78,9 @@ pub fn run() {
                     }
                     None => log::info!("No saved settings found, using defaults"),
                 }
+
+                // Merge config/settings.json (project-style) if present (symbols, broker, limits, ui)
+                ConfigState::try_merge_settings_file(&mut app_state.config);
             }
 
             // ---- Spawn async initialization tasks ----

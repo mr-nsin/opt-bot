@@ -18,6 +18,7 @@ export function useTradingEvents() {
     setTradeStats,
     setLastSignal,
     addTrade,
+    setDataStatus,
   } = useTradingStore();
   const { settings } = useConfigStore();
   const { addLog } = useLogStore();
@@ -46,6 +47,22 @@ export function useTradingEvents() {
       category: data.category || "trading",
       message: data.message || "",
     });
+  });
+
+  // ---- Data feed status (every ~10s when running) ----
+  useTauriEvent("trading:data_status", (data: any) => {
+    if (data && typeof data.connected === "boolean") {
+      setDataStatus({
+        timestamp: data.timestamp || new Date().toISOString(),
+        connected: data.connected,
+        data_feed_started: !!data.data_feed_started,
+        symbols: Array.isArray(data.symbols) ? data.symbols : [],
+        event_queue_size: typeof data.event_queue_size === "number" ? data.event_queue_size : 0,
+        tick_subscriptions: typeof data.tick_subscriptions === "number" ? data.tick_subscriptions : 0,
+        stock_ticks_sample: Array.isArray(data.stock_ticks_sample) ? data.stock_ticks_sample : [],
+        history_bars_count: typeof data.history_bars_count === "number" ? data.history_bars_count : 0,
+      });
+    }
   });
 
   // ---- TWS connection status ----
