@@ -10,8 +10,12 @@ export function useLicense() {
   const checkLicense = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const timeoutMs = 5000;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("License check timed out")), timeoutMs)
+    );
     try {
-      const status = await license.validate();
+      const status = await Promise.race([license.validate(), timeoutPromise]);
       setLicenseStatus(status);
     } catch (err) {
       // Try getting status instead (might be expired or not found)

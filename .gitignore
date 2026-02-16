@@ -18,7 +18,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Python / build lib (root only); do not ignore src/lib (frontend)
+/lib/
 lib64/
 parts/
 sdist/

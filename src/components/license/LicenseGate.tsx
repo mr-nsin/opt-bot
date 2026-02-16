@@ -6,7 +6,7 @@ import { useLicense } from "@/hooks/useLicense";
 import { license as licenseApi } from "@/lib/tauri-commands";
 
 /** Set to true to skip license check and always show the app. Set back to false to re-enable license gate. */
-const SKIP_LICENSE_CHECK = false;
+const SKIP_LICENSE_CHECK = true;
 
 interface LicenseGateProps {
   children: React.ReactNode;

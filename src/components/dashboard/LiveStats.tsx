@@ -13,6 +13,7 @@ import { winRate } from "@/lib/utils";
 export function LiveStats() {
   const { dailyPnl, totalTrades, winningTrades, losingTrades } = useTradingStore();
   const wr = winRate(winningTrades, totalTrades);
+  const wrPercent = totalTrades === 0 ? 0 : (winningTrades / totalTrades) * 100;
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -45,9 +46,9 @@ export function LiveStats() {
       />
       <StatCard
         title="Win Rate"
-        value={`${wr.toFixed(1)}%`}
+        value={wr}
         icon={Percent}
-        trend={wr >= 50 ? "up" : wr > 0 ? "down" : "neutral"}
+        trend={wrPercent >= 50 ? "up" : wrPercent > 0 ? "down" : "neutral"}
       />
       <StatCard
         title="Engine"
