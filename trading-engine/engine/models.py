@@ -171,3 +171,47 @@ class TradingConfig:
             loss_amount_day=data.get("loss_amount_day", 200),
             profit_amount_day=data.get("profit_amount_day", 200),
         )
+
+    def to_bot_config_dict(self) -> Dict[str, Any]:
+        """Return a dict with BOT.py key names (IP, PORT, stockListToTrade, etc.) for writing config.json.
+        Used by the sidecar so BOT.py can find config at import time when running frozen (e.g. on Windows)."""
+        stock_data_map = {k: {"amount": v.get("amount", 350)} for k, v in self.stock_data.items()}
+        if not stock_data_map and self.stock_list_to_trade:
+            stock_data_map = {k: {"amount": self.max_contract_amount} for k in self.stock_list_to_trade}
+        return {
+            "profit_increment": self.profit_increment,
+            "expiryToTrade": self.expiry_to_trade,
+            "SPY_QQQ_EXPIRY": self.spy_qqq_expiry,
+            "USE_DIFF_EXPIRY_INDEX": self.use_diff_expiry_index,
+            "IP": self.ip,
+            "PORT": self.port,
+            "CLIENTID": self.client_id,
+            "ACCOUNT_ID": self.account_id,
+            "marketStartTime": self.market_start_time,
+            "scriptStartTime": self.script_start_time,
+            "scriptEndTime": self.script_end_time,
+            "VWAP_ON_OFF": self.vwap_on_off,
+            "ORDER_TRANSMIT": self.order_transmit,
+            "USE_TIMER_IN_ORDER": self.use_timer_in_order,
+            "ORDER_EXPIRY_TIMER": self.order_expiry_timer,
+            "CALL_DELTA_CHECK": self.call_delta_check,
+            "PUT_DELTA_CHECK": self.put_delta_check,
+            "VOLUME_CHECK": self.volume_check,
+            "ATR_CHECKS": self.atr_checks,
+            "ACTIVE_VOLUME": self.active_volume,
+            "MAX_CONTRACT_AMOUNT": self.max_contract_amount,
+            "ATR_VALUE": self.atr_value,
+            "SHARE_VOLUME": self.share_volume,
+            "BODY": self.body,
+            "MIDPOINT_OFFSET": self.midpoint_offset,
+            "QUANTITY": self.quantity,
+            "fetchValue": self.fetch_value,
+            "candleTime": self.candle_time,
+            "distance_between_trade": self.distance_between_trade,
+            "AVG_VOLUMNS_CANDLES": self.avg_volumes_candles,
+            "stockData": stock_data_map,
+            "stockListToTrade": dict(self.stock_list_to_trade),
+            "perDayTrades": self.per_day_trades,
+            "loss_amount_day": self.loss_amount_day,
+            "profit_amount_day": self.profit_amount_day,
+        }

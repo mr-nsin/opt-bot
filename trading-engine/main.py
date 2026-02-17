@@ -15,8 +15,15 @@ import os
 import signal
 import time
 
-# Ensure parent directories are in path for importing existing modules
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Ensure logging.handlers is bundled (used by logger.py / common.py via RotatingFileHandler)
+import logging.handlers  # noqa: F401
+
+# When frozen (PyInstaller onefile), add-data files (BOT.py, common.py, etc.) are in sys._MEIPASS.
+# Use that as ROOT_DIR so "import BOT" / "from common import ..." work like on Mac.
+if getattr(sys, "frozen", False):
+    ROOT_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+else:
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 

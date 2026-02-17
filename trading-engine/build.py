@@ -40,21 +40,34 @@ def build():
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Collect hidden imports for ibapi and other modules
+    # Hidden imports: everything required at start/trading (match what works on Mac)
+    # - logging: logger.py, common.py use RotatingFileHandler
+    # - ibapi: BOT, common, tws_api_client, order_manager use client/wrapper/contract/order/execution/ticktype/utils
+    # - data: BOT uses Indicators (yfinance, pandas, numpy), tws_api_client uses pandas
     hidden_imports = [
+        "logging",
+        "logging.handlers",
+        "logging.config",
         "ibapi",
         "ibapi.client",
         "ibapi.wrapper",
         "ibapi.contract",
         "ibapi.order",
         "ibapi.execution",
+        "ibapi.ticktype",
+        "ibapi.utils",
         "pandas",
         "numpy",
         "yfinance",
         "pytz",
+        "sqlite3",
+        "pathlib",
+        "dataclasses",
+        "queue",
+        "concurrent.futures",
     ]
 
-    # Also include the existing project modules (BOT.py required by trading_engine)
+    # Project-root modules (BOT.py, common, etc.) — bundled so sidecar finds them in _MEIPASS
     data_additions = [
         f"{ROOT_DIR}/common.py{os.pathsep}.",
         f"{ROOT_DIR}/BOT.py{os.pathsep}.",
@@ -78,6 +91,10 @@ def build():
 
     for imp in hidden_imports:
         cmd.extend(["--hidden-import", imp])
+
+    # Collect full packages so behavior matches Mac (all submodules available)
+    cmd.extend(["--collect-submodules", "logging"])
+    cmd.extend(["--collect-submodules", "ibapi"])
 
     for data in data_additions:
         cmd.extend(["--add-data", data])

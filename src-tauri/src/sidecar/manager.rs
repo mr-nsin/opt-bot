@@ -37,9 +37,14 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
         .sidecar("trading-engine")
         .map_err(|e| format!("Failed to create sidecar command: {}", e))?;
 
-    let (mut rx, child) = sidecar_command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar: {}", e))?;
+    let (mut rx, child) = sidecar_command.spawn().map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not compatible") || msg.contains("os error 216") {
+            "Trading engine executable is missing or invalid. Build it with: cd trading-engine && python build.py (requires Python 3.10–3.13 and PyInstaller).".to_string()
+        } else {
+            format!("Failed to spawn sidecar: {}", msg)
+        }
+    })?;
 
     *child_lock = Some(child);
     drop(child_lock);

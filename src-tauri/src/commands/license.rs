@@ -9,33 +9,47 @@ pub fn get_hardware_id() -> String {
 }
 
 fn registry_config() -> Option<(String, String)> {
-    let url = std::env::var("REGISTRY_URL").ok().filter(|s| !s.is_empty())?;
-    let key = std::env::var("REGISTRY_LICENSE_PUBLIC_KEY_HEX").ok().filter(|s| s.len() == 64)?;
+    let url = std::env::var("REGISTRY_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let key = std::env::var("REGISTRY_LICENSE_PUBLIC_KEY_HEX")
+        .ok()
+        .map(|s| s.trim().replace("0x", "").replace("0X", ""))
+        .filter(|s| s.len() == 64)?;
     Some((url, key))
 }
+
+const REGISTRY_REQUIRED_MSG: &str = "License registry is not configured. Set REGISTRY_URL and REGISTRY_LICENSE_PUBLIC_KEY_HEX. Contact your administrator.";
 
 #[tauri::command]
 pub async fn validate_license(
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<validator::LicenseStatus, String> {
-    let license = encrypted_store::load_license()?;
-    let status = validator::validate_license(&license).map_err(|e| e.to_string())?;
+    let (url, key_hex) = registry_config()
+        .ok_or_else(|| REGISTRY_REQUIRED_MSG.to_string())?;
 
-    // If registry is configured, re-check against it (revocation + expiry)
-    if let Some((url, key_hex)) = registry_config() {
-        let reg = registry::fetch_registry(&url).await.map_err(|e| {
-            format!("Registry check failed: {}. License may be revoked or expired.", e)
-        })?;
-        let entry = reg
-            .licenses
-            .iter()
-            .find(|e| e.license_key == license.license_key && e.email == license.customer_email)
-            .ok_or("License not found in registry (revoked or invalid)")?;
-        registry::verify_registry_entry(entry, &key_hex)?;
-    }
+    let license = encrypted_store::load_license()?;
+
+    // Re-check against registry and use registry's expiry (so days_remaining matches registry, not stale local file)
+    let reg = registry::fetch_registry(&url).await.map_err(|e| {
+        format!("Registry check failed: {}. License may be revoked or expired.", e)
+    })?;
+    let entry = reg
+        .licenses
+        .iter()
+        .find(|e| e.license_key == license.license_key && e.email == license.customer_email)
+        .ok_or("License not found in registry (revoked or invalid)")?;
+    let license_from_registry = registry::verify_registry_entry(entry, &key_hex)?;
+
+    // Status from registry license so days_remaining / expires_at match the registry (e.g. 30 days)
+    let status = validator::validate_license(&license_from_registry).map_err(|e| e.to_string())?;
+
+    // Keep local file in sync with registry expiry
+    let _ = encrypted_store::save_license(&license_from_registry);
 
     let mut app = state.lock().await;
-    app.license = Some(license);
+    app.license = Some(license_from_registry);
     app.licensed = status.valid;
 
     Ok(status)
@@ -45,6 +59,13 @@ pub async fn validate_license(
 pub async fn get_license_status(
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<serde_json::Value, String> {
+    if registry_config().is_none() {
+        return Ok(serde_json::json!({
+            "valid": false,
+            "error": REGISTRY_REQUIRED_MSG
+        }));
+    }
+
     let app = state.lock().await;
 
     if let Some(ref license) = app.license {
@@ -78,9 +99,6 @@ pub async fn get_license_status(
     }
 }
 
-/// Fallback validity when registry is not configured (dev/local only).
-const LICENSE_VALIDITY_DAYS: i64 = 365;
-
 #[tauri::command]
 pub async fn activate_license(
     key: String,
@@ -91,27 +109,19 @@ pub async fn activate_license(
         return Err("Invalid license key format. Expected: XXXX-XXXX-XXXX-XXXX".into());
     }
 
-    let license = if let Some((url, key_hex)) = registry_config() {
-        // Validate against registry: fetch, find entry, verify Ed25519 + hardware + expiry
-        let reg = registry::fetch_registry(&url).await.map_err(|e| {
-            format!("Could not reach license registry: {}. Check REGISTRY_URL.", e)
-        })?;
-        let entry = reg
-            .licenses
-            .iter()
-            .find(|e| e.license_key == key && e.email == email)
-            .ok_or("License key or email not found in registry. Get a valid license from the vendor.")?;
-        registry::verify_registry_entry(entry, &key_hex)?
-    } else {
-        // No registry: create local license (dev/offline)
-        let features = validator::LicenseFeatures {
-            live_trading: true,
-            max_symbols: 20,
-            max_daily_trades: 50,
-            strategies: vec!["supertrend".into(), "engulfing_atr".into()],
-        };
-        validator::create_license(&key, &email, "pro", LICENSE_VALIDITY_DAYS, features)
-    };
+    let (url, key_hex) = registry_config()
+        .ok_or_else(|| REGISTRY_REQUIRED_MSG.to_string())?;
+
+    // Validate against registry: fetch, find entry, verify Ed25519 + hardware + expiry
+    let reg = registry::fetch_registry(&url).await.map_err(|e| {
+        format!("Could not reach license registry: {}. Check REGISTRY_URL.", e)
+    })?;
+    let entry = reg
+        .licenses
+        .iter()
+        .find(|e| e.license_key == key && e.email == email)
+        .ok_or("License key or email not found in registry. Get a valid license from the vendor.")?;
+    let license = registry::verify_registry_entry(entry, &key_hex)?;
 
     let status = validator::validate_license(&license).map_err(|e| e.to_string())?;
     encrypted_store::save_license(&license)?;

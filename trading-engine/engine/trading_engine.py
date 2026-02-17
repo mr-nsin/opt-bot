@@ -277,16 +277,30 @@ class TradingEngine:
             return
         try:
             import os
+            import tempfile
             from datetime import datetime
             from queue import Empty
 
-            # BOT and init_data_feed expect project root cwd (config.json, expiryStrike.json)
+            # BOT.py opens config.json at import time. When running as frozen sidecar (e.g. Windows),
+            # CWD is not the project root, so we must write config.json and chdir before importing BOT.
             orig_cwd = os.getcwd()
-            try:
-                if os.path.isdir(PARENT_DIR):
-                    os.chdir(PARENT_DIR)
-            except Exception:
-                pass
+            frozen = getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")
+            if frozen:
+                config_dir = tempfile.mkdtemp(prefix="optbot_sidecar_")
+                config_path = os.path.join(config_dir, "config.json")
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(self.config.to_bot_config_dict(), f, indent=2)
+                os.chdir(config_dir)
+            else:
+                config_dir = PARENT_DIR if os.path.isdir(PARENT_DIR) else orig_cwd
+                config_path = os.path.join(config_dir, "config.json")
+                if not os.path.isfile(config_path):
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        json.dump(self.config.to_bot_config_dict(), f, indent=2)
+                try:
+                    os.chdir(config_dir)
+                except Exception:
+                    pass
 
             try:
                 import BOT
@@ -304,6 +318,10 @@ class TradingEngine:
             stock_list = list(self.config.stock_list_to_trade.keys()) if self.config.stock_list_to_trade else []
             if not stock_list:
                 emit_log("No symbols in stock_list_to_trade; skipping data feed", "WARN", "system")
+                try:
+                    os.chdir(orig_cwd)
+                except Exception:
+                    pass
                 return
             exchanges = list(self.config.stock_list_to_trade.values()) if self.config.stock_list_to_trade else []
             all_futures = len(exchanges) > 0 and all(e == "CME" for e in exchanges)
@@ -328,11 +346,6 @@ class TradingEngine:
             BOT.trade_time_dict = {}
 
             try:
-                os.chdir(PARENT_DIR)
-            except Exception:
-                pass
-
-            try:
                 emit_log("Initializing order requests (positions, PnL)...", "INFO", "system")
                 BOT.init_order_requests()
                 time.sleep(2.0)
@@ -346,12 +359,19 @@ class TradingEngine:
             except Exception as e:
                 emit_log(f"Data feed init failed: {e}", "ERROR", "system")
                 emit_error(str(e))
+                if not frozen:
+                    try:
+                        os.chdir(orig_cwd)
+                    except Exception:
+                        pass
                 return
             finally:
-                try:
-                    os.chdir(orig_cwd)
-                except Exception:
-                    pass
+                # When frozen, leave CWD as config_dir so BOT can write expiryStrike.json etc.
+                if not frozen:
+                    try:
+                        os.chdir(orig_cwd)
+                    except Exception:
+                        pass
 
             # Start event processor threads (consume ticks and run strategies)
             processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
