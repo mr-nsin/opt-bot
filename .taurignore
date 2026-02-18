@@ -1,0 +1,2 @@
+# Exclude logs from dev watcher to avoid rebuild loops
+src-tauri/logs/

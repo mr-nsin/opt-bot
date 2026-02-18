@@ -59,6 +59,7 @@ def build():
         "pandas",
         "numpy",
         "yfinance",
+        "pandas_ta",
         "pytz",
         "sqlite3",
         "pathlib",
@@ -76,6 +77,8 @@ def build():
         f"{ROOT_DIR}/data_access.py{os.pathsep}.",
         f"{ROOT_DIR}/Indicators.py{os.pathsep}.",
         f"{ROOT_DIR}/logger.py{os.pathsep}.",
+        # Empty strike file so BOT never hits "[Errno 2] No such file or directory: expiryStrike.json"
+        f"{SCRIPT_DIR}/expiryStrike.json{os.pathsep}.",
     ]
 
     cmd = [

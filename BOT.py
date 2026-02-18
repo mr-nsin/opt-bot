@@ -815,15 +815,21 @@ def get10StrikesNearUnderlying(strikeList, undPrc, range_limit=3):
 
 def getStockNearStrikes(stock: str, strikesListDict: dict,tick: Tick):
     stock10Strikesmapper = {}
-    
-    dataDict = copy.deepcopy(strikesListDict)
+    strikesList = []
+
+    dataDict = copy.deepcopy(strikesListDict) if strikesListDict else []
     #logger.info("\n\nStrikes list for stock  {} is = \n{}\n".format(stock, dataDict))
 
     for eachStockStrike in dataDict:
         for key, value in eachStockStrike.items():
             if key.upper() == stock.upper():
-                strikesList = eachStockStrike[stock]["Strike"]
+                strikesList = eachStockStrike.get(stock, {}).get("Strike", [])
                 break
+
+    if not strikesList:
+        logger.info(f"No strikes found for {stock}; expiryStrike.json may be empty or not yet populated.")
+        stock10Strikesmapper.update({"lowList": [], "highList": []})
+        return stock10Strikesmapper
 
     strikesListNew = [float(each) for each in strikesList]
     
@@ -871,7 +877,10 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
         return "DayLocked"
 
     isPreviousNeutralCandles = False
-    timeCheck = timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
+    # Use globals so sidecar (trading_engine) can set these; fallback if run as library without main_call
+    _profit = globals().get("profit_amount_day", 200.0)
+    _loss = globals().get("loss_amount_day", 200.0)
+    timeCheck = timeCheckAndCloseProgram(SUB_ACCOUNT_ID, _profit, _loss)
     # When running as sidecar (Tauri app), do not exit process; just skip trading
     if timeCheck:
         logger.warning("Time/PnL check: skipping trade (day end or PnL limit); not exiting process")
@@ -1847,6 +1856,12 @@ def init_data_feed():
     try:
         if not client.isConnected():
             logger.info("TWS not connected.")
+            # Write empty file so fetch_all_strike_expiries() does not fail with "file not found"
+            try:
+                with open("expiryStrike.json", "w", encoding="utf-8") as fp:
+                    json.dump({}, fp)
+            except Exception:
+                pass
             return
 
         # STK = stocks, FUT = futures (e.g. MNQU5, NQU5), OPT = options (calls/puts on STK underlyings).
@@ -1906,12 +1921,30 @@ def init_data_feed():
         logger.error(f"init_data_feed: {ex}")
 
 
+def _expiry_strike_paths():
+    """Return candidate paths for expiryStrike.json (CWD first, then bundle when frozen)."""
+    paths = [os.path.join(os.getcwd(), "expiryStrike.json")]
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", "")
+        if base:
+            paths.append(os.path.join(base, "expiryStrike.json"))
+    return paths
+
+
 def fetch_all_strike_expiries():
     logger.info(
         f"Fetching All strikes/Expiries List for all stocks. = {stockList}"
     )
-    with open("expiryStrike.json", "r",  encoding="utf-8") as fp:
-        return [json.loads(fp.read())]
+    for path in _expiry_strike_paths():
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as fp:
+                    return [json.loads(fp.read())]
+        except Exception as e:
+            logger.warning(f"Could not read {path}: {e}")
+            continue
+    logger.warning("expiryStrike.json not found in CWD or bundle. Using empty strikes.")
+    return [{}]
 
 def check_order_conditions(tick: Tick):
     pass
@@ -2196,15 +2229,16 @@ def main_call(data):
     print("DATA is = {}\n\n\n".format(data))
     
     # ============ RE-READ CONFIG FILE TO GET LATEST VALUES ============
-    # This ensures we get the updated values from config.json
+    global fileData
+    file_data = globals().get("fileData") or {}
     try:
         config_path = os.path.join(os.getcwd(), "config.json")
         with open(config_path, "r", encoding="utf-8") as fopen:
             fileData = json.loads(fopen.read())
+            file_data = fileData
             logger.info("Config file reloaded successfully")
     except Exception as e:
         logger.error(f"Failed to reload config file: {e}")
-        # Fall back to the module-level fileData if reload fails
         pass
     # ==================================================================
     
@@ -2238,9 +2272,10 @@ def main_call(data):
     ORDER_EXPIRY_TIMER = data["ORDER_EXPIRY_TIMER"]   # ORDER EXPIRY TIMER - VALUE IN SECONDS
     USE_TIMER_IN_ORDER = data["USE_TIMER_IN_ORDER"]   # USE OF TIMER IN ORDER
     
-    CALL_DELTA_CHECK = float(data["CALL_DELTA_CHECK"])
-    PUT_DELTA_CHECK = data["PUT_DELTA_CHECK"]
-    VOLUME_CHECK = data["VOLUME_CHECK"]
+    # Fall back to config file if keys missing (e.g. when config comes from UI without these)
+    CALL_DELTA_CHECK = float(data.get("CALL_DELTA_CHECK", file_data.get("CALL_DELTA_CHECK", 0.35)))
+    PUT_DELTA_CHECK = float(data.get("PUT_DELTA_CHECK", file_data.get("PUT_DELTA_CHECK", -0.35)))
+    VOLUME_CHECK = int(data.get("VOLUME_CHECK", file_data.get("VOLUME_CHECK", 100)))
     ATR_CHECKS = data["ATR_CHECKS"]
     ACTIVE_VOLUME = data["ACTIVE_VOLUME"]
     MAX_CONTRACT_AMOUNT = data["MAX_CONTRACT_AMOUNT"]

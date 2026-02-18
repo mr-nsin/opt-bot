@@ -1,0 +1,15 @@
+# Python dependencies for opt-bot (BOT, trading-engine sidecar, and build)
+# Install: py -m pip install -r requirements.txt
+
+# Interactive Brokers TWS API (required for trading)
+ibapi>=9.81.1.post1
+
+# Data & indicators (BOT.py, Indicators.py, tws_api_client). Use Python 3.13.x (pandas_ta works with it).
+pandas>=2.2
+numpy>=2.0
+yfinance>=0.2
+pandas_ta>=0.3
+pytz>=2024.1
+
+# Build trading-engine sidecar executable
+pyinstaller>=6.0

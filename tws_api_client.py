@@ -419,10 +419,10 @@ class TwsApiClient(EWrapper, EClient):
         self.subscribe(contract=contract)
         data = self.get_data(contract=contract)
         tries = 0
-        while data != None and tries < 8:
-            data = self.get_data(contract=contract)
+        while data is None and tries < 8:
             time.sleep(0.25)
-            tries = tries + 1
+            data = self.get_data(contract=contract)
+            tries += 1
 
         return data
         

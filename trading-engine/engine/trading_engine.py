@@ -85,7 +85,7 @@ class TradingEngine:
             if "No module named 'ibapi'" in msg:
                 human_msg = (
                     "Python environment is missing the Interactive Brokers API package 'ibapi'. "
-                    "Please install trading-engine dependencies into a Python 3.9–3.11 virtualenv "
+                    "Please install trading-engine dependencies using Python 3.13 (e.g. py -3.13) in the 'trading-engine/.venv' folder, then restart the app. "
                     "in the 'trading-engine/.venv' folder, then restart the app."
                 )
                 emit_log(human_msg, "ERROR", "system")
@@ -338,12 +338,41 @@ class TradingEngine:
             BOT.SUB_ACCOUNT_ID = self.config.account_id or ""
             BOT.tradeExpiry_val = getExpiry(getattr(self.config, "expiry_to_trade", "next"))
             BOT.spy_qqq_tradeExpiry = getExpiry(getattr(self.config, "spy_qqq_expiry", "0DTE"))
+            # Required by BOT.checkConditionsAndTrade (delta/volume thresholds)
+            BOT.CALL_DELTA_CHECK = float(getattr(self.config, "call_delta_check", 0.35))
+            BOT.PUT_DELTA_CHECK = float(getattr(self.config, "put_delta_check", -0.35))
+            BOT.VOLUME_CHECK = int(getattr(self.config, "volume_check", 100))
+            # Required by BOT.checkAlgoAndTrade -> timeCheckAndCloseProgram (PnL limits)
+            BOT.profit_amount_day = float(getattr(self.config, "profit_amount_day", 200.0))
+            BOT.loss_amount_day = float(getattr(self.config, "loss_amount_day", 200.0))
             BOT.signal_dict = {
                 s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
                 for s in stock_list
             }
             # Leave empty so first trades are not blocked by cooldown; cooldown applies after actual trades
             BOT.trade_time_dict = {}
+
+            # Ensure expiryStrike.json exists in CWD before BOT runs (avoids "[Errno 2] No such file or directory").
+            # When frozen: copy from bundled resource (_MEIPASS); otherwise create empty or copy from sidecar dir.
+            cwd = os.getcwd()
+            expiry_strike_path = os.path.join(cwd, "expiryStrike.json")
+            try:
+                if not os.path.isfile(expiry_strike_path):
+                    bundled = None
+                    if frozen:
+                        base = getattr(sys, "_MEIPASS", "")
+                        if base:
+                            bundled = os.path.join(base, "expiryStrike.json")
+                    if bundled and os.path.isfile(bundled):
+                        import shutil
+                        shutil.copy2(bundled, expiry_strike_path)
+                        emit_log("Copied bundled expiryStrike.json to working dir (will be filled when TWS connects).", "INFO", "system")
+                    else:
+                        with open(expiry_strike_path, "w", encoding="utf-8") as f:
+                            json.dump({}, f)
+                        emit_log("Created empty expiryStrike.json (will be filled when TWS connects).", "INFO", "system")
+            except Exception as e:
+                emit_log(f"Could not create/copy expiryStrike.json: {e}", "WARN", "system")
 
             try:
                 emit_log("Initializing order requests (positions, PnL)...", "INFO", "system")
