@@ -103,3 +103,11 @@ pub async fn get_trading_status(
         "losing_trades": app.trading.losing_trades,
     }))
 }
+
+#[tauri::command]
+pub async fn get_account_metrics(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Option<serde_json::Value>, String> {
+    let app = state.lock().await;
+    Ok(app.trading.account_metrics.clone())
+}

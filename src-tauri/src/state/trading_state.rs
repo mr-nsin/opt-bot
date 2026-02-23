@@ -62,6 +62,8 @@ pub struct TradingState {
     pub losing_trades: i32,
     pub last_signal: Option<String>,
     pub last_signal_time: Option<String>,
+    /// Last IBKR account summary (NetLiquidation, BuyingPower, etc.); tag -> value.
+    pub account_metrics: Option<serde_json::Value>,
 }
 
 impl Default for TradingState {
@@ -80,6 +82,7 @@ impl Default for TradingState {
             losing_trades: 0,
             last_signal: None,
             last_signal_time: None,
+            account_metrics: None,
         }
     }
 }

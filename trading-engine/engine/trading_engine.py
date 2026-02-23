@@ -25,7 +25,7 @@ from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
     emit_pnl, emit_position, emit_signal, emit_trade_executed,
     emit_trade_closed, emit_order_update, emit_error,
-    emit_data_status,
+    emit_data_status, emit_account_metrics,
 )
 from engine.models import TradingConfig
 
@@ -51,6 +51,8 @@ class TradingEngine:
         self._event_processor_threads: list = []
         self._last_data_status_time: float = 0
         self._data_status_interval_sec: float = 10.0
+        self._last_account_metrics_time: float = 0
+        self._account_metrics_interval_sec: float = 5.0
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -237,7 +239,7 @@ class TradingEngine:
                 clientId=self.config.client_id,
             )
             self._order_mgr.set_client(client=self._client)
-            time.sleep(0.5)
+            time.sleep(0.2)  # Brief pause for TWS to register connection (was 0.5s; reduced for faster startup)
 
             if self._client.isConnected():
                 self.connected = True
@@ -497,8 +499,13 @@ class TradingEngine:
                 if self._client and self.connected:
                     self._emit_pnl_update()
 
-                # Every 10s: emit data status so user can see what is being fetched
                 now = time.time()
+                # Every 5s: emit account metrics (IBKR summary)
+                if self._client and self.connected and (now - self._last_account_metrics_time >= self._account_metrics_interval_sec):
+                    self._last_account_metrics_time = now
+                    self._emit_account_metrics()
+
+                # Every 10s: emit data status so user can see what is being fetched
                 if now - self._last_data_status_time >= self._data_status_interval_sec:
                     self._last_data_status_time = now
                     self._emit_data_status()
@@ -520,18 +527,55 @@ class TradingEngine:
             emit_log(f"Event processing error: {e}", "ERROR", "trading")
 
     def _emit_pnl_update(self):
-        """Send P&L update to the frontend."""
+        """Send P&L update to the frontend. TWS pnl_cache is a flat dict: daily, unrealized, realized."""
         try:
-            if hasattr(self._client, 'pnl_cache') and self._client.pnl_cache:
-                for account, pnl_data in self._client.pnl_cache.items():
-                    if hasattr(pnl_data, 'dailyPnL'):
+            if not hasattr(self._client, "pnl_cache") or not self._client.pnl_cache:
+                return
+            cache = self._client.pnl_cache
+            # Support both flat dict (current TWS) and per-account objects
+            if isinstance(cache.get("daily"), (int, float)) or "daily" in cache:
+                emit_pnl(
+                    daily_pnl=float(cache.get("daily") or 0),
+                    unrealized=float(cache.get("unrealized") or 0),
+                    realized=float(cache.get("realized") or 0),
+                )
+            else:
+                for _account, pnl_data in cache.items():
+                    if hasattr(pnl_data, "dailyPnL"):
                         emit_pnl(
-                            daily_pnl=getattr(pnl_data, 'dailyPnL', 0) or 0,
-                            unrealized=getattr(pnl_data, 'unrealizedPnL', 0) or 0,
-                            realized=getattr(pnl_data, 'realizedPnL', 0) or 0,
+                            daily_pnl=getattr(pnl_data, "dailyPnL", 0) or 0,
+                            unrealized=getattr(pnl_data, "unrealizedPnL", 0) or 0,
+                            realized=getattr(pnl_data, "realizedPnL", 0) or 0,
                         )
+                    break
         except Exception:
             pass  # Silently skip P&L errors
+
+    def _emit_account_metrics(self):
+        """Read TWS account_summary_cache and emit account_metrics event (P0: continuous IBKR metrics)."""
+        try:
+            if not hasattr(self._client, "account_summary_cache") or not self._client.account_summary_cache:
+                return
+            cache = getattr(self._client, "account_summary_cache", {})
+            lock = getattr(self._client, "_lock", None)
+            if lock:
+                with lock:
+                    cache = dict(cache)
+            else:
+                cache = dict(cache)
+            # Parse numeric values for frontend; keep raw string for non-numeric
+            metrics = {}
+            for tag, value in cache.items():
+                if value is None or value == "":
+                    continue
+                try:
+                    metrics[tag] = float(value)
+                except (TypeError, ValueError):
+                    metrics[tag] = value
+            if metrics:
+                emit_account_metrics(metrics)
+        except Exception:
+            pass
 
     def _emit_data_status(self):
         """Emit a snapshot of what data is being fetched (every ~10s) so the user can see if anything is running."""

@@ -47,7 +47,9 @@ class TwsApiClient(EWrapper, EClient):
         self.initialization_done: bool = False
         self.connection_closed: bool= False
         self.pnl_cache = {}
+        self.account_summary_cache = {}  # tag -> value (str from TWS; parse to float in engine)
         self._lock = threading.Lock()
+        self.ACCOUNT_SUMMARY_REQ_ID = 2
 
     @iswrapper
     def connectAck(self):
@@ -786,12 +788,33 @@ class TwsApiClient(EWrapper, EClient):
         except Exception:
             pass
 
-        # CORRECT reqPnL signature
+        # CORRECT reqPnL signature (keep subscription open for continuous updates)
         self.reqPnL(
             reqId=1,
             account=self.managed_account,
             modelCode=""
         )
+
+        # Request account summary for all IBKR metrics (continuous updates)
+        _tags = (
+            "NetLiquidation,TotalCashValue,GrossPositionValue,BuyingPower,"
+            "AvailableFunds,ExcessLiquidity,MaintMarginReq,InitialMarginReq,"
+            "RealizedPnL,UnrealizedPnL,SettledCash,EquityWithLoanValue"
+        )
+        try:
+            self.cancelAccountSummary(self.ACCOUNT_SUMMARY_REQ_ID)
+        except Exception:
+            pass
+        self.reqAccountSummary(self.ACCOUNT_SUMMARY_REQ_ID, "All", _tags)
+
+    @iswrapper
+    def accountSummary(self, reqId: int, account: str, tag: str, value: str, currency: str):
+        with self._lock:
+            self.account_summary_cache[tag] = value
+
+    @iswrapper
+    def accountSummaryEnd(self, reqId: int):
+        pass
 
     @iswrapper
     def connectionClosed(self):

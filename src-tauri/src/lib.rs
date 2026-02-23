@@ -35,6 +35,7 @@ pub fn run() {
             commands::trading::stop_trading,
             commands::trading::emergency_stop,
             commands::trading::get_trading_status,
+            commands::trading::get_account_metrics,
             // Config commands
             commands::config::get_config,
             commands::config::save_config,

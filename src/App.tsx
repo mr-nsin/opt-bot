@@ -1,18 +1,30 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import { useEffect } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { LicenseGate } from "@/components/license/LicenseGate";
-import { DashboardPage } from "@/components/dashboard/DashboardPage";
-import { AnalyticsPage } from "@/components/analytics/AnalyticsPage";
-import { PositionsPage } from "@/components/positions/PositionsPage";
-import { LogsPage } from "@/components/logs/LogsPage";
-import { SettingsPage } from "@/components/settings/SettingsPage";
 import { Toaster } from "@/components/common/Toaster";
 import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useTradingEvents } from "@/hooks/useTradingEvents";
 import { config, logs as logsApi } from "@/lib/tauri-commands";
+
+const DashboardPage = lazy(() =>
+  import("@/components/dashboard/DashboardPage").then((m) => ({ default: m.DashboardPage }))
+);
+const AnalyticsPage = lazy(() =>
+  import("@/components/analytics/AnalyticsPage").then((m) => ({ default: m.AnalyticsPage }))
+);
+const PositionsPage = lazy(() =>
+  import("@/components/positions/PositionsPage").then((m) => ({ default: m.PositionsPage }))
+);
+const LogsPage = lazy(() =>
+  import("@/components/logs/LogsPage").then((m) => ({ default: m.LogsPage }))
+);
+const SettingsPage = lazy(() =>
+  import("@/components/settings/SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
 
 function AppContent() {
   const { setTradingConfig, setSettings, settings } = useConfigStore();
@@ -88,15 +100,23 @@ function AppContent() {
 
   return (
     <>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="/analytics" element={<AnalyticsPage />} />
-          <Route path="/positions" element={<PositionsPage />} />
-          <Route path="/logs" element={<LogsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Route>
-      </Routes>
+      <Suspense
+        fallback={
+          <div className="flex h-screen w-full items-center justify-center bg-background text-muted-foreground text-sm">
+            Loading…
+          </div>
+        }
+      >
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/positions" element={<PositionsPage />} />
+            <Route path="/logs" element={<LogsPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Route>
+        </Routes>
+      </Suspense>
       <Toaster />
     </>
   );

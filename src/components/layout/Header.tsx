@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Clock, Moon, Sun, Shield } from "lucide-react";
 import { ModeToggle } from "@/components/common/ModeToggle";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useLicense } from "@/hooks/useLicense";
 
-export function Header() {
-  const { status, totalTrades, dailyPnl } = useTradingStore();
+function HeaderInner() {
+  const status = useTradingStore((s) => s.status);
+  const totalTrades = useTradingStore((s) => s.totalTrades);
+  const dailyPnl = useTradingStore((s) => s.dailyPnl);
   const { isDark, toggleTheme } = useTheme();
   const { licenseStatus } = useLicense();
   const [clock, setClock] = useState("");
@@ -110,3 +112,5 @@ export function Header() {
     </header>
   );
 }
+
+export const Header = memo(HeaderInner);

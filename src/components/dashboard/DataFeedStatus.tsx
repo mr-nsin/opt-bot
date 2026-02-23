@@ -19,7 +19,7 @@ export function DataFeedStatus() {
         </CardHeader>
         <CardContent>
           <p className="text-xs text-muted-foreground">
-            Start trading to see live data status (refreshed every 10s).
+            Start trading to see live data status (updates every 10s).
           </p>
         </CardContent>
       </Card>

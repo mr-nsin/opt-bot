@@ -251,6 +251,15 @@ async fn handle_sidecar_message(
                         Some(chrono::Utc::now().to_rfc3339());
                 }
 
+                "account_metrics" => {
+                    let mut app = state.lock().await;
+                    app.trading.account_metrics = Some(event.data.clone());
+                    drop(app);
+                    if let Err(e) = handle.emit("trading:account_metrics", &event.data) {
+                        log::error!("Failed to emit account_metrics: {}", e);
+                    }
+                }
+
                 "engine_status" => {
                     if let Some(status_str) =
                         event.data.get("status").and_then(|v| v.as_str())

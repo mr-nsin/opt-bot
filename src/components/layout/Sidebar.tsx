@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -24,9 +25,10 @@ const navItems = [
   { id: "settings", label: "Settings", icon: Settings, path: "/settings" },
 ];
 
-export function Sidebar() {
-  const { connectedToTws, status } = useTradingStore();
-  const { settings } = useConfigStore();
+function SidebarInner() {
+  const connectedToTws = useTradingStore((s) => s.connectedToTws);
+  const status = useTradingStore((s) => s.status);
+  const settings = useConfigStore((s) => s.settings);
   const { licenseStatus } = useLicense();
   const isRunning = status === "Running";
   const isLive = settings.trading_mode === "live";
@@ -152,3 +154,5 @@ export function Sidebar() {
     </aside>
   );
 }
+
+export const Sidebar = memo(SidebarInner);

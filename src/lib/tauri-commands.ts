@@ -17,7 +17,7 @@ export const logs = {
   getStats: () => invoke<unknown>("get_log_stats"),
 };
 
-/** Trading: start, stop, emergencyStop, getStatus */
+/** Trading: start, stop, emergencyStop, getStatus, getAccountMetrics */
 export const trading = {
   start: (cfg: unknown) => invoke<string>("start_trading", { config: cfg }),
   stop: () => invoke<string>("stop_trading"),
@@ -32,6 +32,7 @@ export const trading = {
       winning_trades: number;
       losing_trades: number;
     }>("get_trading_status"),
+  getAccountMetrics: () => invoke<Record<string, number> | null>("get_account_metrics"),
 };
 
 /** Positions: getAll, close(symbol), closeAll */

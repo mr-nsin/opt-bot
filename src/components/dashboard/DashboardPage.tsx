@@ -1,4 +1,5 @@
 import { LiveStats } from "./LiveStats";
+import { AccountSummary } from "./AccountSummary";
 import { DataFeedStatus } from "./DataFeedStatus";
 import { TradingControls } from "./TradingControls";
 import { TradeParameters } from "./TradeParameters";
@@ -10,7 +11,14 @@ import { ActivityLog } from "./ActivityLog";
 export function DashboardPage() {
   return (
     <div className="space-y-4">
-      <LiveStats />
+      <div className="flex flex-col gap-1">
+        <LiveStats />
+        <p className="text-2xs text-muted-foreground/80 px-0.5">
+          Updates: PnL ~1s · Account summary ~5s · Data status ~10s
+        </p>
+      </div>
+
+      <AccountSummary />
 
       <DataFeedStatus />
 

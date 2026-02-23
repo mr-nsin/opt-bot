@@ -1,27 +1,46 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Play, Square, AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { useTradingEngine } from "@/hooks/useTradingEngine";
+import { useConfigStore } from "@/stores/configStore";
 import { cn } from "@/lib/utils";
 
 export function TradingControls() {
   const { status, isRunning, isIdle, startTrading, stopTrading, emergencyStop } =
     useTradingEngine();
+  const tradingConfig = useConfigStore((s) => s.tradingConfig);
   const [showEmergencyConfirm, setShowEmergencyConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [startDurationSec, setStartDurationSec] = useState<number | null>(null);
+  const startTimeRef = useRef<number | null>(null);
 
   const isStarting = status === "Starting";
   const isStopping = status === "Stopping";
+  const canStart = isIdle && !!tradingConfig;
 
   const handleStart = async () => {
     setError(null);
-    try { await startTrading(); } catch (err) { setError(String(err)); }
+    setStartDurationSec(null);
+    startTimeRef.current = performance.now();
+    try {
+      await startTrading();
+      if (startTimeRef.current != null) {
+        const elapsed = (performance.now() - startTimeRef.current) / 1000;
+        setStartDurationSec(Math.round(elapsed * 10) / 10);
+        startTimeRef.current = null;
+        setTimeout(() => setStartDurationSec(null), 8000);
+      }
+    } catch (err) {
+      startTimeRef.current = null;
+      setError(String(err));
+    }
   };
 
   const handleStop = async () => {
     setError(null);
+    setStartDurationSec(null);
     try { await stopTrading(); } catch (err) { setError(String(err)); }
   };
 
@@ -41,16 +60,22 @@ export function TradingControls() {
         <CardContent className="space-y-2.5">
           <Button
             onClick={handleStart}
-            disabled={!isIdle || isStarting}
+            disabled={!canStart || isStarting}
             className="w-full h-10"
             variant="success"
+            title={!tradingConfig ? "Load config first (open Dashboard or refresh)" : undefined}
           >
             {isStarting ? (
-              <><Loader2 className="h-4 w-4 animate-spin" /> Starting...</>
+              <><Loader2 className="h-4 w-4 animate-spin" /> Loading config & engine…</>
             ) : (
               <><Play className="h-4 w-4" /> Start Trading</>
             )}
           </Button>
+          {startDurationSec != null && isRunning && (
+            <p className="text-2xs text-muted-foreground text-center">
+              Started in {startDurationSec}s
+            </p>
+          )}
 
           <Button
             onClick={handleStop}

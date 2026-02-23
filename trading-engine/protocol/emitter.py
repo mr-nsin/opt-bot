@@ -63,6 +63,11 @@ def emit_pnl(daily_pnl: float, unrealized: float, realized: float):
     })
 
 
+def emit_account_metrics(metrics: Dict[str, Any]):
+    """Emit IBKR account summary metrics (NetLiquidation, BuyingPower, etc.)."""
+    send_event("account_metrics", metrics)
+
+
 def emit_signal(symbol: str, signal_type: str, strike: float, price: float, reason: str):
     send_event("signal_detected", {
         "symbol": symbol,

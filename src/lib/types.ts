@@ -78,6 +78,9 @@ export interface DataStatus {
   [key: string]: unknown;
 }
 
+/** IBKR account summary: tag -> numeric value (e.g. NetLiquidation, BuyingPower). */
+export type AccountMetrics = Record<string, number>;
+
 export interface Position {
   symbol: string;
   type?: string;

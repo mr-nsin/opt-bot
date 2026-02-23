@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { TradingStatus, DailyPnL, SignalEvent, TradeRecord, DataStatus } from "@/lib/types";
+import type { TradingStatus, DailyPnL, SignalEvent, TradeRecord, DataStatus, AccountMetrics } from "@/lib/types";
 
 interface TradingState {
   status: TradingStatus;
@@ -13,6 +13,8 @@ interface TradingState {
   todayTrades: TradeRecord[];
   /** Last data feed status (updated every ~10s when engine is running) */
   dataStatus: DataStatus | null;
+  /** IBKR account summary (NetLiquidation, BuyingPower, etc.); updated every ~5s when connected */
+  accountMetrics: AccountMetrics | null;
 
   // Actions
   setStatus: (status: TradingStatus) => void;
@@ -23,6 +25,7 @@ interface TradingState {
   setLastSignal: (signal: SignalEvent | null) => void;
   addTrade: (trade: TradeRecord) => void;
   setDataStatus: (data: DataStatus | null) => void;
+  setAccountMetrics: (metrics: AccountMetrics | null) => void;
   reset: () => void;
 }
 
@@ -37,6 +40,7 @@ const initialState = {
   lastSignal: null,
   todayTrades: [] as TradeRecord[],
   dataStatus: null as DataStatus | null,
+  accountMetrics: null as AccountMetrics | null,
 };
 
 export const useTradingStore = create<TradingState>((set) => ({
@@ -52,5 +56,6 @@ export const useTradingStore = create<TradingState>((set) => ({
   addTrade: (trade) =>
     set((state) => ({ todayTrades: [trade, ...state.todayTrades].slice(0, 100) })),
   setDataStatus: (data) => set({ dataStatus: data }),
+  setAccountMetrics: (metrics) => set({ accountMetrics: metrics }),
   reset: () => set(initialState),
 }));

@@ -1,13 +1,17 @@
+import { useRef } from "react";
 import { useTauriEvent } from "./useTauri";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useNotificationStore } from "@/stores/notificationStore";
 
+const PNL_THROTTLE_MS = 1000;
+
 /**
  * Global trading event listeners.
  * Call ONCE at the app root (AppContent) to ensure sidecar events
  * are always handled regardless of which page is active.
+ * PnL updates are throttled to 1s to avoid UI hang on tab switch.
  */
 export function useTradingEvents() {
   const {
@@ -19,10 +23,30 @@ export function useTradingEvents() {
     setLastSignal,
     addTrade,
     setDataStatus,
+    setAccountMetrics,
   } = useTradingStore();
   const { settings } = useConfigStore();
   const { addLog } = useLogStore();
   const { addToast } = useNotificationStore();
+
+  const pnlPending = useRef<{ realized: number; unrealized: number; total: number } | null>(null);
+  const pnlFlushScheduled = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPnl = () => {
+    if (pnlPending.current == null) return;
+    const next = pnlPending.current;
+    pnlPending.current = null;
+    pnlFlushScheduled.current = null;
+    const current = useTradingStore.getState().dailyPnl;
+    if (
+      current.realized === next.realized &&
+      current.unrealized === next.unrealized &&
+      current.total === next.total
+    ) {
+      return;
+    }
+    setDailyPnl(next);
+  };
 
   // ---- Engine status ----
   useTauriEvent("trading:engine_status", (data: any) => {
@@ -30,13 +54,48 @@ export function useTradingEvents() {
     if (data.connected !== undefined) setConnectedToTws(data.connected);
   });
 
-  // ---- P&L updates ----
+  // ---- P&L updates (throttled to 1s; first update flushes immediately so UI shows value right away) ----
   useTauriEvent("trading:pnl_update", (data: any) => {
-    setDailyPnl({
+    const next = {
       realized: data.realized_pnl ?? 0,
       unrealized: data.unrealized_pnl ?? 0,
       total: data.daily_pnl ?? 0,
-    });
+    };
+    pnlPending.current = next;
+    if (pnlFlushScheduled.current == null) {
+      flushPnl();
+      pnlFlushScheduled.current = setTimeout(() => {
+        flushPnl();
+        pnlFlushScheduled.current = null;
+      }, PNL_THROTTLE_MS);
+    }
+  });
+
+  // ---- IBKR account metrics; only update store if values changed (shallow compare) ----
+  useTauriEvent("trading:account_metrics", (data: any) => {
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const metrics: Record<string, number> = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (typeof v === "number" && !Number.isNaN(v)) metrics[k] = v;
+        if (typeof v === "string" && v.trim() !== "") {
+          const n = Number(v);
+          if (!Number.isNaN(n)) metrics[k] = n;
+        }
+      }
+      if (Object.keys(metrics).length === 0) return;
+      const current = useTradingStore.getState().accountMetrics;
+      if (current && Object.keys(current).length === Object.keys(metrics).length) {
+        let same = true;
+        for (const [k, v] of Object.entries(metrics)) {
+          if (current[k] !== v) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return;
+      }
+      setAccountMetrics(metrics);
+    }
   });
 
   // ---- Log messages from the sidecar ----
