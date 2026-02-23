@@ -26,6 +26,15 @@
       "expires_at": "2026-02-16T03:32:53Z",
       "tier": "pro",
       "signature": "3f987da0719559be7d8b595bcdeb2a469f5eee32fde3b9be15c451adefb22c43e42fea79bf846c05cce295b10d8fc14904012c5594e0fed9549b5a80e44bbf05"
+    },
+    {
+      "license_key": "M8I2-XF4Z-2DPO-J7F1",
+      "email": "singhal.nitin108@gmail.com",
+      "hardware_id": "b3c8e4b96242f5425421c01a47b5115aceb651c2442635b557c1f5e2ef90c335",
+      "issued_at": "2026-02-21T19:07:08Z",
+      "expires_at": "2026-03-23T19:07:08Z",
+      "tier": "pro",
+      "signature": "df321c07c2f6303db8fb572da8cb93a5a7e00b5432ef9f332d1be41d4ab96a1e9b67fec056f33a4a2055b40855945e32b06bcaa57bd023477fe7c557e6f8440d"
     }
   ]
 }
