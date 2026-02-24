@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTradingStore } from "@/stores/tradingStore";
 import { formatCurrency } from "@/lib/utils";
 import { trading } from "@/lib/tauri-commands";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const TAG_LABELS: Record<string, string> = {
   NetLiquidation: "Net Liquidation",
@@ -38,24 +38,41 @@ const TAG_ORDER = [
 export function AccountSummary() {
   const { accountMetrics, status, connectedToTws, setAccountMetrics } = useTradingStore();
   const [loading, setLoading] = useState(false);
+  const pollTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  // Load last snapshot when engine is running (e.g. after reconnect or tab focus)
+  // Load last snapshot when engine is running; short polling after Start Trading so we show IBKR data as soon as TWS responds
   useEffect(() => {
     if (status !== "Running" && !connectedToTws) return;
     setLoading(true);
-    trading
-      .getAccountMetrics()
-      .then((m) => {
-        if (m && typeof m === "object" && Object.keys(m).length > 0) {
-          const parsed: Record<string, number> = {};
-          for (const [k, v] of Object.entries(m)) {
-            if (typeof v === "number" && !Number.isNaN(v)) parsed[k] = v;
-          }
-          setAccountMetrics(Object.keys(parsed).length ? parsed : null);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    pollTimeoutsRef.current = [];
+    const parseAndSet = (m: Record<string, unknown> | null) => {
+      if (!m || typeof m !== "object" || Object.keys(m).length === 0) return false;
+      const parsed: Record<string, number> = {};
+      for (const [k, v] of Object.entries(m)) {
+        if (typeof v === "number" && !Number.isNaN(v)) parsed[k] = v;
+      }
+      if (Object.keys(parsed).length > 0) {
+        setAccountMetrics(parsed);
+        return true;
+      }
+      return false;
+    };
+    const fetchOnce = () =>
+      trading.getAccountMetrics().then((m) => {
+        if (m && typeof m === "object") return parseAndSet(m as Record<string, unknown>);
+        return false;
+      });
+    fetchOnce().then((hadData) => {
+      setLoading(false);
+      if (hadData) return;
+      // TWS may still be sending first account summary; poll a few times so we show data without waiting up to 5s
+      pollTimeoutsRef.current.push(window.setTimeout(() => fetchOnce().then(() => {}), 600));
+      pollTimeoutsRef.current.push(window.setTimeout(() => fetchOnce().then(() => {}), 1600));
+    });
+    return () => {
+      pollTimeoutsRef.current.forEach((t) => window.clearTimeout(t));
+      pollTimeoutsRef.current = [];
+    };
   }, [status, connectedToTws, setAccountMetrics]);
 
   const entries = accountMetrics

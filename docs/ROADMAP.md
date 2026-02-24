@@ -181,6 +181,24 @@ This document is the **single source of truth** for what the app currently has, 
 | **Types** | Frontend sometimes uses `unknown` for config/settings file; Settings page uses type assertions. | Low |
 | **Logs** | No persistence; buffer only in memory; clear on restart. | Low |
 | **Performance** | UI hang on tab switch: **Partially fixed** – PnL throttled to 1s in frontend, lazy route loading, memo Header/Sidebar, virtualized Logs/ActivityLog. Remaining: optional page-level memo, further tuning if needed. | Low |
+| **IBKR fetch timing** | Account info and P&L took several seconds to appear after Start Trading: **Fixed** – see §2.1 (IBKR fetch timing: deep analysis and fixes). | Fixed |
+
+### 2.1 IBKR fetch timing after Start Trading (deep analysis and fixes)
+
+**Why account info, P&L, and other IBKR data took time to display after clicking Start Trading:**
+
+1. **Flow:** Start Trading → Rust starts sidecar → engine starts → TWS client connects. TWS sends **managedAccounts** on connection; the client then calls **reqPnL** and **reqAccountSummary**. TWS responds asynchronously with **pnl()** and **accountSummary()** callbacks, which fill `pnl_cache` and `account_summary_cache`. The engine emits **pnl_update** every loop (~50 ms) and **account_metrics** on an interval.
+
+2. **Root causes of delay:**
+   - **Account metrics:** The engine only emitted **account_metrics** on a fixed **5 s** interval. So even when the cache was filled 1–2 s after connection, the UI could wait up to **5 s** for the first emission.
+   - **Frontend:** Account Summary called **get_account_metrics()** once when status became Running/connected; if that ran before the first engine emission, it got an empty snapshot and then relied only on the next 5 s event.
+   - **PnL** appears as soon as TWS sends **pnl()** and the engine emits (every 50 ms); remaining delay is TWS connection + first **managedAccounts** + first **pnl()** response.
+
+3. **Fixes implemented:**
+   - **Backend (trading-engine):** Emit **account_metrics** **as soon as** `account_summary_cache` has data (first time after connection), then continue every 5 s. Added `_account_metrics_first_emit_done`; reset on connect/disconnect so each connection gets an immediate first emit when data is available.
+   - **Frontend (AccountSummary):** When status becomes Running/connected, call **get_account_metrics()** once, then **short polling** at 600 ms and 1.6 s so the first backend emit is shown without waiting for the next 5 s event. Clean up timeouts on effect cleanup.
+
+**Remaining (unavoidable) delay:** TWS connection time + time for TWS to send **managedAccounts** and first **accountSummary** / **pnl()** (typically under ~2 s if TWS is local and responsive).
 
 ---
 
@@ -189,8 +207,8 @@ This document is the **single source of truth** for what the app currently has, 
 ## 3.1 Continuous IBKR PnL & Account Metrics (P0) — **Done**
 
 - **Persistent reqPnL:** Subscription kept open after managedAccounts; TWS pushes pnl(reqId, dailyPnL, unrealizedPnL, realizedPnL) → pnl_cache. Engine emits pnl_update every loop (~50ms) when connected; Rust emits trading:pnl_update; Header, LiveStats, RiskManagement, and Analytics show daily/realized/unrealized.
-- **reqAccountSummary:** Requested after managedAccounts with 12 tags: NetLiquidation, TotalCashValue, GrossPositionValue, BuyingPower, AvailableFunds, ExcessLiquidity, MaintMarginReq, InitialMarginReq, RealizedPnL, UnrealizedPnL, SettledCash, EquityWithLoanValue. accountSummary/accountSummaryEnd store in account_summary_cache; engine emits account_metrics every 5s; Rust stores snapshot and emits trading:account_metrics; get_account_metrics command returns last snapshot.
-- **Frontend:** Account Summary (IBKR) card on Dashboard shows all tags with labels and formatCurrency; useTradingEvents subscribes to trading:account_metrics; on load when engine running, get_account_metrics refreshes snapshot.
+- **reqAccountSummary:** Requested after managedAccounts with 12 tags: NetLiquidation, TotalCashValue, GrossPositionValue, BuyingPower, AvailableFunds, ExcessLiquidity, MaintMarginReq, InitialMarginReq, RealizedPnL, UnrealizedPnL, SettledCash, EquityWithLoanValue. accountSummary/accountSummaryEnd store in account_summary_cache; engine emits account_metrics **as soon as cache has data (first time)** then every 5s; Rust stores snapshot and emits trading:account_metrics; get_account_metrics command returns last snapshot.
+- **Frontend:** Account Summary (IBKR) card on Dashboard shows all tags with labels and formatCurrency; useTradingEvents subscribes to trading:account_metrics; on load when engine running, get_account_metrics plus short polling (600ms, 1.6s) so first IBKR data appears quickly after Start Trading (see ROADMAP §2.1).
 - See docs/IBKR_METRICS.md for API details.
 
 ## 3.2 New Tauri commands (candidates)
@@ -215,7 +233,7 @@ This document is the **single source of truth** for what the app currently has, 
 
 ## 4.1 Account / Summary view — **Done (Dashboard card)**
 
-- Dashboard section **Account Summary (IBKR)** shows Net Liquidation, Total Cash, Equity w/ Loan, Gross Position Value, Buying Power, Available Funds, Excess Liquidity, Settled Cash, Maint/Initial Margin Req, Realized P&L, Unrealized P&L (event-driven every ~5s + get_account_metrics on load when running).
+- Dashboard section **Account Summary (IBKR)** shows Net Liquidation, Total Cash, Equity w/ Loan, Gross Position Value, Buying Power, Available Funds, Excess Liquidity, Settled Cash, Maint/Initial Margin Req, Realized P&L, Unrealized P&L (event-driven: first emit as soon as TWS data is available, then every ~5s; get_account_metrics on load + short polling at 0.6s and 1.6s after Start Trading so data appears quickly).
 - Optional later: dedicated page or configurable refresh interval.
 
 ## 4.2 Alerts & notifications

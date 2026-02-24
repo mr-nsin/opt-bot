@@ -53,6 +53,7 @@ class TradingEngine:
         self._data_status_interval_sec: float = 10.0
         self._last_account_metrics_time: float = 0
         self._account_metrics_interval_sec: float = 5.0
+        self._account_metrics_first_emit_done: bool = False
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -474,11 +475,13 @@ class TradingEngine:
                 if self._client and getattr(self._client, "isConnected", None):
                     if self._client.isConnected() and not self.connected:
                         self.connected = True
+                        self._account_metrics_first_emit_done = False  # Emit account metrics as soon as we have data
                         emit_connection_status(True, "Reconnected to TWS")
                         emit_log("TWS connection restored", "INFO", "system")
                     elif not self._client.isConnected() and self.connected:
                         self.connected = False
                         self._data_feed_started = False
+                        self._account_metrics_first_emit_done = False
                         emit_connection_status(False, "TWS disconnected")
                         emit_log("TWS disconnected", "WARN", "system")
 
@@ -500,10 +503,20 @@ class TradingEngine:
                     self._emit_pnl_update()
 
                 now = time.time()
-                # Every 5s: emit account metrics (IBKR summary)
-                if self._client and self.connected and (now - self._last_account_metrics_time >= self._account_metrics_interval_sec):
-                    self._last_account_metrics_time = now
-                    self._emit_account_metrics()
+                # Emit account metrics: first time as soon as we have data, then every 5s (avoids up-to-5s delay after Start Trading)
+                if self._client and self.connected:
+                    has_cache = (
+                        getattr(self._client, "account_summary_cache", None)
+                        and len(getattr(self._client, "account_summary_cache", {})) > 0
+                    )
+                    if has_cache:
+                        if not self._account_metrics_first_emit_done:
+                            self._account_metrics_first_emit_done = True
+                            self._last_account_metrics_time = now
+                            self._emit_account_metrics()
+                        elif now - self._last_account_metrics_time >= self._account_metrics_interval_sec:
+                            self._last_account_metrics_time = now
+                            self._emit_account_metrics()
 
                 # Every 10s: emit data status so user can see what is being fetched
                 if now - self._last_data_status_time >= self._data_status_interval_sec:
