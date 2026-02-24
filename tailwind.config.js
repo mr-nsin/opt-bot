@@ -53,6 +53,25 @@ export default {
           accent: "hsl(var(--sidebar-accent))",
           muted: "hsl(var(--sidebar-muted))",
         },
+        // Trading-specific colors
+        trading: {
+          profit: "hsl(var(--profit))",
+          loss: "hsl(var(--loss))",
+          bid: "hsl(var(--bid))",
+          ask: "hsl(var(--ask))",
+          neutral: "hsl(var(--signal-neutral))",
+        },
+        signal: {
+          call: "hsl(var(--signal-call))",
+          put: "hsl(var(--signal-put))",
+          neutral: "hsl(var(--signal-neutral))",
+        },
+        greeks: {
+          delta: "hsl(var(--greeks-delta))",
+          gamma: "hsl(var(--greeks-gamma))",
+          theta: "hsl(var(--greeks-theta))",
+          vega: "hsl(var(--greeks-vega))",
+        },
       },
       borderRadius: {
         xl: "calc(var(--radius) + 4px)",
@@ -77,9 +96,19 @@ export default {
           "0%, 100%": { opacity: "1", transform: "scale(1)" },
           "50%": { opacity: "0.4", transform: "scale(0.8)" },
         },
+        "fade-up": {
+          "0%": { opacity: "0", transform: "translateY(4px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        "slide-in-right": {
+          "0%": { opacity: "0", transform: "translateX(8px)" },
+          "100%": { opacity: "1", transform: "translateX(0)" },
+        },
       },
       animation: {
         "pulse-green": "pulse-green 2s ease-in-out infinite",
+        "fade-up": "fade-up 0.2s ease-out",
+        "slide-in-right": "slide-in-right 0.2s ease-out",
       },
     },
   },

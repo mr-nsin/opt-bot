@@ -387,24 +387,699 @@ Deep pass over the codebase: where time is spent, what triggers re-renders, and 
 
 ---
 
-# PART VI – Priorities Summary
+# PART VIII – Performance Deep-Dive: Data Fetching, Signal Generation, Engine Speed
+
+## 8.1 SuperTrend / BOTSingal — CRITICAL BOTTLENECK
+
+**Current state (Indicators.py `BOTSingal`, line 181):** The SuperTrend calculation uses **5 separate `for i, row in data.iterrows()` loops** — this is the slowest possible way to iterate a pandas DataFrame (100–1000× slower than vectorized numpy). It is called on **every STK tick** via `event_processor → getCallPutEngulfCheck → indi.BOTSingal(new_df)`.
+
+**Impact:** For 21 candles, 5 iterrows loops ≈ 105 row iterations. With 9 symbols, each generating ticks every ~250ms, that's ~36 SuperTrend calculations/s — each taking 2–5ms (iterrows overhead) = **~100ms/s** of pure CPU just for SuperTrend. This is the #1 CPU bottleneck.
+
+**Fixes (ordered by impact):**
+
+| Fix | Description | Speedup |
+|-----|-------------|---------|
+| **Vectorize ATR** | Replace `for i, row in data.iterrows(): ATR[i] = (ATR[i-1]*13 + TR[i])/14` with `data['ATR'] = data['TR'].ewm(alpha=1/14, min_periods=1, adjust=False).mean()` | 50–100× |
+| **Vectorize FUB/FLB/ST** | Replace iterrows loops with `np.where()` chains or `numba.jit` compiled function | 50–100× |
+| **Vectorize BUY_SELL** | Replace iterrows with `np.where(data['ST'] < data['Close'], 'BUY', 'SELL')` | 50× |
+| **Cache & incremental update** | Only recalculate SuperTrend when a **new bar closes** (not on every tick). Cache the last SuperTrend state per symbol. On new bar: append new row, update last 2 rows only. | 10–20× (avoids redundant calls) |
+| **Skip if signal unchanged** | After calculating, compare with cached signal. If no flip (BUY→SELL or SELL→BUY), return immediately without further processing. | 2–5× |
+
+**alphaTrend (line 250)** has the exact same 5 iterrows loops — same fix applies.
+
+## 8.2 Data Feed Initialization — 15+ SECONDS of Hard Sleeps
+
+**Current state (BOT.py `init_data_feed`):**
+```
+subscribe underlyings (STK/FUT)  →  time.sleep(3.0)  ← HARD WAIT
+subscribe options snapshots       →  time.sleep(10)   ← HARD WAIT
+subscribe live options            →  (done)
+```
+Plus: `init_order_requests: time.sleep(2.0)`, `init_api_client: time.sleep(0.5)`.
+
+**Total: ~15.5 seconds of blocking sleeps during startup.**
+
+| Fix | Description | Time saved |
+|-----|-------------|------------|
+| **Event-based underlying wait** | Replace `time.sleep(3.0)` with `threading.Event` that fires when all STK subscriptions receive first tick (or 3s timeout). Usually ticks arrive in <1s. | ~2s |
+| **Parallel options subscription** | Subscribe all options contracts using `ThreadPoolExecutor` instead of sequential loop. Currently subscribes ~80+ contracts one by one. | Marginal (IB rate limit) |
+| **Event-based snapshot wait** | Replace `time.sleep(10)` with `threading.Event` that fires when snapshot data received for all contracts (or 10s timeout). TWS usually responds in 2–4s for snapshots. | ~6–8s |
+| **Async contract resolution** | `get_contract_detail()` polls with `time.sleep(0.5)` up to 5s. Replace with `threading.Event` set by `contractDetails` callback. | ~1–3s per symbol |
+| **Parallel symbol init** | Subscribe to multiple symbols simultaneously using thread pool for `get_stock_contract` + `subscribe` + `subscribe_historical_data`. | ~1–2s |
+
+**Expected improvement: Startup from 15s → 4–6s.**
+
+## 8.3 get_strikes() / get_contract_detail() — BLOCKING POLLS
+
+**Current state (tws_api_client.py):**
+- `get_strikes()` (line 235): `while self.ticker_strike_fetched != True: time.sleep(0.5)` — polls every 500ms.
+- `get_contract_detail()` (line 281): `while not self.contract_detail_fetched and waited < max_wait: time.sleep(0.5)` — up to 5s.
+- Both use single shared flags (`ticker_strike_fetched`, `contract_detail_fetched`) — **not thread-safe** for concurrent calls.
+
+**Fix:** Replace shared flags with per-request `threading.Event` objects stored in a dict keyed by `reqId`. Callback sets the event; caller waits with `event.wait(timeout=5.0)`. Enables parallel contract resolution.
+
+## 8.4 Event Processing Architecture
+
+**Current state (BOT.py `event_processor`, line 1952):**
+```python
+event_data = event_queue.get(block=False, timeout=0.20)  # block=False ignores timeout
+tick: Tick = event_data["tick"]
+if tick.contract.secType == "STK":
+    dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)  # Full SuperTrend recalc!
+```
+
+**Problems:**
+1. `block=False` with `timeout=0.20` — `block=False` means timeout is ignored; it either returns immediately or raises `Empty`. Should be `block=True, timeout=0.20`.
+2. **Every STK tick triggers full SuperTrend recalculation** (21 candles → DataFrame → 5 iterrows loops). Signals only change on **bar close** events, not on every tick.
+3. **4 event processor threads compete** on the same queue with no priority — OPT ticks (TP/SL checks) are equally delayed as STK ticks.
+4. **No deduplication** — if 3 ticks arrive for SPY before processing, all 3 trigger separate SuperTrend calculations with identical bar data.
+
+**Fixes:**
+
+| Fix | Description | Impact |
+|-----|-------------|--------|
+| **Bar-close triggered signals** | Only run `getCallPutEngulfCheck` when `historicalDataUpdate` fires (new bar close), not on every tick. Use a per-symbol flag/event. | 90% reduction in signal calculations |
+| **Separate OPT and STK queues** | OPT ticks (TP/SL checks) are time-critical; STK ticks (signal detection) are bar-interval. Use priority queue or two queues. | Lower TP/SL latency |
+| **Deduplicate STK ticks** | Before processing, check if a newer tick for the same symbol is in the queue; skip stale ones. | Fewer redundant calculations |
+| **Fix block parameter** | `event_queue.get(block=True, timeout=0.20)` so threads sleep properly instead of busy-spinning. | Lower CPU usage |
+
+## 8.5 Indicators.py — Yahoo Finance HTTP Calls (External Dependency)
+
+**Current state:** Several indicator functions (`RSI`, `MACD`, `OBV`, `IchimokuCloud`, `WILLIAMS`, `ATR`, `fibonacci`) call `yfinance.download()` or `yf.Ticker().history()` — these make HTTP requests to Yahoo Finance servers. Each call takes 200–2000ms.
+
+**These are NOT used in the main SuperTrend flow** but exist as utility functions. If any strategy or code path calls them, it will cause severe latency.
+
+**Fix:** Replace all yfinance-based indicators with TWS-data-based versions that use `history_cache` from `tws_api_client`. All the data needed (OHLCV) is already being streamed from TWS.
+
+## 8.6 IPC Pipeline Optimizations
+
+**Current state:**
+- PnL emitted **every engine loop (~50ms)** — 20 writes/s per metric
+- Each `emit_log()` = 1 `json.dumps()` + 1 `sys.stdout.write()` + 1 `sys.stdout.flush()` = 3 syscalls
+- `_emit_data_status()` iterates **entire tick_cache under lock** every 10s — blocks tick processing
+
+| Fix | Description | Impact |
+|-----|-------------|--------|
+| **Throttle PnL emit to 1s in Python** | Only emit if `time.time() - last_pnl_emit > 1.0`. Currently frontend throttles but engine still does 20 JSON writes/s. | -95% IPC volume |
+| **Batch log emissions** | Buffer log lines for 100–200ms, then emit one event with array of entries. | -80% log IPC |
+| **Lightweight data_status** | Don't iterate full tick_cache; just emit counts and cached prices. Or move heavy iteration to a background thread. | Lower lock contention |
+| **Use msgpack instead of JSON** | msgpack is 2–5× faster to serialize than json.dumps for structured data. | ~50% faster IPC |
+
+---
+
+# PART IX – Professional Trading UI: New Features & Data Display
+
+## 9.1 Dashboard — New Panels & Data
+
+| Feature | Description | Data Source | Priority |
+|---------|-------------|-------------|----------|
+| **Real-time Options Greeks** | Show per-position delta, gamma, theta, vega. Professional traders need these. | TWS `reqMktData` with genericTickList "106" (implied vol) + "100" (option greeks) | P1 |
+| **Intraday P&L Curve** | Time-series line chart of cumulative P&L throughout the day (x=time, y=cumulative $). Way more useful than bar chart of individual trades. | Collect P&L snapshots every 30s–1min into an array; persist in memory. | P1 |
+| **Signal History Timeline** | Visual timeline showing detected signals with icons (▲ CALL, ▼ PUT), outcome (taken / skipped / won / lost), and timestamps. | Emit `signal_detected` events with outcome tracking. | P1 |
+| **Market Overview Mini-panel** | SPY, QQQ, VIX sparkline mini-charts with current price, daily change %, and trend arrow. Gives market context at a glance. | TWS tick data for SPY/QQQ + VIX (subscribe as background symbols). | P2 |
+| **Position P&L Cards** | Per-position card: entry price, current price, TP/SL levels as a horizontal bar/gauge, unrealized P&L, time held, Greeks. | Combine positions data + tick_cache for current prices + order_manager for TP/SL levels. | P1 |
+| **Risk Gauges** | Visual gauges/progress bars for: daily P&L vs limits (how close to lock), margin utilization %, position concentration, buying power used. | Account metrics + config limits. | P2 |
+| **Strategy Performance** | Win rate, avg P&L, trade count broken down by strategy type (SuperTrend vs Engulfing) and signal strength (strongBuy vs normalBuy). | Tag trades with strategy/signal_strength in DB; aggregate on frontend. | P2 |
+| **Heat Map** | P&L heatmap by symbol × hour-of-day. Shows which symbols perform at what times. | Historical trade data aggregated. | P3 |
+| **Order Flow Panel** | Real-time order lifecycle: Pending → Submitted → Filled → TP/SL Monitoring → Closed. Visual pipeline/timeline. | Order status events from order_manager. | P2 |
+
+## 9.2 Logs — Professional Trading Terminal
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Trade Lifecycle Groups** | Collapsible log groups that link all logs for a single trade: signal → entry → TP/SL checks → exit. Click to expand. Use trade ID as group key. | P1 |
+| **Structured Log Categories** | Visual category badges with distinct colors and icons: 🔌 System (gray), 📊 Trading (blue), 💰 Orders (green), 📡 Data (cyan), ⚙️ Strategy (purple), ⚠️ Error (red). | P1 |
+| **Log Search & Regex** | Full-text search bar with regex support. Filter by symbol, order ID, time range. Highlight matches. | P1 |
+| **Log Export** | Download filtered logs as CSV or JSON. Button in log toolbar. | P2 |
+| **Log Persistence** | Write logs to disk (SQLite or rotating log files). Load last N entries on restart. Currently logs are lost on restart. | P2 |
+| **Audio Alerts** | Configurable sound alerts for: trade fill (ka-ching), stop loss hit (alert), TWS disconnect (warning), P&L limit (alarm). Toggle per event type in Settings. | P2 |
+| **Terminal-style Viewer** | Dark monospace viewer with syntax highlighting: prices in green/red, symbols bold, timestamps dimmed, errors red background. | P2 |
+| **Log Severity Sidebar Badge** | Show error count badge on Logs sidebar item. Flash/pulse when new errors arrive. | P1 |
+| **Trade-linked Log Navigation** | From Positions page, click "View Logs" on a position to jump to Logs page filtered to that trade's lifecycle. | P2 |
+| **Compact vs Verbose Toggle** | Toggle to show/hide DEBUG level messages. Compact mode shows only trade-relevant logs. | P2 |
+
+## 9.3 Analytics — Advanced Metrics
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Drawdown Chart** | Line chart showing drawdown from peak over time. Critical risk metric. | P1 |
+| **Risk Metrics Panel** | Sharpe ratio, Sortino ratio, max drawdown %, expectancy (avg win × win rate - avg loss × loss rate), profit factor, recovery factor. | P1 |
+| **Trade Distribution Charts** | Histogram by time of day, day of week, holding duration. Identify best trading windows. | P2 |
+| **Symbol-level Breakdown** | Table/chart showing P&L, win rate, avg trade per symbol. Identify best/worst symbols. | P2 |
+| **Cumulative Multi-day View** | Equity curve spanning multiple days (requires persistent trade DB). Show daily returns, running total. | P2 |
+| **Strategy Comparison** | Side-by-side comparison of SuperTrend vs Engulfing: win rate, avg P&L, trade count, profit factor. | P2 |
+| **Trade Execution Quality** | Measure slippage: signal price vs fill price, time from signal to fill. Identify execution issues. | P3 |
+| **Session Summary Card** | Auto-generated end-of-day summary: total trades, P&L, best/worst trade, win rate, time in market. | P2 |
+
+## 9.4 Positions — Enhanced Display
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Live P&L per Position** | Show current unrealized P&L with bid/ask/last prices updating in real-time (not just on 5s refresh). | P1 |
+| **TP/SL Visual Gauge** | Horizontal bar showing entry → current price → TP and SL levels. Green zone (profit), red zone (loss). | P1 |
+| **Greeks per Position** | Delta, gamma, theta, vega columns in position table. | P1 |
+| **Time Held** | Show how long each position has been open (e.g. "12m 34s"). | P2 |
+| **Position Sizing Info** | Show contract cost, max risk (entry - SL × qty × 100), risk as % of account. | P2 |
+| **Quick Adjust TP/SL** | Inline edit TP and SL values from the positions table without going to settings. | P2 |
+| **Position Alerts** | Visual alert when position is within 10% of TP or SL (glow/pulse effect). | P2 |
+
+---
+
+# PART X – Engine & Backend Improvements
+
+## 10.1 Trading Engine Refactoring
+
+| Item | Description | Priority |
+|------|-------------|----------|
+| **Class-based BOT** | Refactor BOT.py's 30+ globals into a TradingEngine class with proper state management. Eliminates race conditions and enables testing. | P1 |
+| **Consolidated DB** | Merge dual databases (db/orders.db + database/trades.db) into one with migrations. Add trade_id linking. | P1 |
+| **Fix SQL Injection** | data_access.py `update_option_order()` uses f-strings for SQL. Switch to parameterized queries. | P0 (security) |
+| **Consolidated Loggers** | Merge 3 logger implementations (common.py, logger.py, utils/logger.py) into one with structured output. | P2 |
+| **Threading.Event for waits** | Replace all `time.sleep()` polling loops with `threading.Event` or `asyncio`. | P1 |
+| **Config validation** | Validate config in Rust before sending to sidecar: numeric ranges, required fields, symbol format. | P2 |
+
+## 10.2 New Sidecar Events & Commands
+
+| Event/Command | Direction | Description | Priority |
+|---------------|-----------|-------------|----------|
+| **greeks_update** | Sidecar → Rust | Per-position Greeks (delta, gamma, theta, vega) every 5s | P1 |
+| **signal_history** | Sidecar → Rust | Full signal with outcome (taken/skipped/won/lost) | P1 |
+| **order_lifecycle** | Sidecar → Rust | Detailed order state transitions for Order Flow panel | P2 |
+| **bar_close** | Sidecar → Rust | Notify frontend when a new candle bar closes (for chart updates) | P2 |
+| **health** | Rust → Sidecar | Health check: alive, TWS connected, queue size, last signal time | P1 |
+| **export_trades** | Rust → Sidecar | Export trades to CSV/JSON file | P2 |
+| **session_summary** | Sidecar → Rust | End-of-day trading summary | P2 |
+| **tick_stream** | Sidecar → Rust | Optional: stream real-time tick prices for subscribed symbols (for live position P&L) | P2 |
+
+## 10.3 TWS Data Enhancements
+
+| Data | TWS API | Current | Needed For | Priority |
+|------|---------|---------|------------|----------|
+| **Option Greeks** | `reqMktData` with genericTickList "100,106" | Not requested | Position Greeks, Greeks per position | P1 |
+| **reqPnLSingle** | `reqPnLSingle(reqId, account, "", conId)` | Not used | Per-position P&L from TWS (more accurate than manual calc) | P1 |
+| **VIX data** | Subscribe to VIX as background symbol | Not subscribed | Market overview panel | P2 |
+| **Execution details** | `reqExecutions` | Not used | Trade execution quality metrics, slippage analysis | P2 |
+| **Historical data (multi-day)** | `reqHistoricalData` with "5 D" or more | "1 D" only | Multi-day analytics, drawdown chart | P2 |
+| **Market depth** | `reqMktDepth` | Not used | Optional: Level 2 display for advanced users | P3 |
+
+---
+
+# PART VI – Priorities Summary (Updated)
 
 | Priority | Area | Item |
 |----------|------|------|
 | ~~P0~~ | Backend | ~~Continuous PnL + full IBKR account metrics (§3.1)~~ **Done** |
+| **P0** | **Security** | **Fix SQL injection in data_access.py** (§10.1) |
+| **P1** | **Performance** | **Vectorize SuperTrend/BOTSingal** — replace 5 iterrows loops with numpy/ewm (§8.1) |
+| **P1** | **Performance** | **Bar-close triggered signals** — only run signal detection on new bar close, not every tick (§8.4) |
+| **P1** | **Performance** | **Remove hard sleeps in init_data_feed** — replace 15s of time.sleep() with Event-based waits (§8.2) |
+| **P1** | **Performance** | **Throttle PnL emit to 1s in Python engine** (§8.6) |
+| **P1** | **Performance** | **Fix event_queue.get()** — block=True with timeout instead of block=False (§8.4) |
 | P1 | Backend | Remaining commands: export_trades, health (§3.2); get_account_metrics done |
+| **P1** | **Backend** | **Options Greeks from TWS** — reqMktData genericTick "100,106" + greeks_update event (§10.3) |
+| **P1** | **Backend** | **reqPnLSingle for per-position P&L** (§10.3) |
 | P1 | Frontend | Account/Summary view (§4.1) **Done** (Dashboard card); Alerts & notifications (§4.2) |
-| ~~P1~~ | Frontend | ~~**Performance:** Fix UI hang on tab switch (§4.5)~~ **Done** (throttle PnL, lazy routes, memo layout, virtualize lists) |
+| **P1** | **Frontend** | **Intraday P&L Curve** — time-series cumulative P&L chart (§9.1) |
+| **P1** | **Frontend** | **Signal History Timeline** — visual signal timeline with outcomes (§9.1) |
+| **P1** | **Frontend** | **Position P&L Cards with TP/SL gauge** — live per-position display (§9.1, §9.4) |
+| **P1** | **Frontend** | **Trade Lifecycle Log Groups** — collapsible grouped logs per trade (§9.2) |
+| **P1** | **Frontend** | **Log Search & Severity Badges** — regex search, error count badge (§9.2) |
+| **P1** | **Frontend** | **Drawdown Chart + Risk Metrics** — Sharpe, Sortino, max DD, expectancy (§9.3) |
+| ~~P1~~ | Frontend | ~~**Performance:** Fix UI hang on tab switch (§4.5)~~ **Done** |
 | P1 | UI | Unique typography + thematic color (§5.2, §5.3) |
-| P2 | Backend | Sidecar account_metrics event **Done**; config validation (§3.3, §3.4); throttle PnL emit in engine to 1s (§4.6) |
-| P2 | Frontend | Export & reporting (§4.3); UX (shortcuts, confirmations, stale indicator) (§4.4); **Optimizations:** store selectors (LiveStats, DataFeedStatus, AccountSummary, RiskManagement), useMemo chart data (PnLChart, EquityCurve), usePositions getState fix, batch addLog (§4.6) |
+| **P2** | **Performance** | **Event-based contract resolution** — replace polling in get_strikes/get_contract_detail (§8.3) |
+| **P2** | **Performance** | **Separate OPT/STK queues** — priority queue for TP/SL checks (§8.4) |
+| **P2** | **Performance** | **Replace yfinance indicators with TWS data** (§8.5) |
+| **P2** | **Performance** | **Batch log emissions in sidecar** (§8.6) |
+| P2 | Backend | Config validation (§3.4); class-based BOT refactor (§10.1); consolidated DB + loggers (§10.1) |
+| **P2** | **Backend** | **New events: order_lifecycle, bar_close, session_summary** (§10.2) |
+| P2 | Frontend | Export & reporting (§4.3); UX (shortcuts, confirmations, stale indicator) (§4.4) |
+| P2 | Frontend | **Optimizations:** store selectors, useMemo chart data, usePositions getState fix, batch addLog (§4.6) |
+| **P2** | **Frontend** | **Market Overview Mini-panel** — SPY/QQQ/VIX sparklines (§9.1) |
+| **P2** | **Frontend** | **Risk Gauges** — visual margin/P&L limit gauges (§9.1) |
+| **P2** | **Frontend** | **Strategy Performance Breakdown** — per-strategy analytics (§9.1) |
+| **P2** | **Frontend** | **Order Flow Panel** — order lifecycle visualization (§9.1) |
+| **P2** | **Frontend** | **Log Persistence + Export + Audio Alerts** (§9.2) |
+| **P2** | **Frontend** | **Symbol-level Analytics + Session Summary** (§9.3) |
+| **P2** | **Frontend** | **Quick Adjust TP/SL from Positions** (§9.4) |
 | P2 | UI | Motion and feedback; compact mode (§5.3) |
-| P3 | All | BOT.py TODO cleanup; tests; code signing; docs (§II, §4.6); optional log/event batching in sidecar and Rust (§4.6) |
+| P3 | All | BOT.py TODO cleanup; tests; code signing; docs |
+| **P3** | **Performance** | **msgpack IPC, lightweight data_status, numba-compiled SuperTrend** (§8.6, §8.1) |
+| **P3** | **Frontend** | **Heat Map, Trade Distribution, Execution Quality** (§9.1, §9.3) |
+| **P3** | **Backend** | **Market depth, multi-day historical data** (§10.3) |
+
+---
+
+# PART XI – UI Library Evaluation & Professional Trading System Modernization
+
+## 11.1 Current UI Stack Audit
+
+The app already has a solid foundation:
+
+| Layer | Current | Version | Status |
+|-------|---------|---------|--------|
+| **Framework** | React | 19.0.0 | ✅ Latest |
+| **Bundler** | Vite | 6.0.0 | ✅ Latest |
+| **Styling** | Tailwind CSS | 3.4.17 | ✅ Good — CSS variable theming, HSL colors, dark/light mode |
+| **Components** | shadcn/ui (partial) | — | ⚠️ Only 7 of 40+ components installed: button, card, badge, input, progress, separator, switch |
+| **Charts** | Recharts | 2.15.0 | ⚠️ Good for analytics; **not suitable for candlestick/OHLCV trading charts** |
+| **State** | Zustand | 5.0.0 | ✅ Lightweight, performant |
+| **Virtualization** | @tanstack/react-virtual | 3.13.18 | ✅ Used in Logs & ActivityLog |
+| **Animation** | Framer Motion | 11.15.0 | ✅ Used minimally |
+| **Icons** | Lucide React | 0.469.0 | ✅ Consistent icon set |
+| **Fonts** | Inter (sans), JetBrains Mono (mono) | — | ⚠️ Inter is ubiquitous; could be more distinctive |
+| **Data Tables** | Raw HTML `<table>` | — | ❌ No sorting, filtering, resizing, pagination |
+| **Notifications** | Basic custom Toaster | — | ❌ No action-capable toasts, no stacking, no persistence |
+| **Command Palette** | None | — | ❌ No keyboard-driven navigation |
+| **Candlestick Charts** | None | — | ❌ No OHLCV charting, no indicator overlays |
+| **Loading States** | None (spinner text only) | — | ❌ No skeleton screens, no shimmer loading |
+
+## 11.2 Library Comparison: shadcn/ui vs MUI vs DaisyUI
+
+### ⭐ Verdict: **Keep shadcn/ui + Tailwind CSS (already in use) — extend with trading-specific libraries**
+
+| Criteria | **shadcn/ui + Tailwind** | **MUI (Material-UI)** | **DaisyUI** |
+|----------|--------------------------|----------------------|-------------|
+| **Bundle size** | ~0 KB runtime (copy-paste components, no lib import) | ~150–300 KB gzipped (core + DataGrid) | ~20 KB (Tailwind plugin) |
+| **Customizability** | ⭐⭐⭐⭐⭐ Full source code ownership; every pixel customizable | ⭐⭐⭐ Theme overrides but constrained by Material Design | ⭐⭐⭐ Tailwind-based but pre-styled, less granular |
+| **Dark mode** | ⭐⭐⭐⭐⭐ CSS variable-based, already implemented | ⭐⭐⭐⭐ Theme provider, works but heavier | ⭐⭐⭐⭐ data-theme attribute, easy swap |
+| **Real-time data perf** | ⭐⭐⭐⭐⭐ No runtime overhead; React.memo friendly | ⭐⭐⭐ Emotion/styled-components re-render cost | ⭐⭐⭐⭐ Tailwind = no runtime style overhead |
+| **Data grid/tables** | ❌ No built-in (needs TanStack Table) | ⭐⭐⭐⭐⭐ MUI DataGrid (sorting, filtering, virtual scroll, grouping) | ❌ Basic HTML table styling only |
+| **Financial components** | ❌ No built-in (custom build) | ⚠️ Some via DataGrid, no chart-specific | ❌ None |
+| **Accessibility** | ⭐⭐⭐⭐⭐ Radix UI primitives (WAI-ARIA compliant) | ⭐⭐⭐⭐ Material spec compliant | ⭐⭐⭐ Basic aria attributes |
+| **Trading platform usage** | TradingView alternatives, Crypto exchanges (Kraken, Coinbase Pro), Fintech startups | Bloomberg-like institutional terminals, Enterprise trading desks | Not used by known trading platforms |
+| **Ecosystem** | 40+ components, growing fast | 50+ components, enterprise mature | ~50 components, general purpose |
+| **Migration cost for this project** | **Zero** — already using it; extend what's there | **High** — complete restyle, new dependencies, theme rewrite | **Medium** — can overlay but conflicts with existing shadcn patterns |
+| **TypeScript** | ⭐⭐⭐⭐⭐ First-class TypeScript | ⭐⭐⭐⭐ Good TypeScript support | ⚠️ CSS-only, no TS components |
+
+### Why NOT switch to MUI or DaisyUI:
+1. **Already invested in shadcn/ui** — 7 components, full CSS variable theming, Tailwind integration. Switching = rewrite.
+2. **MUI is too heavy** for a Tauri desktop app where every KB matters and real-time data updates at 1s intervals. Emotion (MUI's CSS-in-JS) recalculates styles on each render.
+3. **DaisyUI is too generic** — its pre-built component styles look good for SaaS apps but lack the data-density and precision needed for trading terminals.
+4. **shadcn/ui gives you the code** — you can tune every pixel for trading use cases (monospace pricing, P&L coloring, ticker animations).
+
+## 11.3 Recommended Library Stack (Definitive)
+
+### Core (Already Installed — Extend)
+
+| Library | Purpose | Status |
+|---------|---------|--------|
+| **shadcn/ui** | Full component library — install ALL remaining components | ⚠️ Extend (7→40+ components) |
+| **Tailwind CSS 3** | Utility-first styling, CSS variables | ✅ Already configured |
+| **Zustand 5** | State management | ✅ Already in use |
+| **Framer Motion** | Animations and transitions | ✅ Already installed |
+| **Lucide React** | Icon system | ✅ Already in use |
+| **@tanstack/react-virtual** | List virtualization | ✅ Already in Logs |
+
+### New Libraries to Add
+
+| Library | npm Package | Purpose | Bundle Size | Priority |
+|---------|-------------|---------|-------------|----------|
+| **TradingView Lightweight Charts** | `lightweight-charts` | Professional candlestick/OHLCV charts with indicator overlays, crosshair, volume bars. Industry standard. | ~45 KB gzipped | **P0** |
+| **TanStack Table v8** | `@tanstack/react-table` | Headless data table: sorting, filtering, column resizing/pinning, row selection, pagination. For positions, order history, trades. | ~15 KB gzipped | **P0** |
+| **Sonner** | `sonner` | Professional toast notifications with stacking, actions, progress, rich content. Created by shadcn author (Emil Kowalski). | ~5 KB gzipped | **P1** |
+| **cmdk** | `cmdk` | Command palette (⌘+K / Ctrl+K). Instant keyboard navigation: search symbols, run commands, switch pages, emergency stop. Power-user essential. | ~4 KB gzipped | **P1** |
+| **Vaul** | `vaul` | Drawer/sheet component. Slide-out panels for position details, trade drilldowns on mobile/compact mode. | ~3 KB gzipped | **P2** |
+| **react-resizable-panels** | `react-resizable-panels` | Resizable dashboard panels. Let power users customize layout: expand chart, shrink logs, etc. | ~8 KB gzipped | **P2** |
+| **nuqs** | `nuqs` | URL-based state management for filters (log level, symbol, date range). Shareable/bookmarkable filter states. | ~3 KB gzipped | **P3** |
+
+**Total new bundle:** ~83 KB gzipped — acceptable for a Tauri desktop app.
+
+### Libraries Explicitly NOT Recommended
+
+| Library | Reason NOT to use |
+|---------|-------------------|
+| **MUI / Material-UI** | Too heavy (+300 KB), CSS-in-JS runtime cost, conflicts with Tailwind theming. Overkill when TanStack Table + shadcn covers the same use cases. |
+| **DaisyUI** | Overlaps and conflicts with existing shadcn/ui components. Pre-styled approach contradicts shadcn's "own your components" philosophy. |
+| **Ant Design** | Very heavy (+400 KB), Chinese design language may feel foreign, Moment.js dependency, non-trivial tree-shaking. |
+| **AG Grid** | Powerful but commercial license for advanced features ($2K+/dev); TanStack Table + shadcn/ui achieves same result for free. |
+| **D3.js** | Too low-level for typical trading charts; TradingView Lightweight Charts provides better out-of-box experience with 10× less code. |
+| **Chart.js** | Less suited for financial data than Recharts (already in use) or Lightweight Charts. No built-in candlestick support. |
+| **react-hot-toast** | Sonner is newer, lighter, better designed by same ecosystem (Emil Kowalski / shadcn). |
+
+## 11.4 shadcn/ui Component Installation Plan
+
+### Phase 1 — Critical (install immediately)
+
+These components are needed for the trading-specific features in Parts IX and XI:
+
+| Component | Usage in Trading App |
+|-----------|---------------------|
+| **dialog** | Order confirmation, trade details, position close, emergency stop confirmation |
+| **dropdown-menu** | Position actions (close, adjust TP/SL, view logs), symbol context menu |
+| **select** | Strategy selector, timeframe picker, symbol filter, expiry selector |
+| **tabs** | Dashboard sub-sections (Overview / Signals / Activity), Analytics views |
+| **tooltip** | Chart data points, column headers, abbreviated metric explanations |
+| **table** | Shadcn table primitives for styled position/trade/order tables |
+| **skeleton** | Loading states for account metrics, positions, charts on startup |
+| **alert** | System alerts (TWS disconnect, P&L limit near, margin warning) |
+| **collapsible** | Trade lifecycle log groups (expand to see all events for one trade) |
+| **scroll-area** | Custom scrollable regions in activity log, log viewer, position list |
+| **toast** (Sonner) | Trade fills, errors, connection events — with actions and rich content |
+| **command** (cmdk) | Command palette for power users (⌘K / Ctrl+K) |
+
+### Phase 2 — Enhanced UX
+
+| Component | Usage |
+|-----------|-------|
+| **popover** | Quick details on hover (position Greeks, signal breakdown, metric formula) |
+| **sheet** | Slide-out panel for position details, trade drill-down, settings quick-access |
+| **hover-card** | Rich preview on symbol hover (last price, daily change, mini-chart) |
+| **slider** | Quick adjust TP/SL from positions table, volume filter in analytics |
+| **context-menu** | Right-click on position row for actions (close, adjust, view logs, chart) |
+| **toggle-group** | Timeframe selector (1m / 5m / 15m / 1h / 1D), view mode (list / grid / compact) |
+| **aspect-ratio** | Consistent chart proportions across screen sizes |
+| **avatar** | Account/user indicator in header |
+
+### Phase 3 — Polish
+
+| Component | Usage |
+|-----------|-------|
+| **resizable** | Resizable dashboard panels (expand chart, shrink log area) |
+| **accordion** | Settings categories, strategy parameter groups |
+| **navigation-menu** | Enhanced sidebar with sub-menus |
+| **menubar** | Top menu bar (File, Trading, View, Help) for desktop-native feel |
+| **calendar** + **date-picker** | Date range filter for trades, logs, analytics |
+| **data-table** | Full shadcn data table pattern (TanStack Table + shadcn table primitives + pagination + column header dropdowns) |
+
+## 11.5 TradingView Lightweight Charts — Integration Plan
+
+**Why this is the #1 missing library:** Professional trading platforms are defined by their chart. Recharts is fine for analytics bar/line charts, but options traders need **candlestick charts with indicator overlays**.
+
+### What Lightweight Charts provides:
+
+- **Candlestick series** — OHLCV with proper wicks, body coloring (green/red)
+- **Line series** — For SuperTrend bands, EMA overlays, support/resistance
+- **Histogram series** — Volume bars below candlestick chart
+- **Area series** — For P&L equity curve with gradient fill
+- **Markers** — Signal entry/exit markers directly on chart (▲ BUY, ▼ SELL)
+- **Crosshair** — Professional hover with OHLCV + indicator values in legend
+- **Time scale** — Proper financial time axis (skip weekends/after-hours)
+- **Real-time updates** — `series.update()` for live bar updates from TWS stream
+- **Themes** — Full color customization matching our dark/light themes
+- **Lightweight** — ~45 KB gzipped, WebGL rendered, handles 100K+ data points
+
+### Components to build:
+
+```
+src/components/charts/
+├── TradingChart.tsx          -- Main wrapper: candlestick + volume + indicator overlays
+├── MiniChart.tsx             -- Sparkline version for market overview (SPY/QQQ/VIX)
+├── PnLEquityCurve.tsx        -- Area chart for intraday cumulative P&L
+├── useChartTheme.ts          -- Hook to sync chart colors with app theme
+├── indicators/
+│   ├── SuperTrendOverlay.tsx  -- SuperTrend line + signal markers on chart
+│   ├── EMAOverlay.tsx         -- EMA 8/13/21 lines
+│   └── VolumeHistogram.tsx    -- Volume bars below main chart
+└── utils/
+    ├── chartData.ts           -- Transform TWS bar data → chart format
+    └── timeScale.ts           -- Financial time helpers
+```
+
+### Data flow for live chart updates:
+
+```
+TWS → historicalDataUpdate callback → history_cache → engine emits bar_close event
+→ Rust forwards trading:bar_close → React useTradingEvents → chart store
+→ TradingChart.tsx calls series.update(newBar) → WebGL re-render (< 1ms)
+```
+
+## 11.6 TanStack Table — Professional Data Grid Plan
+
+**Why needed:** Current positions/trades use raw HTML `<table>` with no sorting, filtering, or column management. Professional trading terminals (Bloomberg, Thinkorswim, Interactive Brokers) all have powerful, configurable data grids.
+
+### Features to implement:
+
+| Feature | Trading Use Case |
+|---------|------------------|
+| **Column sorting** | Sort positions by P&L (best/worst first), sort trades by time, symbol |
+| **Column filtering** | Filter positions by symbol, type (CALL/PUT), P&L range |
+| **Column resizing** | Users resize columns to see what matters (expand P&L, shrink IDs) |
+| **Column pinning** | Pin Symbol and P&L columns so they stay visible when scrolling horizontally |
+| **Row selection** | Select multiple positions for batch close |
+| **Pagination** | Trade history can grow to 100s of entries; paginate at 25/50/100 rows |
+| **Row grouping** | Group trades by symbol or by day |
+| **Virtual scrolling** | Combine with @tanstack/react-virtual for 1000+ row performance |
+| **Custom cell renderers** | P&L cells with color, Greeks with formatting, TP/SL gauges inline |
+| **Row expansion** | Click to expand position row → show trade lifecycle, Greeks breakdown, chart |
+
+### Tables to upgrade:
+
+| Current Location | Current State | Upgrade To |
+|-----------------|---------------|------------|
+| **PositionsPage** — Active positions | Raw `<table>`, 9 columns, no sort/filter | TanStack Table + shadcn table + column sort + row expand |
+| **PositionHistory** — Closed trades | Simple list | TanStack Table + pagination + symbol filter + P&L sort |
+| **LogsPage** — System logs | Virtualized flat list | TanStack Table with column filter (level, category) + search |
+| **AccountSummary** — IBKR metrics | Key/value cards | Keep cards (already good) |
+| **StockList** — Symbols | Simple list with add/remove | TanStack Table with inline edit and real-time prices |
+
+## 11.7 Professional Trading Terminal Design System
+
+### Color System Update
+
+Extend the current HSL variable system with trading-specific semantic colors:
+
+```css
+/* ─── Trading Colors (add to index.css) ─── */
+:root {
+  --profit: 160 84% 39%;        /* Emerald — already defined as success */
+  --loss: 0 84% 60%;            /* Red — already defined as destructive */
+  --bid: 160 84% 39%;           /* Green for bid prices */
+  --ask: 0 84% 60%;             /* Red for ask prices */
+  --signal-call: 160 84% 39%;   /* Green for CALL signals */
+  --signal-put: 0 84% 60%;      /* Red for PUT signals */
+  --signal-neutral: 220 9% 46%; /* Gray for no signal */
+  --chart-up: 160 84% 39%;      /* Candle body up */
+  --chart-down: 0 84% 60%;      /* Candle body down */
+  --chart-volume: 217 92% 65%;  /* Volume histogram */
+  --chart-grid: 220 12% 93%;    /* Chart grid lines */
+  --greeks-delta: 217 92% 65%;  /* Blue for delta */
+  --greeks-gamma: 280 65% 60%;  /* Purple for gamma */
+  --greeks-theta: 38 92% 50%;   /* Amber for theta */
+  --greeks-vega: 160 84% 39%;   /* Teal for vega */
+}
+```
+
+### Typography Enhancement
+
+| Element | Current | Recommended | Why |
+|---------|---------|-------------|-----|
+| **App title / brand** | Inter bold | **Geist Sans** or **Satoshi** | More distinctive than Inter; used by modern fintech |
+| **Section headers** | Inter semibold | **DM Sans** or keep Inter | Slightly warmer, more readable at small sizes |
+| **Financial numbers** | JetBrains Mono | **JetBrains Mono** (keep) | ✅ Already excellent for tabular numbers |
+| **Log viewer** | JetBrains Mono 10px | **IBM Plex Mono** (secondary mono) | Terminal-grade readability; distinguish logs from data |
+| **Prices / P&L** | JetBrains Mono with .tabular-nums | Keep + add **proportional-nums for large hero numbers** | Hero P&L should use proportional spacing for visual weight |
+
+### Micro-interactions for Trading
+
+| Trigger | Animation | Purpose |
+|---------|-----------|---------|
+| **P&L value changes** | Brief background flash (green/red → transparent, 300ms ease-out) | Draw eye to P&L update without being distracting |
+| **New trade fill** | Sonner toast slides in from right with confetti icon for profit | Celebrate wins, professional-feeling confirmation |
+| **Stop loss hit** | Toast with warning icon + brief header pulse red (200ms) | Urgent but not alarming — this is expected behavior |
+| **TWS connected** | Sidebar status chip does a brief scale-up (1.05→1.0, 200ms) | Visible confirmation of connection |
+| **TWS disconnected** | Header gets a subtle red top-border (animated in 300ms) that stays until reconnect | Persistent visual warning without blocking UI |
+| **Signal detected** | Signal badge in Activity area does a brief glow/pulse (one cycle, 500ms) | Catch attention for important trading events |
+| **Position near TP/SL** | Position row gets a pulsing left border (emerald for near-TP, red for near-SL) | Pre-alert before TP/SL hits |
+| **Emergency stop** | Full-screen flash (red, 100ms) then instant stop | Matches the urgency of the action |
+| **Tab/page switch** | Page content fades in (opacity 0→1, 150ms) | Already have fade-up; make it snappier |
+
+### Command Palette (cmdk) Design
+
+Professional trading terminals (Bloomberg, Thinkorswim) are keyboard-driven. Add ⌘K/Ctrl+K command palette:
+
+```
+Groups:
+├── Navigation
+│   ├── Go to Dashboard           (Ctrl+1)
+│   ├── Go to Analytics           (Ctrl+2)
+│   ├── Go to Positions           (Ctrl+3)
+│   ├── Go to Logs                (Ctrl+4)
+│   └── Go to Settings            (Ctrl+5)
+│
+├── Trading Actions
+│   ├── Start Trading             (Ctrl+Shift+S)
+│   ├── Stop Trading              (Ctrl+Shift+X)
+│   ├── Emergency Stop            (Ctrl+Shift+E)
+│   ├── Close All Positions       (Ctrl+Shift+C)
+│   └── Refresh Positions         (Ctrl+R)
+│
+├── Quick Search
+│   ├── Search symbol: SPY...     (type to filter)
+│   ├── Search logs: error...     (type to filter)
+│   └── Search trades: AAPL...    (type to filter)
+│
+├── View
+│   ├── Toggle Dark Mode          (Ctrl+D)
+│   ├── Toggle Compact Mode       (Ctrl+Shift+D)
+│   └── Toggle Auto-scroll Logs   (Ctrl+L)
+│
+└── Export
+    ├── Export Trades CSV
+    ├── Export Logs JSON
+    └── Export Settings
+```
+
+## 11.8 Professional Dashboard Layout Redesign
+
+### Current layout issues:
+
+1. **Linear vertical stack** — all cards stack top to bottom; wastes horizontal space on wide monitors.
+2. **No chart** — the #1 thing a trader wants to see is a chart with price action and signals.
+3. **Config panels dominate** — TradeParameters, ConnectionConfig, StockList are config panels that take up 50% of dashboard space. These should be in Settings or a collapsible sidebar.
+4. **No market overview** — no SPY/QQQ/VIX context visible.
+
+### Proposed layout (3-panel professional trading terminal):
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ HEADER: [Trading Active] │ P&L: +$420.50 │ Trades: 5 │ Win: 80% │ Clock ET │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ SIDEBAR │  MAIN AREA (resizable panels)                                     │
+│         │                                                                    │
+│ Dashboard│  ┌──────────────────────┬────────────────────────────────────┐    │
+│ Analytics│  │  LiveStats (6 cards) │  Market Overview (SPY/QQQ/VIX)    │    │
+│ Positions│  ├──────────────────────┴────────────────────────────────────┤    │
+│ Logs    │  │                                                            │    │
+│ Settings│  │  TRADING CHART (candlestick + SuperTrend + volume)         │    │
+│         │  │  [1m] [5m] [15m] [1h] [1D]     Symbol: SPY ▾              │    │
+│         │  │                                                            │    │
+│ ─────── │  ├────────────────────────────┬───────────────────────────────┤    │
+│ TWS ●   │  │  ACTIVE POSITIONS          │  SIGNAL ACTIVITY              │    │
+│ Engine ● │  │  (TanStack Table)         │  (Signal timeline + log)      │    │
+│ DEMO    │  │  Sort/Filter/Expand        │  ▲ CALL SPY 14:32 strongBuy  │    │
+│         │  │  SPY 590C +$120 ███████░░  │  ▼ PUT QQQ 14:28 mediumSell  │    │
+│         │  │  AAPL 185P -$40 ██░░░░░░░  │  ▲ CALL TSLA 14:15 normalBuy│    │
+│         │  └────────────────────────────┴───────────────────────────────┤    │
+│         │  TRADING CONTROLS + ACCOUNT SUMMARY (collapsible bottom bar)  │    │
+└─────────┴───────────────────────────────────────────────────────────────────┘
+```
+
+**Key changes from current layout:**
+
+| Change | Current | Proposed | Why |
+|--------|---------|----------|-----|
+| **Add trading chart** | No chart on dashboard | Candlestick chart with SuperTrend overlay | This is what traders look at 90% of the time |
+| **Move config panels** | TradeParameters, ConnectionConfig, StockList on dashboard | Move to Settings page | Config rarely changes during trading; dashboard is for monitoring |
+| **Add signal activity** | Only Activity Log (generic) | Dedicated signal timeline panel | Signals are the core decision driver; deserve prominent placement |
+| **Market overview** | None | SPY/QQQ/VIX mini-charts in header area | Market context is essential for options trading |
+| **Resizable panels** | Fixed grid | react-resizable-panels | Power users customize their workspace |
+| **Trading controls** | Full card with Start/Stop/Emergency | Compact bar or keep in sidebar | Start/Stop used once per session; doesn't need large card |
+
+## 11.9 Implementation Phases & Priorities
+
+### Phase 0 — Foundation (1–2 days, no visual change)
+
+| Task | Details |
+|------|---------|
+| ~~Install shadcn/ui components (no Radix deps)~~ | ~~`tabs`, `tooltip`, `skeleton`, `alert` — pure Tailwind implementations~~ **✅ Done** |
+| Install missing shadcn/ui components (Radix) | `dialog`, `dropdown-menu`, `select`, `collapsible`, `scroll-area` — need Radix deps |
+| Install new libraries | `lightweight-charts`, `@tanstack/react-table`, `sonner`, `cmdk` |
+| ~~Set up trading color tokens~~ | ~~`--bid`, `--ask`, `--signal-call`, `--signal-put`, `--greeks-*` CSS vars + Tailwind `trading.*`, `signal.*`, `greeks.*` colors~~ **✅ Done** |
+| Create chart wrapper | `TradingChart.tsx` with Lightweight Charts initialization + theme sync |
+| Create data-table wrapper | `DataTable.tsx` combining TanStack Table + shadcn table primitives |
+
+### Phase 1 — Core Trading UI (1–2 weeks)
+
+| Task | Component(s) | Status |
+|------|-------------|--------|
+| **Trading chart on dashboard** | `TradingChart.tsx`, `SuperTrendOverlay.tsx` | 🔴 TODO — highest UX impact |
+| ~~**Skeleton loading states**~~ | ~~StatCard, LiveStats, AccountSummary, PositionsPage~~ | **✅ Done** |
+| **Sonner toast notifications** | Replace custom Toaster; trade fills, errors, connections | TODO (needs npm install) |
+| **Position table upgrade** | `PositionsPage.tsx` with TanStack Table + sort + filter | TODO (needs npm install) |
+| ~~**P&L flash animations**~~ | ~~Header, StatCard, PnLValue — green/red flash on value change~~ | **✅ Done** |
+
+### Phase 2 — Professional Features (2–3 weeks)
+
+| Task | Component(s) | Status |
+|------|-------------|--------|
+| **Command palette** | cmdk integration, keyboard shortcuts | TODO (needs npm install) |
+| ~~**Signal history timeline**~~ | ~~`SignalActivity.tsx` — visual signal feed with direction icons, strength badges, timestamps~~ | **✅ Done** |
+| ~~**Market overview panel**~~ | ~~`MarketOverview.tsx` — live tick data grid with bid/ask, priority symbol sorting~~ | **✅ Done** |
+| ~~**Position P&L gauge**~~ | ~~`PositionRow.tsx` — horizontal gauge bar per position with color-coded fill~~ | **✅ Done** |
+| ~~**Dashboard layout redesign**~~ | ~~`DashboardPage.tsx` — tabbed layout (Overview, Signals & Market, Configuration, Activity)~~ | **✅ Done** |
+| ~~**Log severity badges**~~ | ~~Error count in Sidebar, structured log categories with icons, log search in LogsPage~~ | **✅ Done** |
+
+### Phase 3 — Advanced & Polish (3–4 weeks)
+
+| Task | Component(s) | Impact |
+|------|-------------|--------|
+| **Greeks display** | Per-position delta/gamma/theta/vega columns | Options trader essential |
+| **Intraday P&L curve** | Lightweight Charts area series for cumulative P&L | Performance tracking |
+| **Drawdown chart** | Equity high-water mark with drawdown shading | Risk visualization |
+| **Trade lifecycle groups** | Collapsible log groups per trade ID | Debug and audit |
+| **Audio alerts** | Configurable sound per event type | Hands-free monitoring |
+| **Export (CSV/JSON)** | Trades, logs, settings export | Compliance and analysis |
+| **Typography refresh** | Geist/Satoshi for headings, IBM Plex Mono for logs | Distinctive brand identity |
+| **Compact mode toggle** | Reduce padding/font for data density | Power user mode |
+
+### Phase 4 — Premium Features (4+ weeks)
+
+| Task | Component(s) |
+|------|-------------|
+| Order flow panel (order lifecycle pipeline) | Custom component |
+| Symbol-level analytics breakdown | TanStack Table + Recharts |
+| Multi-day equity curve | Lightweight Charts + persistent DB |
+| P&L heatmap (symbol × hour) | Custom canvas or Recharts heatmap |
+| Strategy comparison dashboard | Side-by-side analytics |
+| Resizable dashboard panels | react-resizable-panels |
+| Calendar-based trade history | shadcn calendar + date-picker |
+
+---
+
+# PART XII – Updated Priorities (Including UI Modernization)
+
+| Priority | Area | Item | Section |
+|----------|------|------|---------|
+| ~~P0~~ | Backend | ~~Continuous PnL + IBKR account metrics~~ **Done** | §3.1 |
+| **P0** | **Security** | **Fix SQL injection in data_access.py** | §10.1 |
+| ~~P0~~ | Frontend | ~~Install shadcn/ui Phase 1 components (skeleton, tabs, alert, tooltip)~~ **Done** (no external deps, pure Tailwind) | §11.4 |
+| **P0** | **Frontend** | **Install Lightweight Charts + TanStack Table + Sonner + cmdk** (requires npm install) | §11.3 |
+| **P0** | **Frontend** | **Add TradingView candlestick chart to Dashboard** (biggest UX impact) | §11.5, §11.8 |
+| **P1** | **Performance** | **Vectorize SuperTrend/BOTSingal** | §8.1 |
+| **P1** | **Performance** | **Bar-close triggered signals** | §8.4 |
+| **P1** | **Performance** | **Remove hard sleeps in init_data_feed** | §8.2 |
+| **P1** | **Performance** | **Throttle PnL emit to 1s in engine** | §8.6 |
+| **P1** | **Performance** | **Fix event_queue.get() block=True** | §8.4 |
+| ~~P1~~ | Frontend | ~~Skeleton loading states for StatCard, LiveStats, AccountSummary, PositionsPage~~ **Done** | §11.9 Phase 1 |
+| ~~P1~~ | Frontend | ~~P&L flash animations (Header, StatCard, PnLValue component)~~ **Done** | §11.9 Phase 1 |
+| **P1** | **Frontend** | **Sonner toasts** (requires npm install) | §11.9 Phase 1 |
+| **P1** | **Frontend** | **Upgrade position/trade tables with TanStack Table** (requires npm install) | §11.6 |
+| **P1** | **Frontend** | **Command palette (cmdk)** (requires npm install) | §11.7 |
+| ~~P1~~ | Frontend | ~~Signal history timeline panel (SignalActivity component)~~ **Done** | §9.1, §11.9 Phase 2 |
+| **P1** | **Frontend** | **Intraday P&L Curve** | §9.1 |
+| ~~P1~~ | Frontend | ~~Position P&L gauge bar (PositionRow)~~ **Done** | §9.4 |
+| ~~P1~~ | Frontend | ~~Log search + severity badges (LogsPage, ActivityLog, Sidebar)~~ **Done** | §9.2 |
+| **P1** | **Frontend** | **Drawdown chart + risk metrics** | §9.3 |
+| **P1** | Backend | Options Greeks from TWS + greeks_update event | §10.3 |
+| **P1** | Backend | reqPnLSingle for per-position P&L | §10.3 |
+| **P1** | Backend | export_trades, health commands | §3.2 |
+| ~~P1~~ | UI | ~~Trading color tokens (CSS variables) + thematic Tailwind colors~~ **Done** | §11.7, §5.2 |
+| ~~P2~~ | Frontend | ~~Dashboard layout redesign (tabbed: Overview, Signals & Market, Config, Activity)~~ **Done** | §11.8 |
+| ~~P2~~ | Frontend | ~~Market overview panel (live tick data grid)~~ **Done** | §9.1 |
+| **P2** | **Frontend** | **Greeks per position display** | §9.4 |
+| **P2** | **Frontend** | **Trade lifecycle log groups** | §9.2 |
+| **P2** | **Frontend** | **Audio alerts + log persistence/export** | §9.2 |
+| **P2** | **Frontend** | **Order flow panel** | §9.1 |
+| **P2** | **Frontend** | **Quick adjust TP/SL from positions** | §9.4 |
+| P2 | Performance | Event-based contract resolution, separate queues, batch logs | §8.3, §8.4, §8.6 |
+| P2 | Backend | Config validation, class-based BOT, consolidated DB + loggers | §10.1 |
+| ~~P2~~ | Frontend | ~~Store selectors (LiveStats, Header, Sidebar use individual selectors)~~ **Done** | §4.6 |
+| ~~P2~~ | UI | ~~Micro-interactions (P&L flash, signal glow, TWS disconnect border, hover effects)~~ **Done** | §11.7 |
+| **P2** | UI | Compact mode, resizable panels (react-resizable-panels) | §11.9 |
+| **P3** | **Frontend** | **P&L heatmap, trade distribution, execution quality** | §9.1, §9.3 |
+| **P3** | **Frontend** | **Strategy comparison, calendar trade history** | §9.3, §11.9 |
+| P3 | Performance | msgpack IPC, numba SuperTrend | §8.6, §8.1 |
+| P3 | Backend | Market depth, multi-day history | §10.3 |
+| P3 | All | BOT.py TODO cleanup, tests, code signing | — |
 
 ---
 
 # PART VII – Changelog (Roadmap)
 
+- **UI Modernization Implementation (v5):** Implemented core UI improvements without installing new npm packages — all using existing Tailwind + CVA + clsx + Lucide stack. **New UI primitives (4):** `skeleton.tsx` (shimmer animation, pre-built StatCard/Card/TableRow skeletons), `tabs.tsx` (pure React context-based tabs, no Radix dependency), `alert.tsx` (6 variants incl. signal/destructive, auto-icons), `tooltip.tsx` (pure CSS hover tooltip, 4 directions). **New trading components (3):** `PnLValue.tsx` (animated P&L display with green/red flash on value change, ±sign, percentage, size variants), `SignalActivity.tsx` (signal timeline panel showing detected signals + executed trades with direction icons, strength badges, timestamps, glow animation), `MarketOverview.tsx` (live tick data grid with bid/ask, priority symbol sorting, volume display). **CSS system:** Added 14 trading-specific CSS custom properties (profit/loss, bid/ask, signal-call/put, greeks-delta/gamma/theta/vega, chart-up/down/volume) in both light and dark themes; added `pnl-flash-green`/`pnl-flash-red` animations, `skeleton-shimmer` animation, `signal-glow` animation, `tws-disconnected-border`, P&L gauge utility classes, severity classes (critical/error/warn/info/debug/trade/signal/order), category icon classes. Added Tailwind `trading.*`, `signal.*`, `greeks.*` color tokens and `fade-up`/`slide-in-right` keyframe animations. **Component improvements (11 files):** `StatCard` — added skeleton loading, P&L flash, hover effects, info tooltip; `LiveStats` — memoized with individual store selectors, skeleton on Starting, flash on Running, engine status with TWS connection subtitle; `ActivityLog` — category-specific icons (Zap/ShoppingCart/Database/Settings2), level icons, error/warning count badges, empty state with CTA; `DashboardPage` — tabbed layout (Overview: account+controls+risk+data; Signals & Market: market overview+signals+data; Configuration: all config panels; Activity: full log); `Header` — P&L flash animation, realized/unrealized mini display, TWS disconnect top border, trend direction icon; `Sidebar` — error count badge on Logs nav item, session mini-stats (trades/wins/losses), license expiry warning styling, TWS reconnecting state; `AccountSummary` — skeleton loading, tiered layout (primary metrics prominent, P&L with color + trend icons, secondary compact), connected badge; `PositionRow` — P&L gauge bar, trend icon on hover, close button on hover only, bold symbol; `PositionsPage` — summary cards (active/totalPnL/calls/puts), skeleton loading, better empty state; `LogsPage` — level summary badges, inline search field, row numbers, category-specific icons + colors, left-border for errors; `AnalyticsPage` — tabbed charts (All Charts/P&L Analysis/Distribution), info alert when no trades, trade count display; `PerformanceMetrics` — 8 metrics (added best trade + expectancy), info tooltips. Updated `App.tsx` suspense fallback with branded loading spinner. Updated ROADMAP Part XII priorities (12 items marked Done) and Phase 1/2 tables.
+- **UI Library Evaluation & Modernization Plan (v4):** Added **Part XI – UI Library Evaluation & Professional Trading System Modernization** with 9 sub-sections: (§11.1) Full audit of current UI stack — what's installed and what's missing (7 of 40+ shadcn components, no candlestick charts, no data grid, no command palette, no skeleton loading); (§11.2) Head-to-head comparison of **shadcn/ui vs MUI vs DaisyUI** with verdict: keep and extend shadcn/ui (already in use, zero runtime cost, full customization) — MUI too heavy (+300KB, CSS-in-JS re-render cost), DaisyUI too generic for trading; (§11.3) Definitive recommended library stack: keep Tailwind+shadcn+Zustand+Framer Motion, **add TradingView Lightweight Charts** (candlestick/OHLCV, ~45KB), **TanStack Table v8** (professional data grid, ~15KB), **Sonner** (toasts, ~5KB), **cmdk** (command palette, ~4KB), react-resizable-panels, Vaul; explicit NOT-recommended list with reasons (MUI, DaisyUI, Ant Design, AG Grid, D3, Chart.js, react-hot-toast); (§11.4) Complete shadcn/ui component installation plan across 3 phases (12 critical: dialog, dropdown, select, tabs, tooltip, table, skeleton, alert, collapsible, scroll-area, toast, command; 8 enhanced; 7 polish); (§11.5) TradingView Lightweight Charts integration plan with component structure, data flow for live updates, and feature list (candlestick, volume, SuperTrend overlay, signal markers, crosshair); (§11.6) TanStack Table plan for positions/trades/logs/orders with sorting, filtering, column resize/pin, row expand, pagination, virtual scrolling, custom cell renderers; (§11.7) Professional trading terminal design system: trading-specific CSS color tokens (bid/ask, signal CALL/PUT, Greeks colors), typography enhancement (Geist/Satoshi for brand, IBM Plex Mono for logs), 10 micro-interaction specifications (P&L flash, trade fill toast, SL hit alert, TWS disconnect border, signal glow, position near-TP/SL pulse), full command palette (cmdk) design with 20+ commands across 5 groups; (§11.8) Dashboard layout redesign from vertical config stack → chart-first 3-panel trading terminal with resizable areas (chart 50%, positions 25%, signals 25%), move config panels to Settings; (§11.9) 4-phase implementation plan with specific tasks and timeline estimates. Added **Part XII – Updated Priorities** consolidating all UI modernization items with existing performance and backend priorities. Updated Part VI cross-references.
+- **Performance deep-dive & professional UI features (v3):** Added **Part VIII – Performance Deep-Dive** with code-level analysis of 6 major bottlenecks: (1) SuperTrend/BOTSingal using 5 iterrows loops (50–100× slower than vectorized numpy); (2) init_data_feed has 15+ seconds of hard time.sleep(); (3) get_strikes/get_contract_detail use blocking poll loops; (4) event_processor runs full SuperTrend on every tick instead of bar-close only, block=False bug; (5) Indicators.py functions use Yahoo Finance HTTP calls instead of TWS data; (6) PnL emitted 20×/s, no log batching, heavy data_status computation under lock. Added **Part IX – Professional Trading UI** with 30+ new feature proposals across 4 categories: Dashboard (Greeks, intraday P&L curve, signal timeline, market overview, position cards, risk gauges, strategy breakdown, heat map, order flow), Logs (trade lifecycle groups, structured categories, search/regex, export, persistence, audio alerts, terminal viewer, severity badges, trade-linked navigation), Analytics (drawdown chart, risk metrics, trade distribution, symbol breakdown, multi-day view, strategy comparison, execution quality, session summary), Positions (live P&L, TP/SL gauge, Greeks, time held, sizing info, quick adjust, alerts). Added **Part X – Engine & Backend Improvements** covering class-based BOT refactor, consolidated DB, new sidecar events (greeks_update, signal_history, order_lifecycle, bar_close, tick_stream, session_summary), and TWS data enhancements (option Greeks, reqPnLSingle, VIX, execution details, multi-day history, market depth). **Part VI priorities completely restructured** with P0 security fix, P1 performance items, and P1/P2 new features integrated.
 - **Optimization techniques (deep analysis):** Added **§4.6 Optimization techniques** with code-level analysis: (1) Summary of already-implemented optimizations. (2) Frontend: store selectors for LiveStats, DataFeedStatus, AccountSummary, RiskManagement, charts; useMemo for PnLChart/EquityCurve; usePositions stale-closure fix (getState in callback); batch addLog for high log volume. (3) Backend: throttle _emit_pnl_update to 1s in engine; optional log batching in sidecar. (4) Rust: optional event batching. (5) Summary table with file locations and priorities. Part VI updated with P2 optimization backlog.
 - **Start Trading timing, update intervals, UI lightness, roadmap:** Start Trading flow documented (config from store, sidecar spawn = main delay, 0.2s TWS pause). UI shows "Loading config & engine…" while starting, "Started in X.Xs" after start; Dashboard shows "Updates: PnL ~1s · Account summary ~5s · Data status ~10s". Cards made lighter (border/70, shadow-sm; CSS border variables lightened). §4.5 marked implemented; Performance issue marked partially fixed; Part VI P1 Performance marked Done.
 - **Performance / tab switch:** Added Known Issue (Part II) for UI hang when switching tabs. Added **§4.5 Performance & optimizations** (lazy routes, throttle PnL re-renders, memo Header/Sidebar, virtualize Logs/ActivityLog, list keys, optional page memo). Implemented: throttle 1s, lazy routes, memo layout, virtualized lists. P1 Frontend priority marked Done.
