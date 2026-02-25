@@ -14,6 +14,9 @@ import {
   Database,
   Settings2,
   XCircle,
+  Target,
+  ShieldAlert,
+  Activity,
 } from "lucide-react";
 
 const ROW_HEIGHT = 26;
@@ -26,13 +29,15 @@ const levelConfig: Record<string, { color: string; icon: typeof Info; bgClass?: 
 };
 
 const categoryIcon: Record<string, typeof Info> = {
-  trading: Zap,
-  order: ShoppingCart,
-  orders: ShoppingCart,
-  data: Database,
-  engine: Settings2,
-  signal: Zap,
-  system: Terminal,
+  signal:   Target,
+  order:    ShoppingCart,
+  orders:   ShoppingCart,
+  position: Activity,
+  risk:     ShieldAlert,
+  trading:  Zap,
+  data:     Database,
+  engine:   Settings2,
+  system:   Terminal,
 };
 
 export const ActivityLog = memo(function ActivityLog() {

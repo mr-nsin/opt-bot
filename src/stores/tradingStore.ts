@@ -15,6 +15,10 @@ interface TradingState {
   dataStatus: DataStatus | null;
   /** IBKR account summary (NetLiquidation, BuyingPower, etc.); updated every ~5s when connected */
   accountMetrics: AccountMetrics | null;
+  /** Whether the engine is actively scanning for signals (heartbeat received within last 60s) */
+  isSignalScanning: boolean;
+  /** Timestamp of the last signal-scan heartbeat from the engine */
+  lastSignalScanTime: string | null;
 
   // Actions
   setStatus: (status: TradingStatus) => void;
@@ -26,6 +30,8 @@ interface TradingState {
   addTrade: (trade: TradeRecord) => void;
   setDataStatus: (data: DataStatus | null) => void;
   setAccountMetrics: (metrics: AccountMetrics | null) => void;
+  /** Mark the engine as actively signal-scanning (called when heartbeat log is received) */
+  setSignalScanning: (scanning: boolean, timestamp?: string) => void;
   reset: () => void;
 }
 
@@ -41,6 +47,8 @@ const initialState = {
   todayTrades: [] as TradeRecord[],
   dataStatus: null as DataStatus | null,
   accountMetrics: null as AccountMetrics | null,
+  isSignalScanning: false,
+  lastSignalScanTime: null as string | null,
 };
 
 export const useTradingStore = create<TradingState>((set) => ({
@@ -57,5 +65,10 @@ export const useTradingStore = create<TradingState>((set) => ({
     set((state) => ({ todayTrades: [trade, ...state.todayTrades].slice(0, 100) })),
   setDataStatus: (data) => set({ dataStatus: data }),
   setAccountMetrics: (metrics) => set({ accountMetrics: metrics }),
+  setSignalScanning: (scanning, timestamp) =>
+    set({
+      isSignalScanning: scanning,
+      lastSignalScanTime: timestamp ?? new Date().toISOString(),
+    }),
   reset: () => set(initialState),
 }));

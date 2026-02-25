@@ -54,6 +54,8 @@ class TradingEngine:
         self._last_account_metrics_time: float = 0
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
+        self._last_signal_heartbeat_time: float = 0
+        self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -416,7 +418,9 @@ class TradingEngine:
 
             self._client.initialization_done = True
             self._data_feed_started = True
+            self._last_signal_heartbeat_time = time.time()  # Reset heartbeat timer
             emit_log("Data feed and strategies started", "INFO", "system")
+            emit_log(f"Signal scanner started: monitoring {', '.join(stock_list)} for SuperTrend + Engulfing signals", "INFO", "signal")
         except Exception as e:
             emit_log(f"Start data feed/strategies failed: {e}", "ERROR", "system")
             emit_error(str(e))
@@ -522,6 +526,21 @@ class TradingEngine:
                 if now - self._last_data_status_time >= self._data_status_interval_sec:
                     self._last_data_status_time = now
                     self._emit_data_status()
+
+                # Every 30s: heartbeat to show the engine is alive and scanning for signals
+                if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
+                    self._last_signal_heartbeat_time = now
+                    try:
+                        import BOT
+                        stock_list = getattr(BOT, "stockList", []) or []
+                        active_threads = len([t for t in self._event_processor_threads if t and t.is_alive()])
+                        queue_size = self._event_queue.qsize() if self._event_queue else 0
+                        emit_log(
+                            f"Signal scanner active: {len(stock_list)} symbols, {active_threads} processors, queue={queue_size}",
+                            "INFO", "signal"
+                        )
+                    except Exception:
+                        emit_log("Signal scanner active", "INFO", "signal")
 
                 time.sleep(0.05)  # 50ms loop
 

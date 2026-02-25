@@ -20,6 +20,10 @@ import {
   Database,
   Settings2,
   Search,
+  Target,
+  ShieldAlert,
+  Activity,
+  RadioTower,
 } from "lucide-react";
 
 const ROW_HEIGHT = 30;
@@ -31,14 +35,18 @@ const levelConfig: Record<string, { color: string; icon: typeof Info; bg: string
   DEBUG: { color: "text-muted-foreground/40", icon: Bug, bg: "", badgeVariant: "secondary" },
 };
 
-const categoryConfig: Record<string, { icon: typeof Info; color: string }> = {
-  trading: { icon: Zap, color: "text-violet-400" },
-  order: { icon: ShoppingCart, color: "text-emerald-400" },
-  orders: { icon: ShoppingCart, color: "text-emerald-400" },
-  data: { icon: Database, color: "text-cyan-400" },
-  engine: { icon: Settings2, color: "text-blue-400" },
-  signal: { icon: Zap, color: "text-violet-400" },
-  system: { icon: Terminal, color: "text-slate-400" },
+const categoryConfig: Record<string, { icon: typeof Info; color: string; label: string }> = {
+  signal:   { icon: Target,      color: "text-violet-400",  label: "Signal" },
+  order:    { icon: ShoppingCart, color: "text-emerald-400", label: "Order" },
+  orders:   { icon: ShoppingCart, color: "text-emerald-400", label: "Order" },
+  position: { icon: Activity,    color: "text-cyan-400",    label: "Position" },
+  risk:     { icon: ShieldAlert,  color: "text-amber-400",   label: "Risk" },
+  trading:  { icon: Zap,         color: "text-violet-400",  label: "Trading" },
+  data:     { icon: Database,    color: "text-cyan-400",    label: "Data" },
+  engine:   { icon: Settings2,   color: "text-blue-400",    label: "Engine" },
+  system:   { icon: Terminal,    color: "text-slate-400",   label: "System" },
+  protocol: { icon: RadioTower,  color: "text-slate-400",   label: "Protocol" },
+  sidecar:  { icon: Terminal,    color: "text-slate-400",   label: "Sidecar" },
 };
 
 export const LogsPage = memo(function LogsPage() {
@@ -66,6 +74,16 @@ export const LogsPage = memo(function LogsPage() {
     const counts: Record<string, number> = { INFO: 0, WARN: 0, ERROR: 0, DEBUG: 0 };
     for (const l of logs) {
       counts[l.level] = (counts[l.level] || 0) + 1;
+    }
+    return counts;
+  }, [logs]);
+
+  // Category counts for the new trading categories
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const l of logs) {
+      const cat = l.category?.toLowerCase() || "system";
+      counts[cat] = (counts[cat] || 0) + 1;
     }
     return counts;
   }, [logs]);
@@ -122,6 +140,24 @@ export const LogsPage = memo(function LogsPage() {
             </Badge>
           );
         })}
+        <span className="w-px h-4 bg-border/40 mx-1" />
+        {/* Trading category counts */}
+        {(["signal", "order", "position", "risk"] as const).map((cat) => {
+          const count = categoryCounts[cat] || 0;
+          if (count === 0) return null;
+          const cfg = categoryConfig[cat];
+          const CIcon = cfg.icon;
+          return (
+            <Badge
+              key={cat}
+              variant="outline"
+              className={cn("text-2xs gap-1 cursor-default", cfg.color)}
+            >
+              <CIcon className="h-3 w-3" />
+              {cfg.label}: {count}
+            </Badge>
+          );
+        })}
         <div className="flex-1" />
         {/* Inline search */}
         <div className="relative">
@@ -169,7 +205,7 @@ export const LogsPage = memo(function LogsPage() {
                 {virtualizer.getVirtualItems().map((virtualRow) => {
                   const l = filtered[virtualRow.index];
                   const cfg = levelConfig[l.level] || levelConfig.INFO;
-                  const catCfg = categoryConfig[l.category?.toLowerCase()] || { icon: Terminal, color: "text-muted-foreground/30" };
+                  const catCfg = categoryConfig[l.category?.toLowerCase()] || { icon: Terminal, color: "text-muted-foreground/30", label: l.category || "—" };
                   const LevelIcon = cfg.icon;
                   const CatIcon = catCfg.icon;
 
@@ -201,7 +237,7 @@ export const LogsPage = memo(function LogsPage() {
                       {/* Category icon + label */}
                       <span className={cn("flex items-center gap-1 shrink-0 w-16", catCfg.color)}>
                         <CatIcon className="h-3 w-3" />
-                        <span className="text-2xs opacity-70">{l.category || "—"}</span>
+                        <span className="text-2xs opacity-70">{catCfg.label}</span>
                       </span>
 
                       {/* Message */}

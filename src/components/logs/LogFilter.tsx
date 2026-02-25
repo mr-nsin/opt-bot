@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { useLogStore } from "@/stores/logStore";
 
 const LEVELS = ["INFO", "WARN", "ERROR", "DEBUG"];
-const CATS = ["trading", "system", "orders", "signals"];
+const CATS = ["signal", "order", "position", "risk", "trading", "system"];
 
 export function LogFilter() {
   const { filterLevel, filterCategory, setFilterLevel, setFilterCategory } = useLogStore();

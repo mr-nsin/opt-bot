@@ -46,6 +46,9 @@ function SidebarInner() {
     [logs]
   );
 
+  // Signal scanning state from the store (set by engine heartbeat logs)
+  const isSignalScanning = useTradingStore((s) => s.isSignalScanning);
+
   return (
     <aside className="w-[220px] bg-sidebar flex flex-col border-r border-sidebar-border shrink-0">
       {/* Brand */}
@@ -71,6 +74,7 @@ function SidebarInner() {
         {navItems.map((item) => {
           const Icon = item.icon;
           const showBadge = item.id === "logs" && errorCount > 0;
+          const showSignalBadge = item.id === "dashboard" && isSignalScanning && isRunning;
 
           return (
             <NavLink
@@ -103,6 +107,13 @@ function SidebarInner() {
                   {showBadge && (
                     <span className="flex items-center justify-center h-4 min-w-[16px] px-1 rounded-full bg-red-500/20 text-red-400 text-2xs font-bold tabular-nums">
                       {errorCount > 99 ? "99+" : errorCount}
+                    </span>
+                  )}
+                  {/* Signal/Order activity dot for Dashboard when engine is running */}
+                  {showSignalBadge && (
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-violet-500" />
                     </span>
                   )}
                   {isActive && !showBadge && (

@@ -24,6 +24,7 @@ export function useTradingEvents() {
     addTrade,
     setDataStatus,
     setAccountMetrics,
+    setSignalScanning,
   } = useTradingStore();
   const { settings } = useConfigStore();
   const { addLog } = useLogStore();
@@ -100,12 +101,24 @@ export function useTradingEvents() {
 
   // ---- Log messages from the sidecar ----
   useTauriEvent("trading:log_message", (data: any) => {
+    const ts = data.timestamp || new Date().toISOString();
+    const category = data.category || "trading";
+    const message = data.message || "";
+
     addLog({
-      timestamp: data.timestamp || new Date().toISOString(),
+      timestamp: ts,
       level: data.level || "INFO",
-      category: data.category || "trading",
-      message: data.message || "",
+      category,
+      message,
     });
+
+    // Detect signal-scan heartbeat logs to mark engine as actively scanning
+    if (
+      category === "signal" &&
+      message.toLowerCase().includes("signal scanner active")
+    ) {
+      setSignalScanning(true, ts);
+    }
   });
 
   // ---- Data feed status (every ~10s when running) ----
@@ -242,6 +255,7 @@ export function useTradingEvents() {
     setSidecarRunning(false);
     setStatus("Idle");
     setConnectedToTws(false);
+    setSignalScanning(false);
 
     if (settings.show_notifications) {
       addToast({

@@ -1027,6 +1027,992 @@ Groups:
 
 ---
 
+# PART XIII – NinjaTrader & TradingView Gap Analysis
+
+## 13.1 Component-by-Component Comparison
+
+Deep comparison of every UI component against NinjaTrader (NT) and TradingView (TV) professional trading terminals.
+
+| Component | Current Grade | NT/TV Standard | Key Gaps |
+|-----------|:---:|:---:|---|
+| **Dashboard Layout** | B- | A+ | No chart, tab-based not panel-based, config panels dominate |
+| **Trading Chart** | F (none) | A+ | No candlestick chart at all — this is the #1 gap |
+| **Header** | B+ | A | Missing market ticker strip, market hours countdown |
+| **Sidebar** | B | A | No watchlist, navigation-only |
+| **Positions Table** | C+ | A | No sort/filter, missing columns (Greeks, time held, strategy) |
+| **Analytics Charts** | B- | A | No zoom/pan, no candlestick, no drawdown chart |
+| **Logs** | B+ | A | No trade lifecycle groups, no regex search |
+| **Settings** | B | B+ | No tree organization, no search within settings |
+| **Notifications** | D | A | Barely used toaster, no trade fill alerts |
+| **Keyboard Navigation** | F (none) | A+ | Zero shortcuts, no command palette |
+| **Market Overview** | B | A | No mini charts/sparklines, basic grid |
+| **Risk Dashboard** | C+ | A | No portfolio Greeks, no margin gauge, basic progress bars |
+| **Account Summary** | A- | A | Good — just needs refresh indicator |
+| **Signal Activity** | B+ | A | Good foundation — needs outcome tracking (won/lost) |
+| **Data Feed Status** | B+ | B+ | Good — could add latency/throughput metrics |
+| **Live Stats** | A- | A | Good — skeleton + flash working well |
+
+## 13.2 Critical Gaps (Must-Have for Professional Trading Terminal)
+
+### 🔴 Gap 1: No Candlestick/Price Chart (HIGHEST PRIORITY)
+
+**What NT/TV have:** Chart occupies 60-70% of screen. OHLCV candlestick with indicator overlays (SuperTrend bands, EMA lines, volume histogram), signal entry/exit markers (▲ BUY, ▼ SELL), real-time bar updates, crosshair with OHLC+indicator values, timeframe selector (1m/5m/15m/1h/1D), symbol switcher.
+
+**What we have:** Zero price chart anywhere in the app. The dashboard shows stat cards, config panels, and market overview grid — but no visual representation of price action. This is the single biggest gap between our app and a professional trading terminal. Traders stare at charts 90% of the time.
+
+**Implementation:** TradingView Lightweight Charts (`lightweight-charts`, ~45 KB gzipped, WebGL rendered). Build `TradingChart.tsx` wrapping the library. Data: `history_cache` bars from TWS → engine emits `bar_close` event → Rust → frontend → `series.update()`. Overlays: SuperTrend line, EMA bands, volume histogram, buy/sell signal markers. Theme sync via `useChartTheme` hook mapping our CSS variables → chart config.
+
+### 🔴 Gap 2: No Command Palette / Keyboard Shortcuts
+
+**What NT/TV have:** NinjaTrader is fully configurable with hotkeys for orders, chart manipulation, workspace switching. TradingView has ⌘K search, keyboard shortcuts for drawing tools, timeframe switching, indicator toggle. Bloomberg Terminal is entirely keyboard-driven.
+
+**What we have:** Zero keyboard shortcuts. Mouse-only navigation. No ⌘K/Ctrl+K search. No hotkeys for Start/Stop/Emergency, no Ctrl+1-5 for page navigation.
+
+**Implementation:** `cmdk` (~4 KB) for command palette. `useEffect` keyboard listeners for: Ctrl+1-5 (navigate pages), Ctrl+Shift+S (start trading), Ctrl+Shift+X (stop), Ctrl+Shift+E (emergency stop), Ctrl+Shift+C (close all), Ctrl+D (toggle dark mode), Ctrl+K (command palette), Ctrl+L (toggle log auto-scroll).
+
+### 🔴 Gap 3: Dashboard Layout is Tab-Based, Not Panel-Based
+
+**What NT/TV have:** Dockable, resizable panels — chart, positions, DOM, time & sales all visible simultaneously. TradingView has multi-pane layout with drag-to-resize. NinjaTrader workspace tabs contain multiple docked panels per tab.
+
+**What we have:** Tab layout means you can only see one section at a time (Overview OR Signals OR Config). During live trading, a trader needs chart + positions + signals visible simultaneously.
+
+**Implementation:** `react-resizable-panels` (~8 KB) wrapping dashboard content into a chart-first multi-panel layout:
+- **Top panel (60%):** TradingChart + LiveStats
+- **Bottom-left panel (25%):** Active positions (TanStack Table)
+- **Bottom-right panel (25%):** Signal activity + activity log
+- Panels are resizable via drag handles. Config panels move to Configuration tab or Settings page.
+
+### 🔴 Gap 4: Data Tables Have No Sorting/Filtering/Resizing
+
+**What NT/TV have:** NinjaTrader Grid Pro: sort by any column, filter by symbol/P&L, resize columns, pin columns, row grouping, row expansion for details. TradingView: sortable watchlists, filterable screeners. IBKR TWS: sortable portfolio with column customization.
+
+**What we have:** Raw HTML `<table>` in PositionsPage, PositionHistory, StockList — no sorting, no filtering, no column resize, no pagination. Positions cannot be sorted by P&L to see worst performers first.
+
+**Implementation:** `@tanstack/react-table` (~15 KB) headless data table with shadcn table primitives. Features: column sorting (click header), column filtering (dropdown), column resizing (drag), column pinning (Symbol + P&L always visible), row expansion (click → details), row selection (batch close), pagination (trade history), virtual scroll (for 100+ rows).
+
+## 13.3 High-Impact UI Improvements
+
+### 🟡 Gap 5: No Toast/Notification System for Trade Events
+
+**What NT/TV have:** NinjaTrader: audio + visual alerts on trade fill, stop loss hit, order rejection, connection events. TradingView: configurable alert system with push notifications, email, webhooks.
+
+**What we have:** Custom `Toaster.tsx` exists but barely used. No notifications for trade fills, SL/TP hits, TWS connection changes, P&L limit warnings.
+
+**Implementation:** `sonner` (~5 KB) — rich toasts with actions, stacking, progress bars, custom icons. Events: trade_executed → success toast with P&L, trade_closed (SL/TP) → warning toast, TWS disconnect → persistent error toast, P&L limit near → warning toast, Emergency stop → destructive toast.
+
+### 🟡 Gap 6: Header Missing Market Context Ticker Strip
+
+**What NT/TV have:** TradingView: scrolling ticker strip showing watchlist prices. NinjaTrader: market analyzer bar with key indices. Bloomberg: running ticker tape.
+
+**What we have:** Header shows P&L, trades, clock — good but no quick market context. SPY/QQQ prices are buried in MarketOverview on Signals tab.
+
+**Implementation (no new deps):** Add inline mini-tickers in Header showing SPY/QQQ/VIX last price + change from `dataStatus.stock_ticks_sample`. Compact format: `SPY 590.42 +0.3%`. Updates with data_status events (~10s).
+
+### 🟡 Gap 7: No Bottom Status Bar
+
+**What NT/TV have:** NinjaTrader: bottom bar showing connection latency, memory usage, processing status, market session hours. TradingView: bottom bar with market status (pre-market/open/closed), time to close.
+
+**What we have:** TWS status buried in sidebar footer. No global status bar.
+
+**Implementation (no new deps):** Slim 24px status bar below main content: TWS connection status, engine uptime, event queue size, market hours countdown ("Closes in 2h 34m"), data freshness timestamp, theme label. Monospace font, muted colors, border-t separator.
+
+### 🟡 Gap 8: Sidebar is Navigation-Only
+
+**What NT/TV have:** NinjaTrader: sidebar with watchlist, order management, account tabs. TradingView: sidebar with alerts, ideas, watchlist, news.
+
+**What we have:** 5 nav links + connection status + session stats. No market data in sidebar.
+
+**Implementation (no new deps):** Add a "Watchlist" section below navigation showing subscribed symbols with live prices from `dataStatus.stock_ticks_sample`. Show symbol, last price, change direction arrow. Clicking a symbol could switch the chart.
+
+### 🟡 Gap 9: Missing Position Table Columns
+
+**What NT/TV have:** NinjaTrader: Time in trade, Greeks (delta, gamma, theta, vega), risk %, entry time, strategy name, order type, commission. TradingView: cost basis, unrealized %, day change.
+
+**Current columns (9):** Symbol, Type, Strike, Expiry, Qty, Avg, Current, P&L, Close.
+
+**Missing columns:** Time held (e.g. "12m 34s"), Delta, Entry time/date, Strategy name (SuperTrend/Engulfing), Risk % of account (P&L / NetLiquidation), Max risk (entry-SL × qty × 100).
+
+### 🟡 Gap 10: No Options Chain View
+
+**What NT have:** Full options chain grid: strikes as rows, calls on left, puts on right. Columns: bid, ask, last, volume, OI, delta, gamma, theta, IV for each side. Expiry tabs across top.
+
+**What we have:** StockList component showing symbol badges. No options chain display.
+
+**Implementation:** New `OptionsChain.tsx` component. Data: already available from TWS via `client.get_strikes()` and option subscriptions. Show as a table with strike prices centered, calls on left, puts on right, with bid/ask/delta/volume.
+
+### 🟡 Gap 11: Analytics Charts Need Interactivity
+
+**What TV have:** Zoom with mouse wheel, pan with drag, crosshair with OHLCV legend, multi-timeframe toggle, time range buttons (1D/1W/1M/YTD).
+
+**Current:** Recharts charts are static — basic tooltip on hover, no zoom, no pan, no time range selection. Fixed 220px height.
+
+**Improvement (no new deps):** Add time range buttons (last 10/25/50/all trades), larger chart height (300px+), better Recharts tooltips showing more context (symbol, entry/exit time, strategy). Later: replace with Lightweight Charts for full interactivity.
+
+### 🟡 Gap 12: No Risk/Exposure Dashboard
+
+**What NT have:** Risk dashboard with margin utilization %, portfolio Greeks (total delta, gamma, theta, vega), sector/symbol exposure pie chart, max drawdown, VaR.
+
+**Current:** Basic risk card with profit target/loss limit inputs + two progress bars (P&L vs target, trades vs max).
+
+**Missing:** Portfolio-level Greeks summary, margin utilization gauge (MaintMarginReq / NetLiquidation), position concentration (% of portfolio per symbol), buying power utilization (used / available), daily drawdown from high-water mark.
+
+## 13.4 Polish & Quality-of-Life Improvements
+
+### 🟢 No-Install Improvements (Existing Dependencies Only)
+
+| # | Feature | Description | Component(s) | Effort |
+|---|---------|-------------|--------------|--------|
+| 1 | **Market hours countdown** | "Closes in 2h 34m" / "Opens in 14h 5m" in header or status bar | Header.tsx or new StatusBar.tsx | Small |
+| 2 | **Stale data indicator** | Badge showing "STALE" when last data_status > 30s ago; dim data values | DataFeedStatus, MarketOverview, LiveStats | Small |
+| 3 | **Reduced motion support** | `@media (prefers-reduced-motion: reduce)` disabling all non-essential animations | index.css | Small |
+| 4 | **Compact/density mode toggle** | Setting to switch between comfortable (14px) and compact (12px, tighter padding) mode | Settings, AppShell, index.css | Medium |
+| 5 | **Position row expand** | Click position row → expand to show entry time, strategy, order ID, TP/SL levels, trade timeline | PositionRow.tsx | Medium |
+| 6 | **Hover cards for symbols** | Hover over any symbol text → popup showing last price, daily change, bid/ask, volume | New HoverSymbolCard.tsx | Medium |
+| 7 | **Session summary card** | Auto-generated end-of-day summary: total trades, P&L, best/worst, win rate, time in market | New SessionSummary.tsx | Medium |
+| 8 | **Animated number counters** | Smooth count-up animation when stat values change (not just flash) | StatCard.tsx | Small |
+| 9 | **Better empty state CTAs** | Add actionable buttons in empty states (e.g. "Start Trading" button in empty positions) | PositionsPage, AnalyticsPage | Small |
+| 10 | **Table header sorting (basic)** | Click-to-sort with useState for position/trade tables (before TanStack upgrade) | PositionsPage, PositionHistory | Medium |
+| 11 | **Header mini market tickers** | SPY/QQQ inline prices from dataStatus in header bar | Header.tsx | Small |
+| 12 | **Sidebar watchlist** | Mini symbol price list below navigation using dataStatus ticks | Sidebar.tsx | Medium |
+| 13 | **Right-click context menus** | Position row: Close, Adjust TP/SL, View Logs, Copy Symbol | PositionRow.tsx (needs shadcn dropdown-menu) | Medium |
+| 14 | **Chart grid background** | Subtle dot/grid pattern in dark mode for chart/card backgrounds | index.css | Small |
+| 15 | **Signal outcome tracking** | Show won/lost/skipped status on signal entries in SignalActivity | SignalActivity.tsx | Medium |
+| 16 | **Time held per position** | Calculate elapsed time from trade execution timestamp, show "12m 34s" | PositionRow.tsx | Small |
+| 17 | **Progress ring for risk** | Circular progress gauge for margin utilization, daily P&L vs limit | New ProgressRing.tsx | Medium |
+| 18 | **Trade execution replay** | Click closed trade → mini chart showing entry/exit price markers | PositionHistory.tsx (needs Lightweight Charts) | Large |
+| 19 | **Log regex search** | Upgrade log search from simple includes to regex-capable | LogsPage.tsx | Small |
+| 20 | **Settings search** | Search/filter within settings page | SettingsPage.tsx | Medium |
+
+## 13.5 Feature Priority Matrix (NinjaTrader/TradingView Parity)
+
+| Phase | Features | Libraries Needed | UX Impact |
+|-------|----------|-----------------|-----------|
+| **Phase A — Chart-First** | TradingView candlestick chart, multi-panel dashboard layout, timeframe selector, symbol switcher | `lightweight-charts`, `react-resizable-panels` | 🔴 **Transformational** — single biggest UX improvement |
+| **Phase B — Keyboard Power** | Command palette (⌘K), global hotkeys (Ctrl+1-5, Ctrl+Shift+S/X/E), bottom status bar | `cmdk` | 🔴 **Essential** — pro traders are keyboard-first |
+| **Phase C — Data Grid** | TanStack Table for positions/trades, column sort/filter/resize/pin, row expansion, pagination | `@tanstack/react-table` | 🟡 **Major** — data management and analysis |
+| **Phase D — Notifications** | Sonner toasts for trade fills, SL/TP, connection, P&L alerts, audio support | `sonner` | 🟡 **Professional** — real-time event awareness |
+| **Phase E — No-Install Polish** | Header tickers, status bar, compact mode, market hours countdown, hover cards, stale data, reduced motion, position expand, watchlist sidebar, signal outcomes | None | 🟢 **Quality** — polished professional feel |
+| **Phase F — Advanced** | Options chain view, risk/exposure dashboard, portfolio Greeks, trade execution replay, right-click menus, session summary | Mixed | 🟢 **Premium** — power user features |
+
+---
+
+# PART XIV – Modern UI Design System Specification
+
+A pixel-perfect design system specification to transform QuantDrift from a functional trading dashboard into a **Bloomberg/NinjaTrader/TradingView-class** professional trading terminal. Every detail below is actionable and mapped to existing components.
+
+## 14.1 Design Philosophy
+
+**Core Principles:**
+- **Data Density** — maximize information per pixel; traders want to see everything at once
+- **Glanceable** — critical data (P&L, positions, signals) readable in < 1 second
+- **Keyboard-First** — every action reachable via keyboard; mouse is secondary
+- **Zero Surprise** — consistent patterns, predictable animations, no layout shifts
+- **Dark-First** — dark theme is the default for professional traders (reduces eye strain on multi-monitor setups)
+
+**Design Language:**
+- **No rounded corners > 8px** — sharp, technical feel (reduce --radius from 0.625rem to 0.375rem)
+- **Monospace for all numbers** — tabular-nums everywhere financial data appears
+- **High contrast text** — foreground/muted ratio minimum 4.5:1 (WCAG AA)
+- **Minimal color palette** — only P&L green/red, signal blue/purple, and neutral grays
+- **1px borders everywhere** — clean separation, no heavy shadows
+
+## 14.2 Typography System
+
+### Font Stack (Current → Target)
+
+| Use | Current | Target | Reason |
+|-----|---------|--------|--------|
+| **UI Text** | Inter | **Inter** (keep) | Industry standard for data-dense UIs |
+| **Numbers/Prices** | JetBrains Mono | **JetBrains Mono** (keep) | Excellent tabular figures, clear $ and decimal alignment |
+| **Branding** | Inter | **Geist** (add) | Modern, sharp, pairs well with Inter for headings |
+| **Logs/Terminal** | JetBrains Mono | **IBM Plex Mono** (add) | Better readability at small sizes for log output |
+
+### Type Scale (Pixel-Perfect)
+
+| Token | Size | Line Height | Weight | Use |
+|-------|------|-------------|--------|-----|
+| `text-3xs` | 9px (0.5625rem) | 12px | 500 | Micro labels (timestamp seconds, gauge ticks) |
+| `text-2xs` | 10px (0.625rem) | 14px | 500 | Labels, badges, secondary info |
+| `text-xs` | 11px (0.6875rem) | 16px | 400/500 | Default body text, table cells |
+| `text-sm` | 12px (0.75rem) | 18px | 400/600 | Card titles, nav items |
+| `text-base` | 13px (0.8125rem) | 20px | 400 | Primary content |
+| `text-lg` | 15px (0.9375rem) | 22px | 600 | Page titles |
+| `text-xl` | 18px (1.125rem) | 24px | 700 | Hero numbers (total P&L) |
+| `text-2xl` | 22px (1.375rem) | 28px | 700 | Dashboard hero stat |
+| `text-3xl` | 28px (1.75rem) | 32px | 800 | Splash/onboarding numbers |
+
+### Typography Rules
+
+1. **All financial numbers** use `font-mono tabular-nums` — no exceptions
+2. **Currency values** always show 2 decimal places: `$1,234.56`
+3. **Percentages** show 1 decimal: `+12.3%`
+4. **Large numbers** use compact notation above 10K: `$12.3K`, `$1.2M`
+5. **Negative values** use color (red) + minus sign, not parentheses
+6. **Timestamps** in log: `HH:mm:ss.SSS` format (24-hour, milliseconds)
+7. **Dates** in header: `Mon Feb 25` (short weekday, short month)
+
+## 14.3 Color System (Complete Token Specification)
+
+### Base Palette (Dark Theme — Primary)
+
+```
+Background layers (darkest → lightest):
+  --bg-0:     hsl(230, 21%, 6%)     // App background
+  --bg-1:     hsl(228, 22%, 9%)     // Card / sidebar
+  --bg-2:     hsl(226, 20%, 12%)    // Elevated cards, modals
+  --bg-3:     hsl(224, 18%, 16%)    // Hover states, active items
+
+Border hierarchy:
+  --border-0: hsl(223, 16%, 14%)    // Subtle (between same-level)
+  --border-1: hsl(223, 16%, 20%)    // Default (cards, inputs)
+  --border-2: hsl(223, 16%, 28%)    // Emphasized (focused, active)
+
+Text hierarchy:
+  --text-0:   hsl(213, 31%, 91%)    // Primary text
+  --text-1:   hsl(215, 20%, 65%)    // Secondary text
+  --text-2:   hsl(218, 11%, 45%)    // Tertiary / muted
+  --text-3:   hsl(218, 11%, 30%)    // Disabled / decorative
+```
+
+### Semantic Trading Colors
+
+```
+P&L / Direction:
+  --profit:       hsl(160, 84%, 39%)   // #10B981 — emerald-500
+  --profit-muted: hsl(160, 84%, 39% / 0.15)
+  --loss:         hsl(0, 63%, 55%)     // #DC5656
+  --loss-muted:   hsl(0, 63%, 55% / 0.15)
+
+Signal:
+  --signal-call:  hsl(160, 84%, 39%)   // Same as profit
+  --signal-put:   hsl(0, 63%, 55%)     // Same as loss
+  --signal-strong: hsl(217, 92%, 65%)  // Blue — high confidence
+
+Order Status:
+  --order-pending:  hsl(38, 92%, 50%)  // Amber
+  --order-filled:   hsl(160, 84%, 39%) // Green
+  --order-rejected: hsl(0, 63%, 55%)   // Red
+  --order-partial:  hsl(217, 92%, 65%) // Blue
+
+Greeks:
+  --delta:  hsl(217, 92%, 65%)   // Blue
+  --gamma:  hsl(280, 65%, 60%)   // Purple
+  --theta:  hsl(38, 92%, 50%)    // Amber (time decay = warm)
+  --vega:   hsl(160, 84%, 39%)   // Green (volatility)
+
+Chart:
+  --candle-up-body:    hsl(160, 84%, 39%)
+  --candle-up-wick:    hsl(160, 84%, 39% / 0.6)
+  --candle-down-body:  hsl(0, 63%, 55%)
+  --candle-down-wick:  hsl(0, 63%, 55% / 0.6)
+  --chart-grid:        hsl(223, 16%, 14%)
+  --chart-crosshair:   hsl(218, 11%, 45%)
+  --chart-volume:      hsl(217, 92%, 65% / 0.3)
+  --chart-supertrend:  hsl(280, 65%, 60%)
+  --chart-ema:         hsl(38, 92%, 50% / 0.6)
+
+Severity (Logs):
+  --log-error:   hsl(0, 63%, 55%)
+  --log-warn:    hsl(38, 92%, 50%)
+  --log-info:    hsl(217, 92%, 65%)
+  --log-debug:   hsl(218, 11%, 45%)
+  --log-trade:   hsl(160, 84%, 39%)
+  --log-signal:  hsl(280, 65%, 60%)
+```
+
+### Light Theme Adjustments
+
+```
+Background: swap direction (lightest → darkest)
+  --bg-0: hsl(220, 16%, 96%)
+  --bg-1: hsl(0, 0%, 100%)
+  --bg-2: hsl(0, 0%, 100%)
+  --bg-3: hsl(220, 14%, 96%)
+
+Text: invert brightness
+  --text-0: hsl(224, 71%, 4%)
+  --text-1: hsl(220, 9%, 36%)
+  --text-2: hsl(220, 9%, 56%)
+  --text-3: hsl(220, 9%, 76%)
+
+Trading colors: increase saturation for light backgrounds
+  --profit: hsl(160, 84%, 32%)  // Darker green on white
+  --loss:   hsl(0, 84%, 48%)    // Darker red on white
+```
+
+## 14.4 Spacing & Layout System
+
+### Spacing Scale
+
+| Token | Value | Use |
+|-------|-------|-----|
+| `space-0.5` | 2px | Inline gaps (icon + text) |
+| `space-1` | 4px | Tight padding (badges, small buttons) |
+| `space-1.5` | 6px | Default icon-text gap |
+| `space-2` | 8px | Card internal padding (compact mode) |
+| `space-2.5` | 10px | Input padding, small gaps |
+| `space-3` | 12px | Default card padding |
+| `space-4` | 16px | Section gaps, card headers |
+| `space-5` | 20px | Page padding (main content) |
+| `space-6` | 24px | Major section separation |
+| `space-8` | 32px | Page-level spacing |
+
+### Layout Grid
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Header (h-12, 48px)                                             │
+│ [LIVE] [P&L +$234.56] [R:$180 U:$54] [Trades: 7]  [SPY 590.42 +0.3%] [QQQ 510.21 -0.1%] [VIX 14.2]  [10:34:22 ET Mon Feb 25] [Demo/Live] [☾] │
+├──────────┬──────────────────────────────────────────────────────┤
+│ Sidebar  │ Main Content Area                                     │
+│ (w-220)  │                                                       │
+│          │ ┌─────────────────────────────────────────────────┐   │
+│ [Logo]   │ │ Chart Panel (50-60% height)                     │   │
+│          │ │ [OHLCV Candlestick + SuperTrend + Signals]      │   │
+│ ─ Menu   │ │ [Timeframe: 1m|5m|15m|1h] [Symbol: SPY▾]       │   │
+│ Dashboard│ └─────────────────────────────────────────────────┘   │
+│ Analytics│ ┌──────────────────────┬──────────────────────────┐   │
+│ Positions│ │ Positions Panel      │ Signals & Account Panel  │   │
+│ Logs     │ │ (30% height)         │ (30% height)             │   │
+│ Settings │ │ [Active positions]   │ [Signal timeline]        │   │
+│          │ │ [Sort/Filter/Expand] │ [Account summary]        │   │
+│ ─ Watch  │ └──────────────────────┴──────────────────────────┘   │
+│ SPY 590  │                                                       │
+│ QQQ 510  │                                                       │
+│          │                                                       │
+│ ─ Status │                                                       │
+│ TWS: ✓   │                                                       │
+│ License  │                                                       │
+│ LIVE     │                                                       │
+├──────────┴──────────────────────────────────────────────────────┤
+│ Status Bar (h-6, 24px)                                           │
+│ [TWS: Connected ✓] [Engine: 45m 12s] [Queue: 0] [Closes in 2h 34m] [Data: 2s ago] [v1.0.0] │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Responsive Breakpoints
+
+| Breakpoint | Width | Layout |
+|------------|-------|--------|
+| `sm` | < 768px | Not supported (desktop app) |
+| `md` | 768-1024px | Sidebar collapsed (icons only, w-14), single-column panels |
+| `lg` | 1024-1440px | Full sidebar, 2-column panels below chart |
+| `xl` | 1440-1920px | Full layout, 3-column stat cards |
+| `2xl` | > 1920px | Ultra-wide: chart + side panel side-by-side |
+
+### Compact Mode (Trading Density)
+
+| Property | Normal | Compact |
+|----------|--------|---------|
+| Base font | 14px | 12px |
+| Card padding | 12px | 8px |
+| Table row height | 36px | 28px |
+| Button height | 36px | 28px |
+| Input height | 36px | 28px |
+| Stat card padding | 16px | 10px |
+| Section gap | 16px | 8px |
+| Header height | 48px | 36px |
+| Sidebar width | 220px | 180px |
+
+Implementation: CSS class `.compact` on `<html>` element, toggled from Settings.
+
+## 14.5 Component Design Specifications
+
+### Card Component (Current → Modern)
+
+**Current issues:**
+- Generic white/dark card with thick rounded corners (radius 10px)
+- No visual hierarchy between card types
+- Inconsistent padding
+
+**Modern spec:**
+```
+.card-base {
+  background: var(--bg-1);
+  border: 1px solid var(--border-1);
+  border-radius: 6px;                  // Reduced from 10px
+  box-shadow: none;                    // Remove shadow in dark mode
+  transition: border-color 0.15s;
+}
+.card-base:hover {
+  border-color: var(--border-2);       // Subtle hover feedback
+}
+.card-header {
+  padding: 10px 12px;                  // Tighter
+  border-bottom: 1px solid var(--border-0);
+  background: var(--bg-1);
+}
+.card-content {
+  padding: 12px;
+}
+```
+
+**Card variants:**
+| Variant | Use | Visual |
+|---------|-----|--------|
+| `default` | Most cards | bg-1, border-1 |
+| `elevated` | Modals, popovers | bg-2, border-2, shadow-elevated |
+| `accent` | Active/selected | border-primary/30, subtle primary glow |
+| `danger` | Emergency, errors | border-destructive/30, red-tinted bg |
+| `glass` | Overlays on chart | bg-1/80, backdrop-blur-12 |
+
+### Button Component (Current → Modern)
+
+**Current issues:**
+- Buttons look generic, no trading-specific variants
+- Start/Stop/Emergency have same visual weight
+
+**Modern spec — additional variants:**
+
+| Variant | Use | Style |
+|---------|-----|-------|
+| `trading-start` | Start Trading | bg-emerald-600, font-bold, h-11, uppercase, letter-spacing-wider |
+| `trading-stop` | Stop Trading | border-2 border-amber-500, text-amber-500, h-11 |
+| `trading-emergency` | Emergency Stop | bg-red-600, animate-pulse-subtle on hover, h-11 |
+| `icon-sm` | Toolbar actions | h-7 w-7, rounded-md, ghost hover |
+| `chip` | Filter toggles | h-6, rounded-full, bg-muted, text-2xs |
+
+### Input Component (Current → Modern)
+
+**Modern spec:**
+```
+height: 32px (compact: 28px)
+padding: 0 8px
+font-size: 12px
+background: var(--bg-0)           // Slightly recessed
+border: 1px solid var(--border-1)
+border-radius: 4px                // Sharper
+focus: ring-2 ring-primary/20, border-primary/50
+
+Numeric inputs:
+  font-family: 'JetBrains Mono'
+  text-align: right
+  tabular-nums
+```
+
+### Table Component (Current → Modern)
+
+**Current issues:**
+- Basic HTML table, no sort/filter
+- No column resizing or pinning
+- No zebra striping or hover highlight
+- No expandable rows
+
+**Modern spec (before TanStack Table):**
+```
+Header:
+  height: 32px
+  background: var(--bg-0)
+  font: 10px/14px uppercase, tracking-wider, 600 weight
+  color: var(--text-2)
+  border-bottom: 1px solid var(--border-1)
+  cursor: pointer (sortable columns)
+  sort indicator: ▲/▼ next to active column
+
+Row:
+  height: 36px (compact: 28px)
+  border-bottom: 1px solid var(--border-0)
+  hover: bg-muted/30
+  transition: background 0.1s
+
+  Active/selected row:
+    bg-primary/5, border-l-2 border-primary
+
+Cell types:
+  .cell-symbol { font-mono, font-bold, text-sm }
+  .cell-price  { font-mono, tabular-nums, text-right }
+  .cell-pnl    { font-mono, tabular-nums, color by sign }
+  .cell-badge  { centered badge }
+  .cell-action { opacity-0 → opacity-100 on row hover }
+
+Expandable row:
+  Click row → animate-expand panel below
+  Shows: entry time, strategy, order type, TP/SL levels, order timeline
+  Background: var(--bg-0), border-l-2 border-primary
+```
+
+### Badge Component (New Variants)
+
+| Variant | Use | Style |
+|---------|-----|-------|
+| `signal-call` | CALL signals | bg-emerald-500/15, text-emerald-500, border-emerald-500/20 |
+| `signal-put` | PUT signals | bg-red-500/15, text-red-500, border-red-500/20 |
+| `signal-strong` | High confidence | bg-blue-500/15, text-blue-500, border-blue-500/20 |
+| `filled` | Order filled | bg-emerald-500/15 |
+| `pending` | Order pending | bg-amber-500/15, animate-pulse |
+| `rejected` | Order rejected | bg-red-500/15 |
+| `live` | Live dot | h-2 w-2 rounded-full bg-emerald-500 animate-pulse |
+| `stale` | Data is old | bg-amber-500/15, text-amber-500 |
+| `count` | Number pill | h-5 min-w-5 rounded-full bg-destructive text-white text-2xs |
+
+## 14.6 Animation & Motion System
+
+### Animation Principles
+1. **Functional, not decorative** — every animation communicates state change
+2. **Duration: 100-300ms max** — traders don't wait for animations
+3. **Ease: ease-out for entrances, ease-in for exits**
+4. **Reduced motion: all animations respect `prefers-reduced-motion: reduce`**
+
+### Animation Catalog
+
+| Name | Duration | Easing | Trigger | CSS |
+|------|----------|--------|---------|-----|
+| `pnl-flash-profit` | 600ms | ease-out | P&L value increases | bg-emerald-500/18 → transparent |
+| `pnl-flash-loss` | 600ms | ease-out | P&L value decreases | bg-red-500/18 → transparent |
+| `count-up` | 300ms | ease-out | Number changes | opacity + translateY(4px→0) + number interpolation |
+| `fade-up` | 200ms | ease-out | Content enters | opacity(0→1) + translateY(4px→0) |
+| `slide-in-right` | 200ms | ease-out | Panel enters | opacity(0→1) + translateX(8px→0) |
+| `signal-glow` | 1500ms | ease-in-out, once | New signal detected | box-shadow pulse 0→4px→0 |
+| `live-pulse` | 2000ms | ease-in-out, infinite | Live indicator dot | scale(1→0.8→1) + opacity(1→0.4→1) |
+| `skeleton-shimmer` | 1800ms | ease-in-out, infinite | Loading state | gradient slide left→right |
+| `expand-down` | 200ms | ease-out | Row expand | height(0→auto) + opacity(0→1) |
+| `toast-in` | 200ms | ease-out | Toast appears | translateY(100%→0) + opacity(0→1) |
+| `toast-out` | 150ms | ease-in | Toast dismisses | translateY(0→100%) + opacity(1→0) |
+| `chart-crosshair` | 0ms | instant | Mouse move on chart | CSS pointer tracking (no animation) |
+| `tab-underline` | 150ms | ease-out | Tab switch | width + translateX |
+| `progress-fill` | 300ms | ease-out | Progress change | width transition |
+| `border-pulse` | 2000ms | ease-in-out, 3× | Error/warning state | border-color opacity pulse |
+
+### Reduced Motion
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .live-dot { animation: none; opacity: 1; }
+  .skeleton { animation: none; background: var(--muted); }
+}
+```
+
+## 14.7 Micro-Interaction Specifications
+
+### 1. P&L Value Change (Header, StatCard, PositionRow)
+```
+Trigger: value changes
+Behavior:
+  1. Compare new vs old value
+  2. If increased: apply .pnl-flash-profit (green bg flash 600ms)
+  3. If decreased: apply .pnl-flash-loss (red bg flash 600ms)
+  4. Number smoothly transitions via CSS transition (color, font-weight)
+```
+
+### 2. Trade Fill Toast
+```
+Trigger: trading:trade_executed event
+Behavior:
+  1. Sonner toast slides up from bottom-right
+  2. Icon: CheckCircle (green) for profit, XCircle (red) for loss
+  3. Content: "CALL SPY 590 +$45.20" (direction, symbol, strike, P&L)
+  4. Auto-dismiss: 5 seconds
+  5. Click: navigate to /positions
+  6. Audio: optional short chime (configurable in Settings)
+```
+
+### 3. Signal Detected Glow
+```
+Trigger: trading:signal_detected event
+Behavior:
+  1. SignalActivity panel: new entry slides in from right
+  2. Entry has box-shadow glow animation (1.5s, once)
+  3. Badge shows "CALL" or "PUT" with strength (Strong/Medium/Weak)
+  4. Optional: toast notification "CALL signal detected on SPY"
+```
+
+### 4. TWS Connection State
+```
+Trigger: trading:connection_status event
+Behavior:
+  Connected:
+    - Header: remove tws-disconnected-border
+    - Sidebar: green badge, "TWS Connected"
+    - Toast: "Connected to TWS" (info, 3s)
+  Disconnected:
+    - Header: add 2px red top border (animated)
+    - Sidebar: red badge, "TWS Disconnected", "Reconnecting…" subtitle
+    - Toast: "TWS Disconnected — reconnecting…" (error, persistent until reconnect)
+    - Status bar: "TWS: ✗ Disconnected" in red
+```
+
+### 5. Button State Transitions
+```
+Start Trading:
+  Idle → hover: slight scale(1.01), bg brightens
+  Click → Starting: spinner animation, text changes to "Starting…"
+  Started: brief green flash, text "LIVE"
+
+Emergency Stop:
+  Hover: subtle pulse animation on border
+  Click: immediate red flash, text "Stopping…"
+  Confirmation dialog: slide-down with overlay fade
+```
+
+### 6. Position Row Interactions
+```
+Hover:
+  - Background: var(--bg-3) transition 100ms
+  - Close button fades in (opacity 0→1, 100ms)
+  - Trend icon appears (▲/▼ next to symbol)
+  - Cursor: pointer if expandable
+
+Click (with TanStack):
+  - Row expands downward (expand-down 200ms)
+  - Shows: entry time, strategy, TP/SL, order timeline
+  - Blue left border on expanded row
+
+P&L cell:
+  - Value change: flash animation (same as header P&L)
+  - Gauge bar: smooth width transition (300ms)
+```
+
+## 14.8 Icon System
+
+### Icon Library: Lucide React (current, keep)
+
+**Icon sizing rules:**
+| Context | Size | Class |
+|---------|------|-------|
+| Nav items | 18px | `h-[18px] w-[18px]` |
+| Card headers | 14px | `h-3.5 w-3.5` |
+| Inline with text | 12px | `h-3 w-3` |
+| Status indicators | 8-10px | `h-2 w-2` to `h-2.5 w-2.5` |
+| Page titles | 20px | `h-5 w-5` |
+| Hero/empty states | 32px | `h-8 w-8` |
+| Tooltip triggers | 14px | `h-3.5 w-3.5` |
+
+### Trading-Specific Icon Mapping
+
+| Concept | Icon | Color |
+|---------|------|-------|
+| CALL/Long | `TrendingUp` | emerald-500 |
+| PUT/Short | `TrendingDown` | red-500 |
+| Neutral | `Minus` | muted-foreground |
+| Signal detected | `Zap` | amber-500 |
+| Order filled | `CheckCircle` | emerald-500 |
+| Order rejected | `XCircle` | red-500 |
+| Order pending | `Clock` | amber-500 |
+| SuperTrend | `Activity` | violet-500 |
+| Engulfing | `CandlestickChart` | blue-500 |
+| Risk/Warning | `AlertTriangle` | amber-500 |
+| Critical error | `AlertOctagon` | red-500 |
+| P&L | `DollarSign` | foreground |
+| Win rate | `Target` | emerald-500 |
+| Trading active | `Radio` | emerald-500 + live-dot |
+
+## 14.9 Component-by-Component Modernization Plan
+
+### Header.tsx — Modernization Details
+
+**Current state:** P&L display, clock, mode toggle, theme toggle
+
+**Additions:**
+1. **Market tickers strip** (between left stats and right clock)
+   - Format: `SPY 590.42 ▲ +0.31%  ·  QQQ 510.21 ▼ -0.12%  ·  VIX 14.2 ▼ -2.1%`
+   - Data: extract from `dataStatus.stock_ticks_sample` (already available)
+   - Update: every data_status event (~10s)
+   - Size: `text-2xs font-mono tabular-nums`
+   - Color: green/red based on change direction
+   
+2. **Market hours countdown**
+   - Format: `Closes in 2h 34m` (during market hours) or `Opens in 14h 22m` (after hours)
+   - Calculate from current ET time vs 9:30 AM / 4:00 PM ET
+   - Position: next to clock, muted text
+   - Pre-market (7:00-9:30): show `Pre-market · Opens in Xh Xm`
+   - After hours (4:00-8:00): show `After hours · Opens in Xh Xm`
+
+3. **Stale data indicator**
+   - If last `data_status` event > 30s ago: show amber `⚠ Data stale` badge
+   - If > 60s: show red `⚠ No data` badge
+   - Track with `useRef(Date.now())` updated on each data_status event
+
+### Sidebar.tsx — Modernization Details
+
+**Current state:** Nav, session stats, TWS status, license, mode
+
+**Additions:**
+1. **Collapsible on medium screens** (< 1024px)
+   - Toggle button at top: expand/collapse
+   - Collapsed: w-14, show only icons + tooltips
+   - Expanded: w-220 (current)
+   - Animate with `transition-all duration-200`
+
+2. **Watchlist section** (below navigation, above session stats)
+   - Title: "WATCHLIST" (2xs, uppercase, tracking-widest)
+   - Symbols from `tradingConfig.symbols`
+   - Each row: `SPY  590.42  ▲` (symbol, price, direction)
+   - Price from `dataStatus.stock_ticks_sample`
+   - Click: future — switch chart symbol
+   - Limit: show max 8 symbols, scroll if more
+
+3. **Active position count** on Positions nav item
+   - Badge showing number of active positions (like error count on Logs)
+   - Only show when > 0
+
+### DashboardPage.tsx — Modernization Details (Multi-Panel Layout)
+
+**Current:** Tab-based layout with Overview/Signals/Config/Activity tabs
+
+**Target:** Multi-panel layout (Phase A dependency: `react-resizable-panels`)
+
+**Interim improvements (no new deps):**
+1. Move chart placeholder to top of Overview tab (future candlestick area)
+2. Add "No chart yet — coming soon" placeholder with trading chart wireframe
+3. Move Config tab content to Settings page entirely
+4. Make Overview the default and primary view
+5. Reduce tab count from 4 → 2 (Overview, Activity)
+
+**Final layout (with react-resizable-panels):**
+```
+<PanelGroup direction="vertical">
+  <Panel defaultSize={55} minSize={30}>  <!-- Chart -->
+    <TradingChart />
+  </Panel>
+  <PanelResizeHandle />
+  <Panel defaultSize={45} minSize={20}>
+    <PanelGroup direction="horizontal">
+      <Panel defaultSize={60}>  <!-- Positions -->
+        <PositionsPanel />
+      </Panel>
+      <PanelResizeHandle />
+      <Panel defaultSize={40}>  <!-- Signals + Account -->
+        <Tabs>
+          <SignalActivity />
+          <AccountSummary />
+          <ActivityLog />
+        </Tabs>
+      </Panel>
+    </PanelGroup>
+  </Panel>
+</PanelGroup>
+```
+
+### PositionRow.tsx — Modernization Details
+
+**Current:** Basic row with P&L gauge, hover close button
+
+**Additions:**
+1. **Time held column**: `12m 34s` calculated from `position.entry_time` (requires backend to include entry timestamp)
+2. **Expandable detail panel** (click row):
+   - Entry time, exit target (TP), stop loss (SL)
+   - Strategy that triggered (SuperTrend/Engulfing)
+   - Order type and status
+   - Mini order timeline (placed → filled → monitoring → TP/SL)
+3. **Inline TP/SL quick edit**: double-click TP/SL values to edit in-place
+4. **Row priority coloring**: positions near TP glow green, near SL glow red
+
+### LogsPage.tsx — Modernization Details
+
+**Current:** Level filter, search, severity badges, category icons
+
+**Additions:**
+1. **Regex search toggle**: button next to search input to switch between simple/regex mode
+2. **Log groups**: group consecutive logs from same trade lifecycle (entry → fill → monitor → exit)
+3. **Timestamp precision**: show milliseconds (`10:34:22.145`) for debugging
+4. **Copy log line**: hover → copy icon → click to copy full log JSON to clipboard
+5. **Log level quick filters**: clickable badges at top that toggle filter
+6. **Export**: button to download filtered logs as JSON/CSV
+7. **Auto-scroll lock**: toggle to pause auto-scroll when user scrolls up
+8. **Performance**: already virtualized; add estimated row count in footer
+
+### SettingsPage.tsx — Modernization Details
+
+**Current:** Basic cards with toggles and inputs
+
+**Additions:**
+1. **Settings search**: fuzzy search input at top, highlights matching settings
+2. **Categories with icons**: group into Appearance, Trading, Connection, Strategy, UI, License
+3. **Reset to defaults**: button per section
+4. **Font size preview**: live preview of font size changes
+5. **Keyboard shortcuts section**: display current bindings, allow customization
+6. **Import/Export config**: button to export all settings as JSON, import from file
+7. **Compact mode toggle**: with live preview
+8. **Sound settings**: toggle audio alerts, select alert sounds
+9. **Data update intervals**: configurable per data type (PnL, account, data status)
+
+### AnalyticsPage.tsx — Modernization Details
+
+**Current:** Tabs with Recharts bar/line/pie charts
+
+**Improvements:**
+1. **Time range selector**: buttons for Last 10 / 25 / 50 / All trades
+2. **Chart height increase**: from 220px → 320px for better readability
+3. **Better tooltips**: show symbol, entry/exit time, strategy on hover
+4. **Drawdown chart** (new): visualize max drawdown over time
+5. **Trade distribution** (new): scatter plot of P&L by time of day
+6. **Symbol breakdown** (new): pie chart of trades by symbol
+7. **Cumulative P&L with benchmark**: overlay SPY performance for comparison
+
+## 14.10 Status Bar Specification
+
+**Position:** Fixed at bottom of AppShell, below main content area
+
+**Height:** 24px (6 units)
+
+**Background:** `var(--bg-1)`, border-top: 1px solid `var(--border-0)`
+
+**Font:** `text-2xs font-mono`
+
+**Layout (left → right):**
+
+```
+[TWS: Connected ✓] | [Engine: 1h 23m] | [Queue: 0] | [Market: Open · Closes in 2h 34m] | [Data: 2s ago] | [Theme: Dark] | [v1.0.0]
+```
+
+| Section | Data Source | Update | Color |
+|---------|-----------|--------|-------|
+| TWS status | `connectedToTws` store | Real-time | Green/Red |
+| Engine uptime | Track start time on `start_trading` | 1s interval | muted |
+| Event queue | `data_status.queue_size` (if available) | 10s | muted |
+| Market hours | Calculate from ET clock | 1m interval | muted/amber |
+| Data freshness | Track last `data_status` timestamp | 1s interval | muted/amber/red |
+| App version | From `package.json` | Static | muted |
+
+## 14.11 Command Palette Specification
+
+**Trigger:** `Ctrl+K` (Windows) / `⌘K` (Mac)
+
+**Library:** `cmdk` (requires npm install)
+
+**Design:**
+```
+Centered modal, 480px wide, max-h-[340px]
+Background: var(--bg-2), border: var(--border-2)
+Border-radius: 8px
+Box-shadow: var(--shadow-elevated)
+Backdrop: overlay var(--bg-0)/60, blur(4px)
+```
+
+**Search input:** Monospace, placeholder "Type a command…"
+
+**Command Groups:**
+
+| Group | Commands |
+|-------|----------|
+| **Navigation** | Go to Dashboard, Analytics, Positions, Logs, Settings |
+| **Trading** | Start Trading, Stop Trading, Emergency Stop, Close All Positions |
+| **View** | Toggle Theme, Toggle Compact Mode, Toggle Sidebar |
+| **Data** | Refresh Positions, Clear Logs, Export Trades |
+| **Quick** | Copy P&L, Copy Account ID, Show Keyboard Shortcuts |
+
+**Keyboard shortcuts (global):**
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+K` | Open command palette |
+| `Ctrl+1` | Go to Dashboard |
+| `Ctrl+2` | Go to Analytics |
+| `Ctrl+3` | Go to Positions |
+| `Ctrl+4` | Go to Logs |
+| `Ctrl+5` | Go to Settings |
+| `Ctrl+Shift+S` | Start Trading |
+| `Ctrl+Shift+X` | Stop Trading |
+| `Ctrl+Shift+E` | Emergency Stop |
+| `Ctrl+D` | Toggle Theme |
+| `Ctrl+.` | Toggle Compact Mode |
+| `Escape` | Close dialog/palette |
+
+## 14.12 Toast Notification System
+
+**Library:** `sonner` (requires npm install)
+
+**Position:** bottom-right
+
+**Max visible:** 3 stacked
+
+**Auto-dismiss:** 5 seconds (configurable)
+
+| Event | Type | Title | Description | Action |
+|-------|------|-------|-------------|--------|
+| Trade executed | success | "CALL Filled" | "SPY 590 C × 1 @ $2.45" | Click → /positions |
+| Trade closed (profit) | success | "Trade Closed +$45.20" | "SPY 590 C — TP hit" | Click → /positions |
+| Trade closed (loss) | error | "Trade Closed -$23.10" | "SPY 590 C — SL hit" | Click → /positions |
+| Signal detected | info | "Signal: CALL SPY" | "SuperTrend — Strong" | Click → dashboard signals tab |
+| TWS connected | success | "TWS Connected" | "" | 3s auto-dismiss |
+| TWS disconnected | error | "TWS Disconnected" | "Reconnecting…" | Persistent until reconnect |
+| P&L limit near | warning | "P&L Limit Warning" | "Daily P&L at 80% of target" | Click → risk panel |
+| Emergency stop | destructive | "Emergency Stop" | "Engine killed, check positions" | Persistent |
+| Config saved | success | "Config Saved" | "" | 2s auto-dismiss |
+| License expiring | warning | "License Expiring" | "3 days remaining" | Click → /settings |
+
+## 14.13 Glassmorphism & Visual Effects
+
+### Glass Cards (for chart overlays)
+```css
+.glass-card {
+  background: hsl(var(--bg-1) / 0.75);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border: 1px solid hsl(var(--border-1) / 0.5);
+}
+```
+
+### Chart Grid Background
+```css
+.chart-grid-bg {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    hsl(var(--border-0)) 1px,
+    transparent 0
+  );
+  background-size: 24px 24px;
+}
+```
+
+### Subtle Gradient Accents
+```css
+.gradient-profit {
+  background: linear-gradient(135deg, hsl(160 84% 39% / 0.08), transparent);
+}
+.gradient-loss {
+  background: linear-gradient(135deg, hsl(0 63% 55% / 0.08), transparent);
+}
+.gradient-hero {
+  background: linear-gradient(180deg, hsl(var(--primary) / 0.05), transparent 60%);
+}
+```
+
+### Focus Rings
+```css
+.focus-ring {
+  outline: 2px solid hsl(var(--ring) / 0.3);
+  outline-offset: 2px;
+  border-color: hsl(var(--primary) / 0.5);
+}
+```
+
+## 14.14 Accessibility Specifications
+
+| Requirement | Implementation |
+|-------------|----------------|
+| **Color contrast** | All text meets WCAG AA (4.5:1 for normal, 3:1 for large) |
+| **Focus visible** | Every interactive element has visible focus ring |
+| **Keyboard nav** | Tab order follows visual layout, skip-to-main link |
+| **Screen reader** | All icons have `aria-label`, status updates use `aria-live` |
+| **Reduced motion** | All animations respect `prefers-reduced-motion` |
+| **Color-blind safe** | P&L uses color + icon (▲/▼) + ±sign — never color alone |
+| **Font scaling** | Layout works from 12px to 24px base font (Settings) |
+| **High contrast** | Support `prefers-contrast: more` with increased border weights |
+
+## 14.15 Performance Budget
+
+| Metric | Target | Current Estimate |
+|--------|--------|-----------------|
+| **First Contentful Paint** | < 500ms | ~400ms (Vite + lazy routes) |
+| **Time to Interactive** | < 1.5s | ~1s |
+| **Re-render on PnL update** | < 2 components | 2-3 (throttled to 1s) |
+| **Bundle size (gzip)** | < 250KB | ~180KB |
+| **Lightweight Charts** | +45KB gzip | Lazy-loaded |
+| **TanStack Table** | +15KB gzip | Lazy-loaded |
+| **Sonner** | +5KB gzip | Lazy-loaded |
+| **cmdk** | +4KB gzip | Lazy-loaded |
+| **Total with all libs** | < 320KB gzip | ~249KB |
+| **60fps during trading** | No frame drops | Monitor with React Profiler |
+| **Memory (30min session)** | < 200MB | Track log buffer, position history |
+
+---
+
 # PART XII – Updated Priorities (Including UI Modernization)
 
 | Priority | Area | Item | Section |
@@ -1035,7 +2021,8 @@ Groups:
 | **P0** | **Security** | **Fix SQL injection in data_access.py** | §10.1 |
 | ~~P0~~ | Frontend | ~~Install shadcn/ui Phase 1 components (skeleton, tabs, alert, tooltip)~~ **Done** (no external deps, pure Tailwind) | §11.4 |
 | **P0** | **Frontend** | **Install Lightweight Charts + TanStack Table + Sonner + cmdk** (requires npm install) | §11.3 |
-| **P0** | **Frontend** | **Add TradingView candlestick chart to Dashboard** (biggest UX impact) | §11.5, §11.8 |
+| **P0** | **Frontend** | **Add TradingView candlestick chart to Dashboard** — single biggest UX gap vs NT/TV (§13.2 Gap 1) | §11.5, §11.8, §13.2 |
+| **P0** | **Frontend** | **Multi-panel dashboard layout** — replace tabs with resizable chart-first panels (§13.2 Gap 3) | §13.2, §13.5 Phase A |
 | **P1** | **Performance** | **Vectorize SuperTrend/BOTSingal** | §8.1 |
 | **P1** | **Performance** | **Bar-close triggered signals** | §8.4 |
 | **P1** | **Performance** | **Remove hard sleeps in init_data_feed** | §8.2 |
@@ -1043,30 +2030,60 @@ Groups:
 | **P1** | **Performance** | **Fix event_queue.get() block=True** | §8.4 |
 | ~~P1~~ | Frontend | ~~Skeleton loading states for StatCard, LiveStats, AccountSummary, PositionsPage~~ **Done** | §11.9 Phase 1 |
 | ~~P1~~ | Frontend | ~~P&L flash animations (Header, StatCard, PnLValue component)~~ **Done** | §11.9 Phase 1 |
-| **P1** | **Frontend** | **Sonner toasts** (requires npm install) | §11.9 Phase 1 |
-| **P1** | **Frontend** | **Upgrade position/trade tables with TanStack Table** (requires npm install) | §11.6 |
-| **P1** | **Frontend** | **Command palette (cmdk)** (requires npm install) | §11.7 |
+| **P1** | **Frontend** | **Command palette (cmdk) + global keyboard shortcuts** — pro traders are keyboard-first (§13.2 Gap 2) | §11.7, §13.2, §13.5 Phase B |
+| **P1** | **Frontend** | **Sonner toasts** — trade fill, SL/TP, connection, P&L alerts (§13.3 Gap 5) | §11.9, §13.3 |
+| **P1** | **Frontend** | **Upgrade position/trade tables with TanStack Table** — sort, filter, resize, expand (§13.2 Gap 4) | §11.6, §13.2 |
 | ~~P1~~ | Frontend | ~~Signal history timeline panel (SignalActivity component)~~ **Done** | §9.1, §11.9 Phase 2 |
 | **P1** | **Frontend** | **Intraday P&L Curve** | §9.1 |
 | ~~P1~~ | Frontend | ~~Position P&L gauge bar (PositionRow)~~ **Done** | §9.4 |
 | ~~P1~~ | Frontend | ~~Log search + severity badges (LogsPage, ActivityLog, Sidebar)~~ **Done** | §9.2 |
 | **P1** | **Frontend** | **Drawdown chart + risk metrics** | §9.3 |
+| **P1** | **Frontend** | **Bottom status bar** — engine uptime, market hours countdown, data freshness (§13.3 Gap 7) | §13.3, §13.4 |
 | **P1** | Backend | Options Greeks from TWS + greeks_update event | §10.3 |
 | **P1** | Backend | reqPnLSingle for per-position P&L | §10.3 |
 | **P1** | Backend | export_trades, health commands | §3.2 |
 | ~~P1~~ | UI | ~~Trading color tokens (CSS variables) + thematic Tailwind colors~~ **Done** | §11.7, §5.2 |
-| ~~P2~~ | Frontend | ~~Dashboard layout redesign (tabbed: Overview, Signals & Market, Config, Activity)~~ **Done** | §11.8 |
+| **P1** | **UI** | **Header mini market tickers** — SPY/QQQ/VIX inline prices (§13.3 Gap 6) | §13.3, §13.4 |
+| **P1** | **UI** | **Stale data indicator** — badge when data_status > 30s old (§13.4) | §13.4 |
+| **P1** | **UI** | **Market hours countdown** — "Closes in 2h 34m" in header/status bar (§13.4, §14.9) | §13.4, §14.9 |
+| **P1** | **UI** | **Status bar component** — TWS, uptime, queue, market hours, data freshness, version (§14.10) | §14.10 |
+| **P1** | **UI** | **Reduced border-radius** — 10px→6px for sharper pro terminal feel (§14.1, §14.5) | §14.5 |
+| **P1** | **UI** | **Complete color token system** — bg-0/1/2/3, border-0/1/2, text-0/1/2/3 hierarchy (§14.3) | §14.3 |
+| ~~P2~~ | Frontend | ~~Dashboard layout redesign (tabbed: Overview, Signals & Market, Config, Activity)~~ **Done** → to be replaced by multi-panel layout (§13.2) | §11.8 |
 | ~~P2~~ | Frontend | ~~Market overview panel (live tick data grid)~~ **Done** | §9.1 |
 | **P2** | **Frontend** | **Greeks per position display** | §9.4 |
 | **P2** | **Frontend** | **Trade lifecycle log groups** | §9.2 |
 | **P2** | **Frontend** | **Audio alerts + log persistence/export** | §9.2 |
 | **P2** | **Frontend** | **Order flow panel** | §9.1 |
 | **P2** | **Frontend** | **Quick adjust TP/SL from positions** | §9.4 |
+| **P2** | **Frontend** | **Position row expand** — click to show entry time, strategy, TP/SL, order timeline (§13.4) | §13.4 |
+| **P2** | **Frontend** | **Missing position columns** — time held, delta, strategy, risk % (§13.3 Gap 9) | §13.3 |
+| **P2** | **Frontend** | **Options chain view** — strikes grid with calls/puts, bid/ask, greeks, volume (§13.3 Gap 10) | §13.3 |
+| **P2** | **Frontend** | **Risk/exposure dashboard** — portfolio Greeks, margin gauge, concentration (§13.3 Gap 12) | §13.3 |
+| **P2** | **Frontend** | **Sidebar watchlist** — mini symbol prices below navigation (§13.3 Gap 8) | §13.3, §13.4 |
+| **P2** | **Frontend** | **Signal outcome tracking** — won/lost/skipped on signals (§13.4) | §13.4 |
+| **P2** | **UI** | **Compact/density mode toggle** — 12px compact vs 14px comfortable (§13.4) | §13.4 |
+| **P2** | **UI** | **Reduced motion support** — prefers-reduced-motion CSS (§13.4, §14.6) | §13.4, §14.6 |
+| **P2** | **UI** | **Hover cards for symbols** — rich popup with price/change/bid/ask (§13.4) | §13.4 |
+| **P2** | **UI** | **Glassmorphism effects** — glass cards for chart overlays, grid backgrounds (§14.13) | §14.13 |
+| **P2** | **UI** | **Toast notification system** — Sonner with 10 event types mapped (§14.12) | §14.12 |
+| **P2** | **UI** | **Type scale refinement** — text-3xs (9px), numeric inputs right-aligned mono (§14.2) | §14.2 |
+| **P2** | **Frontend** | **Collapsible sidebar** — icons-only at <1024px with tooltips (§14.9) | §14.9 |
+| **P2** | **Frontend** | **Settings page overhaul** — search, categories, reset, import/export (§14.9) | §14.9 |
+| **P2** | **Frontend** | **Log groups + export** — trade lifecycle grouping, JSON/CSV export (§14.9) | §14.9 |
+| **P2** | **Frontend** | **Analytics time range** — Last 10/25/50/All, chart height 320px, better tooltips (§14.9) | §14.9 |
 | P2 | Performance | Event-based contract resolution, separate queues, batch logs | §8.3, §8.4, §8.6 |
 | P2 | Backend | Config validation, class-based BOT, consolidated DB + loggers | §10.1 |
 | ~~P2~~ | Frontend | ~~Store selectors (LiveStats, Header, Sidebar use individual selectors)~~ **Done** | §4.6 |
 | ~~P2~~ | UI | ~~Micro-interactions (P&L flash, signal glow, TWS disconnect border, hover effects)~~ **Done** | §11.7 |
-| **P2** | UI | Compact mode, resizable panels (react-resizable-panels) | §11.9 |
+| **P3** | **Frontend** | **Session summary card** — auto end-of-day report (§13.4) | §13.4 |
+| **P3** | **Frontend** | **Trade execution replay** — mini chart with entry/exit markers (§13.4) | §13.4 |
+| **P3** | **Frontend** | **Right-click context menus** — position actions, symbol actions (§13.4) | §13.4 |
+| **P3** | **Frontend** | **Settings search** — filter within settings page (§13.4) | §13.4 |
+| **P3** | **Frontend** | **Log regex search** — upgrade from includes to regex (§13.4, §14.9) | §13.4, §14.9 |
+| **P3** | **UI** | **Count-up animation** — smooth number interpolation for stat changes (§14.6) | §14.6 |
+| **P3** | **UI** | **Accessibility audit** — WCAG AA contrast, aria-labels, focus rings, high-contrast mode (§14.14) | §14.14 |
+| **P3** | **UI** | **Chart grid dot pattern** — subtle radial-gradient background for cards/chart area (§14.13) | §14.13 |
 | **P3** | **Frontend** | **P&L heatmap, trade distribution, execution quality** | §9.1, §9.3 |
 | **P3** | **Frontend** | **Strategy comparison, calendar trade history** | §9.3, §11.9 |
 | P3 | Performance | msgpack IPC, numba SuperTrend | §8.6, §8.1 |
@@ -1077,6 +2094,8 @@ Groups:
 
 # PART VII – Changelog (Roadmap)
 
+- **Modern UI Design System Specification (v7):** Added **Part XIV – Modern UI Design System Specification** with 15 sub-sections covering every pixel-level detail for transforming QuantDrift into a Bloomberg/NinjaTrader/TradingView-class terminal: (§14.1) Design philosophy — 5 core principles (data density, glanceable, keyboard-first, zero surprise, dark-first) and design language rules (reduced radius 10px→6px, monospace for all numbers, 1px borders, minimal color); (§14.2) Complete typography system — font stack (Inter + JetBrains Mono + Geist headings + IBM Plex Mono logs), 10-level type scale (9px–28px) with line heights and weights, 7 typography rules for financial data formatting; (§14.3) Full color token specification — 35+ semantic tokens organized into background layers (bg-0/1/2/3), border hierarchy (border-0/1/2), text hierarchy (text-0/1/2/3), P&L, signal, order status, Greeks, chart (candle up/down, wick, grid, crosshair, volume, SuperTrend, EMA), and log severity colors, plus light theme adjustments; (§14.4) Complete spacing and layout system — 10-level spacing scale, detailed ASCII wireframe of target multi-panel layout, responsive breakpoints (md/lg/xl/2xl), and comprehensive compact mode specification (14 property differences); (§14.5) Component design specs — Card (5 variants: default/elevated/accent/danger/glass, reduced radius, tighter padding), Button (5 new trading variants: trading-start/stop/emergency/icon-sm/chip), Input (reduced height, recessed bg, monospace for numbers), Table (complete header/row/cell/expandable spec), Badge (10 new variants: signal-call/put/strong, filled/pending/rejected, live/stale/count); (§14.6) Animation system — 14 named animations with duration/easing/trigger/CSS specs, reduced-motion media query implementation; (§14.7) 6 micro-interaction specifications (P&L flash, trade fill toast, signal glow, TWS connection states, button transitions, position row hover/expand); (§14.8) Icon system — sizing rules for 7 contexts, 14 trading-specific icon-to-concept mappings with colors; (§14.9) Component-by-component modernization plan — Header (3 additions: market tickers, market hours, stale indicator), Sidebar (3 additions: collapsible, watchlist, position count badge), DashboardPage (interim 5-point improvement + final react-resizable-panels layout code), PositionRow (4 additions: time held, expandable panel, inline TP/SL edit, proximity coloring), LogsPage (8 additions: regex, groups, ms timestamps, copy, quick filters, export, auto-scroll lock, row count), SettingsPage (9 additions: search, categories, reset, preview, shortcuts, import/export, compact, sound, intervals), AnalyticsPage (7 additions: time range, height, tooltips, drawdown, distribution, symbol breakdown, benchmark); (§14.10) Status bar spec — 24px fixed bar with 7 sections (TWS, uptime, queue, market, data freshness, theme, version); (§14.11) Command palette spec — 480px modal, 5 command groups (25+ commands), 12 global keyboard shortcuts; (§14.12) Toast notification system — 10 event types mapped with type/title/description/action/dismiss; (§14.13) Glassmorphism effects — glass cards, chart grid dots, gradient accents, focus rings; (§14.14) Accessibility — 8 requirements (contrast, focus, keyboard, screen reader, reduced motion, color-blind safe, font scaling, high contrast); (§14.15) Performance budget — 10 metrics with targets (FCP <500ms, bundle <320KB with all libs). **Updated Part XII** with 15+ new priority items from Part XIV at P1-P3 levels.
+- **NinjaTrader & TradingView Gap Analysis (v6):** Added **Part XIII – NinjaTrader & TradingView Gap Analysis** with 5 sub-sections: (§13.1) Component-by-component grading (Dashboard B-, Trading Chart F, Header B+, Sidebar B, Positions C+, Analytics B-, Logs B+); (§13.2) 4 critical gaps: (1) No candlestick chart — NT/TV dedicate 60-70% of screen to charts with OHLCV, signal markers, indicator overlays; (2) No keyboard shortcuts / command palette — NT has 50+ hotkeys, TV has universal search; (3) Tab-based layout instead of resizable multi-panel — NT uses dockable panels, TV uses drag-snap; (4) Position table missing sort/filter/expand — NT has full data grids with Greeks, strategy, time held; (§13.3) 8 high-impact gaps: (5) No toast notifications — NT/TV show fill confirmations, SL/TP hits in real-time; (6) No market ticker strip — TV header shows major indices ticking live; (7) No status bar — NT has engine uptime, data freshness, market hours at bottom; (8) No sidebar watchlist — TV has persistent symbol list with mini-prices; (9) Position columns missing time held, delta, strategy, risk %; (10) No options chain view — NT has full chain with strikes grid; (11) No signal outcome tracking — no way to verify signal accuracy; (12) No risk/exposure dashboard — no portfolio Greeks, margin usage, concentration; (§13.4) 17 "polish-to-pro" items including position row expand, compact mode, hover cards, stale data indicators, market hours countdown, session summary, trade replay, right-click menus, reduced motion, settings search, log regex; (§13.5) 6-phase implementation roadmap (A: Chart-First, B: Keyboard Power, C: Data Grid, D: Notifications, E: No-Install Polish, F: Advanced). **Updated Part XII priority table** with 20+ new items from gap analysis integrated at P0-P3 levels.
 - **UI Modernization Implementation (v5):** Implemented core UI improvements without installing new npm packages — all using existing Tailwind + CVA + clsx + Lucide stack. **New UI primitives (4):** `skeleton.tsx` (shimmer animation, pre-built StatCard/Card/TableRow skeletons), `tabs.tsx` (pure React context-based tabs, no Radix dependency), `alert.tsx` (6 variants incl. signal/destructive, auto-icons), `tooltip.tsx` (pure CSS hover tooltip, 4 directions). **New trading components (3):** `PnLValue.tsx` (animated P&L display with green/red flash on value change, ±sign, percentage, size variants), `SignalActivity.tsx` (signal timeline panel showing detected signals + executed trades with direction icons, strength badges, timestamps, glow animation), `MarketOverview.tsx` (live tick data grid with bid/ask, priority symbol sorting, volume display). **CSS system:** Added 14 trading-specific CSS custom properties (profit/loss, bid/ask, signal-call/put, greeks-delta/gamma/theta/vega, chart-up/down/volume) in both light and dark themes; added `pnl-flash-green`/`pnl-flash-red` animations, `skeleton-shimmer` animation, `signal-glow` animation, `tws-disconnected-border`, P&L gauge utility classes, severity classes (critical/error/warn/info/debug/trade/signal/order), category icon classes. Added Tailwind `trading.*`, `signal.*`, `greeks.*` color tokens and `fade-up`/`slide-in-right` keyframe animations. **Component improvements (11 files):** `StatCard` — added skeleton loading, P&L flash, hover effects, info tooltip; `LiveStats` — memoized with individual store selectors, skeleton on Starting, flash on Running, engine status with TWS connection subtitle; `ActivityLog` — category-specific icons (Zap/ShoppingCart/Database/Settings2), level icons, error/warning count badges, empty state with CTA; `DashboardPage` — tabbed layout (Overview: account+controls+risk+data; Signals & Market: market overview+signals+data; Configuration: all config panels; Activity: full log); `Header` — P&L flash animation, realized/unrealized mini display, TWS disconnect top border, trend direction icon; `Sidebar` — error count badge on Logs nav item, session mini-stats (trades/wins/losses), license expiry warning styling, TWS reconnecting state; `AccountSummary` — skeleton loading, tiered layout (primary metrics prominent, P&L with color + trend icons, secondary compact), connected badge; `PositionRow` — P&L gauge bar, trend icon on hover, close button on hover only, bold symbol; `PositionsPage` — summary cards (active/totalPnL/calls/puts), skeleton loading, better empty state; `LogsPage` — level summary badges, inline search field, row numbers, category-specific icons + colors, left-border for errors; `AnalyticsPage` — tabbed charts (All Charts/P&L Analysis/Distribution), info alert when no trades, trade count display; `PerformanceMetrics` — 8 metrics (added best trade + expectancy), info tooltips. Updated `App.tsx` suspense fallback with branded loading spinner. Updated ROADMAP Part XII priorities (12 items marked Done) and Phase 1/2 tables.
 - **UI Library Evaluation & Modernization Plan (v4):** Added **Part XI – UI Library Evaluation & Professional Trading System Modernization** with 9 sub-sections: (§11.1) Full audit of current UI stack — what's installed and what's missing (7 of 40+ shadcn components, no candlestick charts, no data grid, no command palette, no skeleton loading); (§11.2) Head-to-head comparison of **shadcn/ui vs MUI vs DaisyUI** with verdict: keep and extend shadcn/ui (already in use, zero runtime cost, full customization) — MUI too heavy (+300KB, CSS-in-JS re-render cost), DaisyUI too generic for trading; (§11.3) Definitive recommended library stack: keep Tailwind+shadcn+Zustand+Framer Motion, **add TradingView Lightweight Charts** (candlestick/OHLCV, ~45KB), **TanStack Table v8** (professional data grid, ~15KB), **Sonner** (toasts, ~5KB), **cmdk** (command palette, ~4KB), react-resizable-panels, Vaul; explicit NOT-recommended list with reasons (MUI, DaisyUI, Ant Design, AG Grid, D3, Chart.js, react-hot-toast); (§11.4) Complete shadcn/ui component installation plan across 3 phases (12 critical: dialog, dropdown, select, tabs, tooltip, table, skeleton, alert, collapsible, scroll-area, toast, command; 8 enhanced; 7 polish); (§11.5) TradingView Lightweight Charts integration plan with component structure, data flow for live updates, and feature list (candlestick, volume, SuperTrend overlay, signal markers, crosshair); (§11.6) TanStack Table plan for positions/trades/logs/orders with sorting, filtering, column resize/pin, row expand, pagination, virtual scrolling, custom cell renderers; (§11.7) Professional trading terminal design system: trading-specific CSS color tokens (bid/ask, signal CALL/PUT, Greeks colors), typography enhancement (Geist/Satoshi for brand, IBM Plex Mono for logs), 10 micro-interaction specifications (P&L flash, trade fill toast, SL hit alert, TWS disconnect border, signal glow, position near-TP/SL pulse), full command palette (cmdk) design with 20+ commands across 5 groups; (§11.8) Dashboard layout redesign from vertical config stack → chart-first 3-panel trading terminal with resizable areas (chart 50%, positions 25%, signals 25%), move config panels to Settings; (§11.9) 4-phase implementation plan with specific tasks and timeline estimates. Added **Part XII – Updated Priorities** consolidating all UI modernization items with existing performance and backend priorities. Updated Part VI cross-references.
 - **Performance deep-dive & professional UI features (v3):** Added **Part VIII – Performance Deep-Dive** with code-level analysis of 6 major bottlenecks: (1) SuperTrend/BOTSingal using 5 iterrows loops (50–100× slower than vectorized numpy); (2) init_data_feed has 15+ seconds of hard time.sleep(); (3) get_strikes/get_contract_detail use blocking poll loops; (4) event_processor runs full SuperTrend on every tick instead of bar-close only, block=False bug; (5) Indicators.py functions use Yahoo Finance HTTP calls instead of TWS data; (6) PnL emitted 20×/s, no log batching, heavy data_status computation under lock. Added **Part IX – Professional Trading UI** with 30+ new feature proposals across 4 categories: Dashboard (Greeks, intraday P&L curve, signal timeline, market overview, position cards, risk gauges, strategy breakdown, heat map, order flow), Logs (trade lifecycle groups, structured categories, search/regex, export, persistence, audio alerts, terminal viewer, severity badges, trade-linked navigation), Analytics (drawdown chart, risk metrics, trade distribution, symbol breakdown, multi-day view, strategy comparison, execution quality, session summary), Positions (live P&L, TP/SL gauge, Greeks, time held, sizing info, quick adjust, alerts). Added **Part X – Engine & Backend Improvements** covering class-based BOT refactor, consolidated DB, new sidecar events (greeks_update, signal_history, order_lifecycle, bar_close, tick_stream, session_summary), and TWS data enhancements (option Greeks, reqPnLSingle, VIX, execution details, multi-day history, market depth). **Part VI priorities completely restructured** with P0 security fix, P1 performance items, and P1/P2 new features integrated.

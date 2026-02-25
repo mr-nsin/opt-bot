@@ -39,6 +39,17 @@ from tws_api_client import TwsApiClient
 from order_manager import OrderManager
 from data_access import DAL
 
+# ---- Frontend log emitter (sends logs to Tauri UI via JSON-RPC stdout) ----
+# Imported conditionally because BOT.py can run standalone (legacy) or inside the sidecar.
+try:
+    from protocol.emitter import emit_log as _emit_log, emit_signal as _emit_signal
+except ImportError:
+    # Running outside sidecar (legacy mode) — stub to no-op
+    def _emit_log(message, level="INFO", category="trading"):
+        pass
+    def _emit_signal(symbol, signal_type, strike, price, reason):
+        pass
+
 from multiprocessing import Process
 
 _process = None
@@ -357,6 +368,14 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
         logger.info("\n<NEW ORDER> PLACED SUCCESSFULLY\n")
         if option_order is not None:
             order_mgr.save_order(order=option_order)
+            _emit_log(
+                f"ORDER PLACED: {symbol} {right} {strike} {action} {totalQuantity}x @ ${lmtPrice:.2f} ({orderType}) | TP=${profitPrice:.2f} SL=${auxPrice:.2f}",
+                "INFO", "order"
+            )
+            _emit_signal(symbol, right or "", float(strike or 0), float(lmtPrice or 0),
+                         f"{action} {orderType} — TP=${profitPrice:.2f} SL=${auxPrice:.2f}")
+        elif closing_order:
+            _emit_log(f"EXIT ORDER: {symbol} {right} {strike} {action} {totalQuantity}x @ MKT", "INFO", "order")
         
         # FIX: Unlock the tick after successful order
         if options_tick:
@@ -466,13 +485,19 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
         signal_dict[stock]['last_signal'] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[1]
         signal_dict[stock]['current_signal'] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[0]
         logger.info("Updated signal_dict = {}".format(signal_dict))
+
+        current_sig = signal_dict[stock]['current_signal']
+        last_sig = signal_dict[stock]['last_signal']
         
-        if signal_dict[stock]['last_signal'] != signal_dict[stock]['current_signal']:
-            logger.info("Signal Match for stock = {} and trade signal is = {}".format(stock, signal_dict[stock]['current_signal']))
+        if last_sig != current_sig:
+            logger.info("Signal Match for stock = {} and trade signal is = {}".format(stock, current_sig))
+            _emit_log(f"SuperTrend FLIP: {stock} {last_sig}→{current_sig} (signal change detected)", "INFO", "signal")
             trade_value = "trade"
+        else:
+            _emit_log(f"SuperTrend: {stock} signal={current_sig} (no change)", "DEBUG", "signal")
 
         right = "CALL"
-        if signal_dict[stock]['current_signal'].lower() == "sell":
+        if current_sig.lower() == "sell":
             right = "PUT"
         return True, right,  stock, "strongBuy"
     else:
@@ -908,9 +933,11 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
 
         if atrVal >= ATR_CHECKS:
             logger.info("ATR_CHECKS Meet the ATR value")
+            _emit_log(f"{Stock}: ATR={atrVal:.4f} ≥ {ATR_CHECKS} ✓ (passed)", "DEBUG", "signal")
             toTrade = toTrade and True
         else:
             logger.info("ATR_CHECKS Not Meet the ATR value")
+            _emit_log(f"{Stock}: ATR={atrVal:.4f} < {ATR_CHECKS} ✗ (failed — too low volatility)", "INFO", "signal")
             toTrade = toTrade and False
 
         # FOR SCLAP
@@ -1000,6 +1027,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
         logger.info("Position = {} and pos_right = {}".format(position.position, pos_right))
         if position.position != 0 and pos_right.lower() == rightMatch[0].lower():
             logger.info(f"Position already Present for Stock = {stockName}")
+            _emit_log(f"{stockName} {rightMatch}: Position already open (qty={position.position}) — skipping", "INFO", "signal")
             return "positionAlreadyPresent"
         else:
             logger.info(f"Position is not present with same Right for Stock = {stockName}")
@@ -1008,6 +1036,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
     order = order_mgr.get_entry_order(stockName)
     if order != None and order.active == True:
         logger.info(f"Order Already Present for Stock = {stockName}, status: {order.order_status}")
+        _emit_log(f"{stockName}: Pending {order.order_status} order exists — skipping", "INFO", "signal")
         return "orderAlreadyPresent"
     try:
         if conditionMatch == False:
@@ -1035,6 +1064,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     # If the distance between trades check fails
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch):
                         logger.info(f"{stockName} distance between trade check failed, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
+                        _emit_log(f"{stockName} {rightMatch}: Cooldown active ({TRADE_COOLDOWN_SECONDS}s) — waiting", "INFO", "signal")
                         continue
                     else:
                         tradeKey = '{}_{}'.format(stockName, rightMatch)
@@ -1045,12 +1075,14 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
                         logger.info("No Trade Happend For Stocks as Table Data is not present")
+                        _emit_log(f"{stockName} {eachStrike}{rightMatch[0]} {tradeExpiry}: No options data available", "DEBUG", "signal")
                         continue
                     elif len(deltaVolDataReturn) == 2:
                         logger.info(f"Checking Delta and Volume Match Condition for stock ={stockName} and strike is ={eachStrike}")
                         deltaValue = deltaVolDataReturn[0]
                         volumes = deltaVolDataReturn[1]
                         logger.info(f"Recevied delta value is = {deltaValue} and Volume is = {volumes} from DB for stock = {stockName}")
+                        _emit_log(f"{stockName} {eachStrike}{rightMatch[0]}: delta={deltaValue:.2f} (need≥{CALL_DELTA_CHECK}), vol={volumes} (need≥{VOLUME_CHECK})", "DEBUG", "signal")
 
                         if deltaValue >= CALL_DELTA_CHECK and volumes >= VOLUME_CHECK:
                             # TODO: MUST REMOVE FOLLOWING CODE
@@ -1276,6 +1308,7 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
         if marketTime.replace("-", "") > endTime.toString("HHmm"):
             logger.info(f"Market Time is ={marketTime} > {endTime}.So Closing All Placed Orders if Any Or Closing Execution if no Orders Present")
             tradeMarketTime = True
+            _emit_log(f"Market hours ended ({marketTime} > {endTime}) — closing all positions", "WARN", "risk")
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
@@ -1283,6 +1316,8 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
             tradeMarketTime = True
             logger.info(f"Day PNL Target HIT. Either {pnlData} is Greater than Profit Target {profit_amount_day} or Less than Loss Target {loss_amount_day}")
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price as Daily Profit/StopLoss Target HIT.")
+            side = "profit" if pnlData >= profit_amount_day else "loss"
+            _emit_log(f"DAY LIMIT HIT ({side}): P&L ${pnlData:.2f} — cancelling orders & closing positions", "ERROR", "risk")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
         else:
@@ -1379,6 +1414,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     spreadGap = askPrice - bidPrice
     
     if spreadGap >=0.12:
+        _emit_log(f"{stock_symbol} {right}: Spread too wide ${spreadGap:.2f} ≥ $0.12 — skipping", "INFO", "order")
         return "SpreadGapHighOver0.12ComingOut"
 
     if bidPrice == -1.0:
@@ -1391,6 +1427,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
 
     if askMinusBidPrice > 0.4:
         logger.info("Spread Difference is greater than 0.05 so not doing anything and continue for next checks")
+        _emit_log(f"{stock_symbol} {right}: Spread ${askMinusBidPrice:.2f} > $0.40 — too wide, skipping", "INFO", "order")
         return "spreadHigherThan0.05"
     elif askMinusBidPrice <= 0.03:
         ORDER_TYPE = "MKT"
@@ -1787,6 +1824,11 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
 
         #logger.info(f"Amount to Use is = {useAmount} and Quantities to trade is = useAmount/tradPrice = {totalQty}")
         logger.info(f"Amount to Use is = {useAmount[stock_symbol]['amount']} and Quantities to trade = {totalQty}")
+        rr_ratio = (profitPrice - tradePrice) / (tradePrice - auxPrice) if (tradePrice - auxPrice) > 0 else 0
+        _emit_log(
+            f"TRADE SETUP: {stock_symbol} {right} {strike} @ ${tradePrice:.2f} | TP=${profitPrice:.2f} SL=${auxPrice:.2f} | R:R=1:{rr_ratio:.1f} | Qty={totalQty}",
+            "INFO", "order"
+        )
 
         # action = "BUY"
         currentOrderId = placeAndVerifyOrder(
@@ -1812,6 +1854,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         return "orderPlaced"
     else:
         logger.info(f"Öptions Price is Above ${MAX_CONTRACT_AMOUNT} so going or next check")
+        _emit_log(f"{stock_symbol} {right}: Options price ${lastPrice * 100:.0f} > max ${MAX_CONTRACT_AMOUNT} — too expensive", "INFO", "order")
         return "priceConditonNotMatched"
 
 
@@ -1867,6 +1910,7 @@ def init_data_feed():
         # STK = stocks, FUT = futures (e.g. MNQU5, NQU5), OPT = options (calls/puts on STK underlyings).
         stock_list_to_trade = globals().get("stock_list_to_trade", None) or {}
         logger.info(f"Subscribing to underlyings: {stockList}. Then options (OPT) on stocks for strategy.")
+        _emit_log(f"Subscribing to {len(stockList)} underlyings: {', '.join(stockList)}", "INFO", "signal")
 
         # Create a list of underlying contracts (STK or FUT)
         stock_contracts = []
@@ -1961,6 +2005,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
         None
     """
     logger.info(f"Starting event processor #{count + 1}")
+    _emit_log(f"Event processor #{count + 1} started — scanning for signals", "INFO", "signal")
     tries = 0
     keep_running = True
     while keep_running:
@@ -1974,11 +2019,27 @@ def event_processor(event_queue: Queue, count: int) -> None:
                 order_mgr.check_and_close_position(tick=tick)
             elif tick.contract.secType == "STK":
                 # Get the result of the call/put engulf check
+                _emit_log(f"Scanning {tick.contract.symbol} for signal (SuperTrend + Engulfing)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
                 logger.info(f"\n dataEngulf = {dataEngulf}\n")
                 if dataEngulf[0]:
+                    sig_direction = dataEngulf[1]  # CALL or PUT
+                    sig_strength = dataEngulf[3]    # strongBuy, heavyBuy, etc.
+                    _emit_log(f"Signal detected: {tick.contract.symbol} → {sig_direction} ({sig_strength})", "INFO", "signal")
                     result = checkConditionsAndTrade((dataEngulf, dataStrike), tick)
                     logger.info(f"checkConditionsAndTrade: {result}")
+                    if result == "orderPlaced":
+                        _emit_log(f"Trade executed: {tick.contract.symbol} {sig_direction} order placed", "INFO", "order")
+                    elif result == "positionAlreadyPresent":
+                        _emit_log(f"{tick.contract.symbol}: Position already open — skipping", "DEBUG", "signal")
+                    elif result == "orderAlreadyPresent":
+                        _emit_log(f"{tick.contract.symbol}: Pending order exists — skipping", "DEBUG", "signal")
+                    elif result == "conditionNotMatched":
+                        _emit_log(f"{tick.contract.symbol}: Conditions not met for trade", "DEBUG", "signal")
+                    elif isinstance(result, str) and result != "None":
+                        _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
+                else:
+                    _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged)", "DEBUG", "signal")
             
             # Mark the event as processed
             event_queue.task_done()
@@ -1986,6 +2047,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
             # If TWS is disconnected
             if client is not None and not client.isConnected():
                 logger.error("TWS is disconnected")
+                _emit_log("TWS disconnected — attempting reconnect", "WARN", "system")
                 logger.info("trying Reconnect")
                 client.try_reconnect()
                 #if not client.isConnected():
@@ -1996,6 +2058,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
         except Exception as ex:
             # Log the error
             logger.error("Error occurred:", exc_info=True)
+            _emit_log(f"Event processor error: {ex}", "ERROR", "trading")
 
 
 def check_and_close_all_open_positions():
@@ -2060,6 +2123,10 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
                 logger.error(
                     f" DAILY LIMIT HIT  PnL={pnl} "
                     f"Limits=({day_profit_limit}, {day_loss_limit})")
+                _emit_log(
+                    f"DAY LOCK: P&L ${pnl:.2f} hit limit (profit=${day_profit_limit:.2f}, loss=${day_loss_limit:.2f}) — trading stopped",
+                    "ERROR", "risk"
+                )
 
                 STOP_TRADING = True
                 DAY_LOCKED = True

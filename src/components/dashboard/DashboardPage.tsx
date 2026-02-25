@@ -10,12 +10,14 @@ import { StockList } from "./StockList";
 import { ActivityLog } from "./ActivityLog";
 import { SignalActivity } from "./SignalActivity";
 import { MarketOverview } from "./MarketOverview";
+import { EngineActivity } from "./EngineActivity";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Settings2,
   BarChart3,
   Zap,
   Activity,
+  Radio,
 } from "lucide-react";
 
 export function DashboardPage() {
@@ -45,6 +47,10 @@ export function DashboardPage() {
           <TabsTrigger value="config">
             <Settings2 className="h-3.5 w-3.5" />
             Configuration
+          </TabsTrigger>
+          <TabsTrigger value="engine">
+            <Radio className="h-3.5 w-3.5" />
+            Engine
           </TabsTrigger>
           <TabsTrigger value="activity">
             <Activity className="h-3.5 w-3.5" />
@@ -97,6 +103,17 @@ export function DashboardPage() {
               <ConnectionConfig />
               <StockList />
             </div>
+          </div>
+        </TabsContent>
+
+        {/* === Engine Tab — Signal scanner + order activity live feed === */}
+        <TabsContent value="engine">
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <EngineActivity />
+              <SignalActivity />
+            </div>
+            <DataFeedStatus />
           </div>
         </TabsContent>
 

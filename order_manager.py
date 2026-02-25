@@ -6,6 +6,13 @@ from tws_api_client import TwsApiClient
 
 from threading import Lock
 
+# ---- Frontend log emitter (sends logs to Tauri UI via JSON-RPC stdout) ----
+try:
+    from protocol.emitter import emit_log as _emit_log
+except ImportError:
+    def _emit_log(message, level="INFO", category="trading"):
+        pass
+
 
 
 class OrderManager:
@@ -157,6 +164,7 @@ class OrderManager:
             order.order_status = status
             order.active = False
             logger.info(f'Order ({order_id}) {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{trade.order.lmtPrice} was rejected')
+            _emit_log(f"ORDER REJECTED: {order.option_symbol} {order.order_side} {order.order_qty}x @ ${trade.order.lmtPrice}", "ERROR", "order")
             # self.db.delete(order=order)
             self.db.update(order=order)
         elif status in ['submitted', 'presubmitted']:
@@ -166,12 +174,16 @@ class OrderManager:
             if status == 'submitted' and trade.executed_qty > 0:
                 order.executed_qty = trade.executed_qty
                 logger.info(f'Order ({order_id}) {order.option_symbol} {order.order_side} {order.order_type} {trade.executed_qty}@{trade.last_fill_price}, Leaves: {trade.remaining_qty} was partially filled')
+                _emit_log(f"PARTIAL FILL: {order.option_symbol} {trade.executed_qty}x @ ${trade.last_fill_price:.2f} (remaining: {trade.remaining_qty})", "INFO", "order")
+            else:
+                _emit_log(f"ORDER {status.upper()}: {order.option_symbol} {order.order_side} {order.order_qty}x @ ${order.order_price:.2f}", "INFO", "order")
             self.db.update(order=order)
         elif status in ['cancelled', 'expired']:
             # The order was cancelled or has expired.
             order.order_status = status
             order.active = False
             logger.info(f'Order ({order_id}) {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
+            _emit_log(f"ORDER {status.upper()}: {order.option_symbol} {order.order_side} {order.order_qty}x @ ${order.order_price:.2f}", "WARN", "order")
             # self.db.delete(order=order)
             self.db.update(order=order)
         elif status == 'filled':
@@ -221,6 +233,14 @@ class OrderManager:
             # Find the corresponding entry order and deactivate it
             entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
             logger.info(f'99999999999999999999999 EXIT Order ({order.id}) [{entry_order.id}] {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
+            # Calculate P&L for the closed trade
+            entry_avg = entry_order.average_price if entry_order else 0
+            exit_avg = order.average_price if order.average_price else 0
+            trade_pnl = (exit_avg - entry_avg) * order.executed_qty * 100 if entry_avg > 0 else 0
+            _emit_log(
+                f"EXIT FILLED: {order.option_symbol} {order.order_qty}x @ ${exit_avg:.2f} | Entry: ${entry_avg:.2f} | P&L: ${trade_pnl:+.2f}",
+                "INFO", "order"
+            )
             if entry_order is not None:
                 option_tick.active_order = None
                 entry_order.active = False
@@ -230,7 +250,12 @@ class OrderManager:
                 self.db.delete(order=order)
 
         # If this was an entry order, log a message with its status
-        else:logger.info(f'ENTRY Order ({order.id}) {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
+        else:
+            logger.info(f'ENTRY Order ({order.id}) {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
+            _emit_log(
+                f"ENTRY FILLED: {order.option_symbol} {order.order_side} {order.order_qty}x @ ${order.average_price:.2f} | TP=${order.profit_price:.2f} SL=${order.stoploss_price:.2f}",
+                "INFO", "order"
+            )
 
 
     def close_position(self, order: OptionOrder, option_tick: Tick) -> None:
@@ -304,6 +329,10 @@ class OrderManager:
 
             # Log the closing order details and place the order
             logger.info(f"Close Position: ({orderId}) [{order.id}] {exit_order.option_symbol} {closing_order.orderType} {action} {closing_order.totalQuantity}@MKT")
+            _emit_log(
+                f"CLOSING: {exit_order.option_symbol} {action} {closing_order.totalQuantity}x @ MKT",
+                "INFO", "order"
+            )
             self.api_client.placeOrder(orderId, contract=contract, order=closing_order)
             self.save_order(order=exit_order)
         except Exception as ex:
@@ -463,10 +492,18 @@ class OrderManager:
             if not order.profit_trigger:
                 logger.info(f" Profit Trigger ACTIVATED: Order({order.id}) {order.option_symbol}: "
                            f"${exit_price:.2f} >= ${order.current_profit_price:.2f}")
+                _emit_log(
+                    f"TP TRIGGER: {order.option_symbol} — price ${exit_price:.2f} ≥ target ${order.current_profit_price:.2f} (trailing activated)",
+                    "INFO", "position"
+                )
         
             order.profit_trigger = True
             order.current_profit_price = round(exit_price + order.profit_increment, 2)
             logger.info(f" Trailing Profit Updated: Next target: ${order.current_profit_price:.2f}")
+            _emit_log(
+                f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
+                "DEBUG", "position"
+            )
             self.db.update(order=order)
             return
     
@@ -474,6 +511,10 @@ class OrderManager:
         if order.profit_trigger and exit_price < (order.current_profit_price - order.profit_increment):
             logger.info(f"✓ HIT Trailing TakeProfit: Order({order.id}) {order.option_symbol}: "
                        f"Exit: ${exit_price:.2f} < Trailing: ${order.current_profit_price:.2f}")
+            _emit_log(
+                f"HIT TAKE PROFIT: {order.option_symbol} — exit ${exit_price:.2f} < trail ${order.current_profit_price:.2f} — CLOSING",
+                "INFO", "order"
+            )
             self.close_position(order=order, option_tick=option_tick)
             return
 
@@ -523,6 +564,10 @@ class OrderManager:
         # If the last traded price is less than or equal to the stoploss price, execute stop loss
         if exit_price <= order.stoploss_price:
             logger.info(f"11111111111111111111111111 HIT Stoploss: Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, AuxPrice: {order.stoploss_price}")
+            _emit_log(
+                f"HIT STOP LOSS: {order.option_symbol} — exit ${exit_price:.2f} ≤ SL ${order.stoploss_price:.2f} — CLOSING",
+                "WARN", "order"
+            )
             # close position
             self.close_position(order=order, option_tick=option_tick)
         
