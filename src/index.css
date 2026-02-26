@@ -260,13 +260,13 @@
 
 /* ─── Trading severity colors ─── */
 .severity-critical { @apply bg-red-500/10 text-red-500 border-red-500/20; }
-.severity-error { @apply bg-red-500/8 text-red-400; }
-.severity-warn { @apply bg-amber-500/8 text-amber-400; }
-.severity-info { @apply bg-blue-500/8 text-blue-400; }
+.severity-error { @apply bg-red-500/10 text-red-400; }
+.severity-warn { @apply bg-amber-500/10 text-amber-400; }
+.severity-info { @apply bg-blue-500/10 text-blue-400; }
 .severity-debug { @apply text-muted-foreground/50; }
-.severity-trade { @apply bg-emerald-500/8 text-emerald-400; }
-.severity-signal { @apply bg-violet-500/8 text-violet-400; }
-.severity-order { @apply bg-cyan-500/8 text-cyan-400; }
+.severity-trade { @apply bg-emerald-500/10 text-emerald-400; }
+.severity-signal { @apply bg-violet-500/10 text-violet-400; }
+.severity-order { @apply bg-cyan-500/10 text-cyan-400; }
 
 /* ─── Select styling ─── */
 select {
