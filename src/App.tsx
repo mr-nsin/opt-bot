@@ -8,6 +8,8 @@ import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useTradingEvents } from "@/hooks/useTradingEvents";
+import { useHotkeys } from "@/hooks/useHotkeys";
+import { CommandPalette } from "@/components/common/CommandPalette";
 import { config, logs as logsApi } from "@/lib/tauri-commands";
 
 const DashboardPage = lazy(() =>
@@ -35,6 +37,9 @@ function AppContent() {
 
   // Set up global trading event listeners (must be called once at root)
   useTradingEvents();
+
+  // Global keyboard shortcuts
+  useHotkeys();
 
   // Load config, settings, and initial logs on mount
   useEffect(() => {
@@ -122,6 +127,7 @@ function AppContent() {
           </Route>
         </Routes>
       </Suspense>
+      <CommandPalette />
       <Toaster />
     </>
   );

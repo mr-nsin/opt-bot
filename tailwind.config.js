@@ -90,6 +90,8 @@ export default {
         card: "0 1px 2px 0 rgb(0 0 0 / 0.03), 0 1px 3px 0 rgb(0 0 0 / 0.06)",
         "card-hover": "0 4px 12px -2px rgb(0 0 0 / 0.08), 0 2px 6px -2px rgb(0 0 0 / 0.04)",
         elevated: "0 12px 32px -8px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(0 0 0 / 0.05)",
+        "inner-glow": "inset 0 1px 0 0 rgb(255 255 255 / 0.04)",
+        ticker: "0 1px 0 0 rgb(0 0 0 / 0.05)",
       },
       keyframes: {
         "pulse-green": {
@@ -104,11 +106,21 @@ export default {
           "0%": { opacity: "0", transform: "translateX(8px)" },
           "100%": { opacity: "1", transform: "translateX(0)" },
         },
+        "slide-down": {
+          "0%": { opacity: "0", transform: "translateY(-4px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        "scale-in": {
+          "0%": { opacity: "0", transform: "scale(0.95)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
       },
       animation: {
         "pulse-green": "pulse-green 2s ease-in-out infinite",
         "fade-up": "fade-up 0.2s ease-out",
         "slide-in-right": "slide-in-right 0.2s ease-out",
+        "slide-down": "slide-down 0.15s ease-out",
+        "scale-in": "scale-in 0.15s ease-out",
       },
     },
   },

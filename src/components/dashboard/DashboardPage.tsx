@@ -11,6 +11,7 @@ import { ActivityLog } from "./ActivityLog";
 import { SignalActivity } from "./SignalActivity";
 import { MarketOverview } from "./MarketOverview";
 import { EngineActivity } from "./EngineActivity";
+import { PnLSparkline } from "./PnLSparkline";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Settings2,
@@ -24,16 +25,11 @@ export function DashboardPage() {
   const [activeTab, setActiveTab] = useState("overview");
 
   return (
-    <div className="space-y-4">
-      {/* Live P&L Stats - always visible at top */}
-      <div className="flex flex-col gap-1">
-        <LiveStats />
-        <p className="text-2xs text-muted-foreground/60 px-0.5">
-          Updates: PnL ~1s · Account summary ~5s · Data status ~10s
-        </p>
-      </div>
+    <div className="space-y-3">
+      {/* Live P&L Stats - always visible at top (compact) */}
+      <LiveStats />
 
-      {/* Tab navigation for dashboard sections */}
+      {/* Tab navigation */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">
@@ -60,31 +56,33 @@ export function DashboardPage() {
 
         {/* === Overview Tab === */}
         <TabsContent value="overview">
-          <div className="space-y-4">
-            {/* Account + Controls row */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="space-y-3">
+            {/* Top row: P&L Chart + Trading Controls */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div className="lg:col-span-2">
-                <AccountSummary />
+                <PnLSparkline />
               </div>
               <TradingControls />
             </div>
 
-            {/* Risk + Data Feed */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Account + Risk */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+              <div className="lg:col-span-2">
+                <AccountSummary />
+              </div>
               <RiskManagement />
-              <DataFeedStatus />
             </div>
+
+            {/* Data Feed */}
+            <DataFeedStatus />
           </div>
         </TabsContent>
 
         {/* === Signals & Market Tab === */}
         <TabsContent value="signals">
-          <div className="space-y-4">
-            {/* Market overview */}
+          <div className="space-y-3">
             <MarketOverview />
-
-            {/* Signal activity + Data feed side-by-side */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <SignalActivity />
               <DataFeedStatus />
             </div>
@@ -93,23 +91,23 @@ export function DashboardPage() {
 
         {/* === Configuration Tab === */}
         <TabsContent value="config">
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <TradingControls />
               <TradeParameters />
               <RiskManagement />
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <ConnectionConfig />
               <StockList />
             </div>
           </div>
         </TabsContent>
 
-        {/* === Engine Tab — Signal scanner + order activity live feed === */}
+        {/* === Engine Tab === */}
         <TabsContent value="engine">
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <EngineActivity />
               <SignalActivity />
             </div>

@@ -1,16 +1,28 @@
 import { memo, useEffect, useState, useRef } from "react";
-import { Clock, Moon, Sun, Shield, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import {
+  Clock,
+  Moon,
+  Sun,
+  Shield,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Wallet,
+  Search,
+} from "lucide-react";
 import { ModeToggle } from "@/components/common/ModeToggle";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useLicense } from "@/hooks/useLicense";
-import { cn } from "@/lib/utils";
+import { cn, formatCurrency } from "@/lib/utils";
+import { formatHotkey } from "@/hooks/useHotkeys";
 
 function HeaderInner() {
   const status = useTradingStore((s) => s.status);
   const totalTrades = useTradingStore((s) => s.totalTrades);
   const dailyPnl = useTradingStore((s) => s.dailyPnl);
   const connectedToTws = useTradingStore((s) => s.connectedToTws);
+  const accountMetrics = useTradingStore((s) => s.accountMetrics);
   const { isDark, toggleTheme } = useTheme();
   const { licenseStatus } = useLicense();
   const [clock, setClock] = useState("");
@@ -70,102 +82,140 @@ function HeaderInner() {
   const pnlSign = pnlValue > 0 ? "+" : "";
   const PnlIcon = pnlValue > 0 ? TrendingUp : pnlValue < 0 ? TrendingDown : Minus;
 
+  // Account balance from IBKR
+  const netLiq = accountMetrics?.NetLiquidation;
+  const buyingPower = accountMetrics?.BuyingPower;
+
   return (
     <header
       className={cn(
-        "h-12 bg-card border-b flex items-center justify-between px-5 shrink-0 transition-all",
+        "h-11 bg-card border-b border-border/50 flex items-center justify-between px-4 shrink-0 transition-all",
         !connectedToTws && isRunning && "tws-disconnected-border"
       )}
     >
-      {/* Left: Trading status + key metrics */}
-      <div className="flex items-center gap-4">
+      {/* Left: Trading status + Account + PnL */}
+      <div className="flex items-center gap-3">
         {isRunning && (
-          <div className="flex items-center gap-2 bg-emerald-500/10 text-emerald-500 rounded-md px-2.5 py-1 border border-emerald-500/20">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 live-dot" />
-            <span className="text-xs font-bold tracking-wide">LIVE</span>
+          <div className="flex items-center gap-1.5 bg-emerald-500/10 text-emerald-500 rounded-md px-2 py-0.5 border border-emerald-500/20">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 live-dot" />
+            <span className="text-2xs font-bold tracking-wider">LIVE</span>
           </div>
         )}
 
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-          {licenseStatus?.valid && (
-            <>
-              <div className="flex items-center gap-1.5">
-                <Shield className="h-3.5 w-3.5 text-emerald-500" />
-                <span className={cn(
-                  "font-mono font-semibold tabular-nums",
-                  licenseStatus.days_remaining <= 7 ? "text-amber-500" : "text-emerald-500"
-                )}>
-                  {licenseStatus.days_remaining}d
-                </span>
-              </div>
-              <div className="h-3 w-px bg-border/50" />
-            </>
-          )}
+        {/* Account balance (NinjaTrader-style) */}
+        {netLiq !== undefined && (
+          <>
+            <div className="h-4 w-px bg-border/30" />
+            <div className="flex items-center gap-1.5 text-xs">
+              <Wallet className="h-3 w-3 text-primary/60" />
+              <span className="text-muted-foreground/50 text-2xs">NLV</span>
+              <span className="font-mono font-bold tabular-nums text-foreground/80">
+                {formatCurrency(netLiq)}
+              </span>
+            </div>
+          </>
+        )}
 
-          {/* P&L with flash */}
-          <div className="flex items-center gap-1.5">
-            <PnlIcon className={cn("h-3 w-3", pnlColor)} />
-            <span className="text-muted-foreground/50">P&L</span>
-            <span
-              className={cn(
-                "font-mono font-bold tabular-nums rounded-sm px-1 transition-colors",
-                pnlColor,
-                pnlFlash
-              )}
-            >
-              {pnlSign}${Math.abs(pnlValue).toFixed(2)}
+        {buyingPower !== undefined && (
+          <div className="flex items-center gap-1 text-xs">
+            <span className="text-muted-foreground/40 text-2xs">BP</span>
+            <span className="font-mono tabular-nums text-foreground/60 text-2xs">
+              {formatCurrency(buyingPower)}
             </span>
           </div>
+        )}
 
-          <div className="h-3 w-px bg-border/50" />
+        <div className="h-4 w-px bg-border/30" />
 
-          {/* Realized / Unrealized mini */}
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground/40">R:</span>
-            <span className={cn(
-              "font-mono tabular-nums text-2xs",
-              dailyPnl.realized > 0 ? "text-emerald-500/80" : dailyPnl.realized < 0 ? "text-red-500/80" : "text-muted-foreground/40"
-            )}>
-              ${Math.abs(dailyPnl.realized).toFixed(0)}
-            </span>
-            <span className="text-muted-foreground/40">U:</span>
-            <span className={cn(
-              "font-mono tabular-nums text-2xs",
-              dailyPnl.unrealized > 0 ? "text-emerald-500/80" : dailyPnl.unrealized < 0 ? "text-red-500/80" : "text-muted-foreground/40"
-            )}>
-              ${Math.abs(dailyPnl.unrealized).toFixed(0)}
-            </span>
-          </div>
+        {/* P&L with flash */}
+        <div className="flex items-center gap-1.5 text-xs">
+          <PnlIcon className={cn("h-3 w-3", pnlColor)} />
+          <span className="text-muted-foreground/40 text-2xs">P&L</span>
+          <span
+            className={cn(
+              "font-mono font-bold tabular-nums rounded-sm px-0.5 transition-colors text-xs",
+              pnlColor,
+              pnlFlash
+            )}
+          >
+            {pnlSign}${Math.abs(pnlValue).toFixed(2)}
+          </span>
+        </div>
 
-          <div className="h-3 w-px bg-border/50" />
+        {/* Realized / Unrealized */}
+        <div className="flex items-center gap-1.5 text-2xs">
+          <span className="text-muted-foreground/30">R:</span>
+          <span className={cn(
+            "font-mono tabular-nums",
+            dailyPnl.realized > 0 ? "text-emerald-500/70" : dailyPnl.realized < 0 ? "text-red-500/70" : "text-muted-foreground/30"
+          )}>
+            ${Math.abs(dailyPnl.realized).toFixed(0)}
+          </span>
+          <span className="text-muted-foreground/30">U:</span>
+          <span className={cn(
+            "font-mono tabular-nums",
+            dailyPnl.unrealized > 0 ? "text-emerald-500/70" : dailyPnl.unrealized < 0 ? "text-red-500/70" : "text-muted-foreground/30"
+          )}>
+            ${Math.abs(dailyPnl.unrealized).toFixed(0)}
+          </span>
+        </div>
 
-          <div className="flex items-center gap-1.5">
-            <span className="text-muted-foreground/50">Trades</span>
-            <span className="font-mono font-semibold tabular-nums">{totalTrades}</span>
-          </div>
+        <div className="h-4 w-px bg-border/30" />
+
+        <div className="flex items-center gap-1 text-2xs text-muted-foreground/50">
+          <span>Trades</span>
+          <span className="font-mono font-semibold tabular-nums text-foreground/70">{totalTrades}</span>
         </div>
       </div>
 
-      {/* Right: Clock, Mode, Theme */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Clock className="h-3.5 w-3.5 text-muted-foreground/40" />
+      {/* Right: Search, Clock, License, Theme */}
+      <div className="flex items-center gap-2">
+        {/* Command palette trigger */}
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent("quantdrift:command-palette"))}
+          className="flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-muted/50 hover:bg-muted text-muted-foreground/60 hover:text-muted-foreground transition-colors text-2xs"
+        >
+          <Search className="h-3 w-3" />
+          <span className="hidden md:inline">Search…</span>
+          <kbd className="hidden md:flex items-center gap-0.5 px-1 py-0.5 rounded bg-background/60 font-mono text-2xs text-muted-foreground/40">
+            {formatHotkey("K")}
+          </kbd>
+        </button>
+
+        <div className="h-4 w-px bg-border/30" />
+
+        {/* License */}
+        {licenseStatus?.valid && (
+          <div className="flex items-center gap-1 text-2xs">
+            <Shield className="h-3 w-3 text-emerald-500/70" />
+            <span className={cn(
+              "font-mono font-semibold tabular-nums",
+              (licenseStatus.days_remaining ?? 0) <= 7 ? "text-amber-500" : "text-emerald-500/70"
+            )}>
+              {licenseStatus.days_remaining}d
+            </span>
+          </div>
+        )}
+
+        {/* Clock */}
+        <div className="flex items-center gap-1.5 text-2xs text-muted-foreground/50">
+          <Clock className="h-3 w-3 text-muted-foreground/30" />
           <span className="font-mono tabular-nums">{clock}</span>
-          <span className="text-muted-foreground/40">ET</span>
-          <span className="text-muted-foreground/30">·</span>
-          <span className="text-muted-foreground/60">{date}</span>
+          <span className="text-muted-foreground/30">{date}</span>
         </div>
-        <div className="h-4 w-px bg-border/50" />
+
+        <div className="h-4 w-px bg-border/30" />
+
         <ModeToggle />
         <button
           onClick={toggleTheme}
-          className="h-8 w-8 flex items-center justify-center rounded-lg hover:bg-accent transition-colors"
+          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-accent transition-colors"
           title="Toggle theme"
         >
           {isDark ? (
-            <Sun className="h-4 w-4 text-amber-400" />
+            <Sun className="h-3.5 w-3.5 text-amber-400" />
           ) : (
-            <Moon className="h-4 w-4 text-slate-500" />
+            <Moon className="h-3.5 w-3.5 text-slate-500" />
           )}
         </button>
       </div>
