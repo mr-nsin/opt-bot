@@ -15,51 +15,51 @@ export function RiskManagement() {
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <CardHeader className="pb-1">
+        <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
           Risk
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 gap-2.5">
-          <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Profit Target</label>
+      <CardContent className="space-y-2">
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-0.5">
+            <label className="text-[9px] font-medium text-muted-foreground/50">Profit Target</label>
             <Input type="number" value={tradingConfig.profit_amount_day} onChange={(e) => updateTradingConfig({ profit_amount_day: parseFloat(e.target.value) })} />
           </div>
-          <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Loss Limit</label>
+          <div className="space-y-0.5">
+            <label className="text-[9px] font-medium text-muted-foreground/50">Loss Limit</label>
             <Input type="number" value={tradingConfig.loss_amount_day} onChange={(e) => updateTradingConfig({ loss_amount_day: parseFloat(e.target.value) })} />
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-2.5">
-          <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Max Trades</label>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-0.5">
+            <label className="text-[9px] font-medium text-muted-foreground/50">Max Trades</label>
             <Input type="number" value={tradingConfig.per_day_trades} onChange={(e) => updateTradingConfig({ per_day_trades: parseInt(e.target.value) })} />
           </div>
-          <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Max Contract $</label>
+          <div className="space-y-0.5">
+            <label className="text-[9px] font-medium text-muted-foreground/50">Max Contract $</label>
             <Input type="number" value={tradingConfig.max_contract_amount} onChange={(e) => updateTradingConfig({ max_contract_amount: parseFloat(e.target.value) })} />
           </div>
         </div>
-        <div className="space-y-1">
-          <label className="text-2xs font-medium text-muted-foreground">Trailing Increment</label>
+        <div className="space-y-0.5">
+          <label className="text-[9px] font-medium text-muted-foreground/50">Trailing Increment</label>
           <Input type="number" step="0.01" value={tradingConfig.profit_increment} onChange={(e) => updateTradingConfig({ profit_increment: parseFloat(e.target.value) })} />
         </div>
 
-        <div className="pt-2.5 mt-1 border-t space-y-2.5">
+        <div className="pt-2 mt-0.5 border-t border-border/20 space-y-2">
           <div>
-            <div className="flex items-center justify-between text-xs mb-1.5">
-              <span className="text-muted-foreground">P&L</span>
-              <span className={cn("font-mono font-semibold tabular-nums", pnlColor(dailyPnl.total))}>
+            <div className="flex items-center justify-between text-[10px] mb-1">
+              <span className="text-muted-foreground/50">P&L</span>
+              <span className={cn("font-mono font-bold tabular-nums text-[11px]", pnlColor(dailyPnl.total))}>
                 {formatCurrency(dailyPnl.total)}
               </span>
             </div>
             <Progress value={profitPct} indicatorClassName={dailyPnl.total >= 0 ? "bg-emerald-500" : "bg-red-500"} />
           </div>
           <div>
-            <div className="flex items-center justify-between text-xs mb-1.5">
-              <span className="text-muted-foreground">Trades</span>
-              <span className="font-mono font-semibold tabular-nums">
+            <div className="flex items-center justify-between text-[10px] mb-1">
+              <span className="text-muted-foreground/50">Trades</span>
+              <span className="font-mono font-bold tabular-nums text-[11px]">
                 {totalTrades}/{tradingConfig.per_day_trades}
               </span>
             </div>

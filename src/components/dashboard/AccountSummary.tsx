@@ -97,11 +97,11 @@ export function AccountSummary() {
 
   return (
     <Card>
-      <CardHeader className="py-2.5 flex flex-row items-center justify-between">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <Wallet className="h-4 w-4 text-primary" />
+      <CardHeader className="py-2 flex flex-row items-center justify-between">
+        <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
+          <Wallet className="h-3 w-3 text-primary/60" />
           Account Summary
-          <Badge variant="outline" className="text-2xs font-normal">IBKR</Badge>
+          <Badge variant="outline" className="text-[9px] font-normal h-4 px-1">IBKR</Badge>
         </CardTitle>
         <div className="flex items-center gap-2">
           {connectedToTws && (
@@ -133,14 +133,14 @@ export function AccountSummary() {
             </p>
           )
         ) : (
-          <div className="space-y-3">
-            {/* Primary metrics - large and prominent */}
+          <div className="space-y-2">
+            {/* Primary metrics */}
             {primaryEntries.length > 0 && (
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5">
                 {primaryEntries.map(({ tag, label, value }) => (
-                  <div key={tag} className="rounded-lg bg-muted/30 border border-border/40 p-2.5">
-                    <span className="text-2xs text-muted-foreground block mb-0.5">{label}</span>
-                    <span className="font-mono font-bold tabular-nums text-sm">
+                  <div key={tag} className="rounded-md bg-muted/20 border border-border/30 p-2">
+                    <span className="text-[9px] text-muted-foreground/50 block mb-0.5">{label}</span>
+                    <span className="font-mono font-bold tabular-nums text-xs">
                       {formatCurrency(value)}
                     </span>
                   </div>
@@ -150,17 +150,21 @@ export function AccountSummary() {
 
             {/* P&L entries with color coding */}
             {pnlEntries.length > 0 && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-1.5">
                 {pnlEntries.map(({ tag, label, value }) => (
-                  <div key={tag} className="flex items-center gap-2.5 rounded-lg bg-muted/30 border border-border/40 p-2.5">
+                  <div key={tag} className="flex items-center gap-2 rounded-md bg-muted/20 border border-border/30 p-2">
                     {value >= 0 ? (
-                      <TrendingUp className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <TrendingUp className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
                     ) : (
-                      <TrendingDown className="h-4 w-4 text-red-500 shrink-0" />
+                      <TrendingDown className="h-3.5 w-3.5 text-red-500 shrink-0" />
                     )}
                     <div>
-                      <span className="text-2xs text-muted-foreground block">{label}</span>
-                      <span className={cn("font-mono font-bold tabular-nums text-sm", pnlColor(value))}>
+                      <span className="text-[9px] text-muted-foreground/50 block">{label}</span>
+                      <span className={cn(
+                        "font-mono font-bold tabular-nums text-xs",
+                        pnlColor(value),
+                        value > 0 ? "metric-profit" : value < 0 ? "metric-loss" : ""
+                      )}>
                         {formatCurrency(value)}
                       </span>
                     </div>
@@ -171,11 +175,11 @@ export function AccountSummary() {
 
             {/* Secondary metrics - compact */}
             {secondaryEntries.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-2 text-xs pt-1 border-t border-border/30">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 gap-y-1.5 text-[10px] pt-1.5 border-t border-border/20">
                 {secondaryEntries.map(({ tag, label, value }) => (
-                  <div key={tag} className="flex flex-col gap-0.5">
-                    <span className="text-muted-foreground/70 text-2xs">{label}</span>
-                    <span className="font-mono font-semibold tabular-nums">
+                  <div key={tag} className="flex flex-col">
+                    <span className="text-muted-foreground/50 text-[9px]">{label}</span>
+                    <span className="font-mono font-semibold tabular-nums text-[11px]">
                       {formatCurrency(value)}
                     </span>
                   </div>

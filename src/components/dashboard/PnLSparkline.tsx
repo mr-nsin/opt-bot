@@ -76,16 +76,16 @@ export const PnLSparkline = memo(function PnLSparkline() {
 
   return (
     <Card className="h-full">
-      <CardHeader className="pb-1">
+      <CardHeader className="pb-0 pt-2.5 px-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-            <Activity className="h-3.5 w-3.5 text-primary" />
+          <CardTitle className="text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50 flex items-center gap-1.5">
+            <Activity className="h-2.5 w-2.5 text-primary/50" />
             Intraday P&L
           </CardTitle>
           <div className="flex items-center gap-2">
             {isRunning && (
-              <Badge variant="outline" className="text-2xs gap-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 live-dot" />
+              <Badge variant="outline" className="text-[9px] gap-1 h-4 px-1.5">
+                <span className="h-1 w-1 rounded-full bg-emerald-500 live-dot" />
                 LIVE
               </Badge>
             )}
@@ -93,47 +93,48 @@ export const PnLSparkline = memo(function PnLSparkline() {
         </div>
 
         {/* Current P&L summary */}
-        <div className="flex items-center gap-3 mt-1">
-          <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-1">
             {isPositive ? (
-              <TrendingUp className="h-4 w-4 text-emerald-500" />
+              <TrendingUp className="h-3 w-3 text-emerald-400" />
             ) : (
-              <TrendingDown className="h-4 w-4 text-red-500" />
+              <TrendingDown className="h-3 w-3 text-red-400" />
             )}
             <span
               className={cn(
-                "text-xl font-bold font-mono tabular-nums",
-                pnlColor(currentPnl)
+                "text-base font-bold font-mono tabular-nums",
+                pnlColor(currentPnl),
+                isPositive ? "metric-profit" : currentPnl < 0 ? "metric-loss" : ""
               )}
             >
               {formatCurrency(currentPnl)}
             </span>
           </div>
           {hasData && (
-            <div className="flex items-center gap-2 text-2xs text-muted-foreground/60">
+            <div className="flex items-center gap-2 text-[9px] text-muted-foreground/50">
               <span>
-                H: <span className="font-mono tabular-nums text-emerald-500/70">{formatCurrency(maxPnl)}</span>
+                H <span className="font-mono tabular-nums text-emerald-500/60">{formatCurrency(maxPnl)}</span>
               </span>
               <span>
-                L: <span className="font-mono tabular-nums text-red-500/70">{formatCurrency(minPnl)}</span>
+                L <span className="font-mono tabular-nums text-red-500/60">{formatCurrency(minPnl)}</span>
               </span>
             </div>
           )}
         </div>
       </CardHeader>
 
-      <CardContent className="pb-2">
+      <CardContent className="pb-2 px-2">
         {!hasData ? (
-          <div className="h-[140px] flex items-center justify-center">
+          <div className="h-[130px] flex items-center justify-center">
             <div className="text-center">
-              <Activity className="h-6 w-6 text-muted-foreground/15 mx-auto mb-1" />
-              <p className="text-2xs text-muted-foreground/40">
+              <Activity className="h-5 w-5 text-muted-foreground/10 mx-auto mb-1" />
+              <p className="text-[10px] text-muted-foreground/30">
                 {isRunning ? "Collecting P&L data…" : "Start trading to see P&L chart"}
               </p>
             </div>
           </div>
         ) : (
-          <div className="h-[140px]">
+          <div className="h-[130px]">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
                 data={data}

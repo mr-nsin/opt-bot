@@ -36,7 +36,6 @@ export const PositionsPage = memo(function PositionsPage() {
     return () => clearInterval(i);
   }, [refreshPositions]);
 
-  // Toggle sort
   const toggleSort = useCallback(
     (field: SortField) => {
       if (sortField === field) {
@@ -49,7 +48,6 @@ export const PositionsPage = memo(function PositionsPage() {
     [sortField]
   );
 
-  // Sort positions
   const sortedPositions = useMemo(() => {
     const sorted = [...positions].sort((a, b) => {
       let cmp = 0;
@@ -72,7 +70,6 @@ export const PositionsPage = memo(function PositionsPage() {
     return sorted;
   }, [positions, sortField, sortDir]);
 
-  // Position summary stats
   const summary = useMemo(() => {
     const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? 0), 0);
     const callCount = positions.filter((p) => p.right === "C").length;
@@ -80,110 +77,101 @@ export const PositionsPage = memo(function PositionsPage() {
     return { totalPnl, callCount, putCount };
   }, [positions]);
 
-  const SortIcon = ({ field }: { field: SortField }) => {
-    if (sortField !== field) return <ArrowUpDown className="h-2.5 w-2.5 text-muted-foreground/30" />;
-    return sortDir === "asc" ? (
-      <ArrowUp className="h-2.5 w-2.5 text-primary" />
-    ) : (
-      <ArrowDown className="h-2.5 w-2.5 text-primary" />
-    );
-  };
-
   return (
-    <div className="space-y-3">
+    <div className="space-y-2.5">
+      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-base font-semibold tracking-tight flex items-center gap-2">
-            <Briefcase className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
+            <Briefcase className="h-3.5 w-3.5 text-muted-foreground/50" />
             Positions
           </h2>
-          <p className="text-2xs text-muted-foreground">Active and closed positions</p>
+          <p className="text-[9px] text-muted-foreground/40">Active and closed positions</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading}>
-            <RefreshCw className={`h-3 w-3 mr-1.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+        <div className="flex gap-1.5">
+          <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-7 text-[11px]">
+            <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
           {positions.length > 0 && (
-            <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)}>
-              <XCircle className="h-3 w-3 mr-1.5" /> Close All
+            <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-7 text-[11px]">
+              <XCircle className="h-3 w-3 mr-1" /> Close All
             </Button>
           )}
         </div>
       </div>
 
-      {/* Position summary cards */}
+      {/* Position summary row */}
       {positions.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-          <SummaryCard
+        <div className="grid grid-cols-4 gap-2">
+          <MiniStat
             icon={Target}
-            iconColor="text-muted-foreground"
+            iconColor="text-muted-foreground/60"
             label="Active"
             value={String(positions.length)}
           />
-          <SummaryCard
+          <MiniStat
             icon={summary.totalPnl >= 0 ? TrendingUp : TrendingDown}
-            iconColor={summary.totalPnl >= 0 ? "text-emerald-500" : "text-red-500"}
+            iconColor={summary.totalPnl >= 0 ? "text-emerald-400" : "text-red-400"}
             label="Total P&L"
             value={formatCurrency(summary.totalPnl)}
             valueColor={pnlColor(summary.totalPnl)}
           />
-          <SummaryCard
+          <MiniStat
             icon={TrendingUp}
-            iconColor="text-emerald-500"
+            iconColor="text-emerald-400"
             label="Calls"
             value={String(summary.callCount)}
-            valueColor="text-emerald-500"
           />
-          <SummaryCard
+          <MiniStat
             icon={TrendingDown}
-            iconColor="text-red-500"
+            iconColor="text-red-400"
             label="Puts"
             value={String(summary.putCount)}
-            valueColor="text-red-500"
           />
         </div>
       )}
 
+      {/* Positions table */}
       <Card>
-        <CardHeader className="py-2 flex flex-row items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-            <Briefcase className="h-3.5 w-3.5" />
+        <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">
+          <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
+            <Briefcase className="h-3 w-3" />
             Active Positions
           </CardTitle>
-          <Badge variant={positions.length > 0 ? "success" : "secondary"} className="text-2xs">
+          <Badge variant={positions.length > 0 ? "success" : "secondary"} className="text-[9px] h-4 px-1.5">
             {positions.length}
           </Badge>
         </CardHeader>
         <CardContent className="p-0">
           {loading && positions.length === 0 ? (
-            <div className="space-y-2 p-4">
+            <div className="space-y-1 p-3">
               {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full rounded-md" />
+                <Skeleton key={i} className="h-9 w-full rounded-md" />
               ))}
             </div>
           ) : positions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10">
-              <Briefcase className="h-8 w-8 text-muted-foreground/15 mb-2" />
-              <p className="text-center text-xs text-muted-foreground">No active positions</p>
-              <p className="text-center text-2xs text-muted-foreground/40 mt-0.5">
-                Positions will appear when trades are executed
+            <div className="flex flex-col items-center justify-center py-8">
+              <Briefcase className="h-6 w-6 text-muted-foreground/10 mb-1.5" />
+              <p className="text-[11px] text-muted-foreground/50">No active positions</p>
+              <p className="text-[10px] text-muted-foreground/30 mt-0.5">
+                Positions appear when trades are executed
               </p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="w-full table-pro">
                 <thead>
-                  <tr className="border-b text-muted-foreground text-left bg-muted/20">
-                    <th className="py-1.5 pl-2 pr-1 w-6" />
-                    <SortableHeader field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th className="py-1.5 pr-3 font-semibold text-2xs uppercase tracking-wider">Type</th>
-                    <SortableHeader field="strike" label="Strike" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th className="py-1.5 pr-3 font-semibold text-2xs uppercase tracking-wider">Expiry</th>
-                    <SortableHeader field="qty" label="Qty" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th className="py-1.5 pr-3 font-semibold text-2xs uppercase tracking-wider">Avg</th>
-                    <th className="py-1.5 pr-3 font-semibold text-2xs uppercase tracking-wider">Current</th>
-                    <SortableHeader field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th className="py-1.5 font-semibold text-2xs uppercase tracking-wider" />
+                  <tr>
+                    <th className="w-6" />
+                    <SortTh field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th>Type</th>
+                    <SortTh field="strike" label="Strike" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th>Expiry</th>
+                    <SortTh field="qty" label="Qty" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th>Avg</th>
+                    <th>Current</th>
+                    <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th className="w-16" />
                   </tr>
                 </thead>
                 <tbody>
@@ -213,7 +201,7 @@ export const PositionsPage = memo(function PositionsPage() {
 });
 
 /** Sortable table header */
-function SortableHeader({
+function SortTh({
   field,
   label,
   sort,
@@ -230,29 +218,25 @@ function SortableHeader({
   return (
     <th
       className={cn(
-        "py-1.5 pr-3 font-semibold text-2xs uppercase tracking-wider cursor-pointer select-none transition-colors",
-        isActive ? "text-primary" : "hover:text-foreground/70"
+        "cursor-pointer select-none transition-colors",
+        isActive ? "!text-primary" : "hover:!text-foreground/70"
       )}
       onClick={() => onClick(field)}
     >
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-0.5">
         {label}
         {isActive ? (
-          dir === "asc" ? (
-            <ArrowUp className="h-2.5 w-2.5" />
-          ) : (
-            <ArrowDown className="h-2.5 w-2.5" />
-          )
+          dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
         ) : (
-          <ArrowUpDown className="h-2.5 w-2.5 text-muted-foreground/30" />
+          <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
         )}
       </div>
     </th>
   );
 }
 
-/** Summary card mini component */
-function SummaryCard({
+/** Mini stat card */
+function MiniStat({
   icon: Icon,
   iconColor,
   label,
@@ -266,12 +250,12 @@ function SummaryCard({
   valueColor?: string;
 }) {
   return (
-    <div className="rounded-lg border border-border/50 bg-card p-2.5">
-      <div className="flex items-center gap-1.5 mb-0.5">
-        <Icon className={cn("h-3 w-3", iconColor)} />
-        <span className="text-2xs font-medium text-muted-foreground uppercase tracking-wider">{label}</span>
+    <div className="rounded-md border border-border/25 bg-card p-2 card-elevated">
+      <div className="flex items-center gap-1 mb-0.5">
+        <Icon className={cn("h-2.5 w-2.5", iconColor)} />
+        <span className="text-[8px] font-semibold text-muted-foreground/40 uppercase tracking-[0.1em]">{label}</span>
       </div>
-      <p className={cn("text-lg font-bold tabular-nums", valueColor)}>{value}</p>
+      <p className={cn("text-sm font-bold font-mono tabular-nums", valueColor)}>{value}</p>
     </div>
   );
 }

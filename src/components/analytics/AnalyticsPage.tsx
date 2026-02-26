@@ -18,18 +18,19 @@ export const AnalyticsPage = memo(function AnalyticsPage() {
   const totalTrades = useTradingStore((s) => s.totalTrades);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
+      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
+            <BarChart3 className="h-3.5 w-3.5 text-muted-foreground/50" />
             Analytics
           </h2>
-          <p className="text-xs text-muted-foreground">Performance metrics and trade analysis</p>
+          <p className="text-[9px] text-muted-foreground/40">Performance metrics and trade analysis</p>
         </div>
         {totalTrades > 0 && (
-          <div className="text-xs text-muted-foreground/60">
-            Based on {totalTrades} trade{totalTrades !== 1 ? "s" : ""} today
+          <div className="text-[9px] text-muted-foreground/30 font-mono tabular-nums">
+            {totalTrades} trade{totalTrades !== 1 ? "s" : ""} today
           </div>
         )}
       </div>
@@ -42,38 +43,36 @@ export const AnalyticsPage = memo(function AnalyticsPage() {
         </Alert>
       )}
 
-      {/* Performance metrics - always visible */}
       <PerformanceMetrics />
 
-      {/* Chart tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">
-            <Activity className="h-3.5 w-3.5" />
+            <Activity className="h-3 w-3" />
             All Charts
           </TabsTrigger>
           <TabsTrigger value="pnl">
-            <TrendingUp className="h-3.5 w-3.5" />
+            <TrendingUp className="h-3 w-3" />
             P&L Analysis
           </TabsTrigger>
           <TabsTrigger value="distribution">
-            <PieChart className="h-3.5 w-3.5" />
+            <PieChart className="h-3 w-3" />
             Distribution
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
             <WinLossChart />
             <EquityCurve />
           </div>
-          <div className="mt-4">
+          <div className="mt-2">
             <PnLChart />
           </div>
         </TabsContent>
 
         <TabsContent value="pnl">
-          <div className="space-y-4">
+          <div className="space-y-2">
             <EquityCurve />
             <PnLChart />
           </div>

@@ -32,9 +32,9 @@ export const PerformanceMetrics = memo(function PerformanceMetrics() {
   const noData = totalTrades === 0;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {/* Primary metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-1.5">
         <StatCard
           title="Total Trades"
           value={totalTrades}

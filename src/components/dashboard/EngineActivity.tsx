@@ -6,7 +6,6 @@ import {
   Activity,
   TrendingUp,
   TrendingDown,
-  Clock,
   Zap,
   AlertTriangle,
   CheckCircle,
@@ -166,8 +165,8 @@ export const EngineActivity = memo(function EngineActivity() {
     <Card className="h-full">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-            <Activity className="h-3.5 w-3.5 text-cyan-500" />
+          <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
+            <Activity className="h-3 w-3 text-cyan-400/70" />
             Engine Activity
             {isRunning && isSignalScanning && (
               <span className="relative flex h-2 w-2">
@@ -210,66 +209,65 @@ export const EngineActivity = memo(function EngineActivity() {
       </CardHeader>
       <CardContent className="p-0">
         {tradingLogs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-center px-4">
-            <Radio className="h-8 w-8 text-muted-foreground/20 mb-2" />
-            <p className="text-xs text-muted-foreground">
-              {isRunning ? "Waiting for trading activity…" : "Engine is not running"}
+          <div className="flex flex-col items-center justify-center py-6 text-center px-4">
+            <Radio className="h-6 w-6 text-muted-foreground/15 mb-1.5" />
+            <p className="text-[11px] text-muted-foreground/50">
+              {isRunning ? "Waiting for activity…" : "Engine not running"}
             </p>
-            <p className="text-2xs text-muted-foreground/50 mt-0.5">
+            <p className="text-[9px] text-muted-foreground/30 mt-0.5">
               {isRunning
-                ? "Signal scans, order events, and risk alerts will appear here"
-                : "Start trading to see signal scanning and order activity"}
+                ? "Signal scans, orders, and risk alerts appear here"
+                : "Start trading to see engine activity"}
             </p>
           </div>
         ) : (
           <div
             ref={feedRef}
-            className="max-h-[320px] overflow-y-auto font-mono text-2xs"
+            className="max-h-[300px] overflow-y-auto font-mono text-[10px]"
           >
             {tradingLogs.map((l, i) => {
               const dec = getLogDecoration(l.message, l.category?.toLowerCase() || "", l.level);
               const Icon = dec.icon;
               const symbol = extractSymbol(l.message);
-              const isNew = i >= tradingLogs.length - 3; // Latest 3 entries get glow
+              const isNew = i >= tradingLogs.length - 3;
 
               return (
                 <div
                   key={`${l.timestamp}-${i}`}
                   className={cn(
-                    "flex items-start gap-2 px-3 py-1.5 border-b border-border/10 transition-colors hover:bg-muted/20",
+                    "flex items-center gap-1.5 px-2.5 py-1 border-b border-border/8 transition-colors hover:bg-muted/15",
                     dec.bg,
                     isNew && l.level !== "DEBUG" && "animate-fade-up"
                   )}
                 >
                   {/* Icon */}
-                  <div className={cn("mt-0.5 shrink-0", dec.color)}>
-                    <Icon className="h-3 w-3" />
+                  <div className={cn("shrink-0", dec.color)}>
+                    <Icon className="h-2.5 w-2.5" />
                   </div>
 
                   {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
+                  <div className="flex-1 min-w-0 truncate">
+                    <span className="flex items-center gap-1">
                       {symbol && (
-                        <span className="font-semibold text-foreground/90 text-2xs">
+                        <span className="font-bold text-foreground/85 text-[10px]">
                           {symbol}
                         </span>
                       )}
                       <span
                         className={cn(
-                          "text-foreground/70 break-all",
-                          l.level === "DEBUG" && "text-muted-foreground/50",
-                          l.level === "ERROR" && "text-red-400/90",
-                          l.level === "WARN" && "text-amber-400/80"
+                          "text-foreground/60 truncate",
+                          l.level === "DEBUG" && "text-muted-foreground/40",
+                          l.level === "ERROR" && "text-red-400/80",
+                          l.level === "WARN" && "text-amber-400/70"
                         )}
                       >
                         {symbol ? l.message.replace(new RegExp(`^${symbol}\\s*`), "") : l.message}
                       </span>
-                    </div>
+                    </span>
                   </div>
 
                   {/* Timestamp */}
-                  <span className="text-muted-foreground/30 shrink-0 tabular-nums flex items-center gap-0.5">
-                    <Clock className="h-2.5 w-2.5" />
+                  <span className="text-muted-foreground/25 shrink-0 tabular-nums text-[9px]">
                     {formatTs(l.timestamp)}
                   </span>
                 </div>

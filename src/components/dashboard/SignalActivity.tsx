@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Zap, TrendingUp, TrendingDown, Clock, BarChart3 } from "lucide-react";
+import { Zap, TrendingUp, TrendingDown, BarChart3 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useTradingStore } from "@/stores/tradingStore";
@@ -49,20 +49,20 @@ export const SignalActivity = memo(function SignalActivity() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-          <Zap className="h-3.5 w-3.5 text-violet-500" />
+        <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
+          <Zap className="h-3 w-3 text-violet-400/70" />
           Signal Activity
         </CardTitle>
       </CardHeader>
       <CardContent>
         {signals.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-6 text-center">
-            <BarChart3 className="h-8 w-8 text-muted-foreground/30 mb-2" />
-            <p className="text-xs text-muted-foreground">
+          <div className="flex flex-col items-center justify-center py-5 text-center">
+            <BarChart3 className="h-6 w-6 text-muted-foreground/15 mb-1.5" />
+            <p className="text-[11px] text-muted-foreground/50">
               No signals detected yet
             </p>
-            <p className="text-2xs text-muted-foreground/60 mt-0.5">
-              Signals appear when the engine detects trading opportunities
+            <p className="text-[9px] text-muted-foreground/30 mt-0.5">
+              Signals appear when opportunities are detected
             </p>
           </div>
         ) : (
@@ -71,63 +71,60 @@ export const SignalActivity = memo(function SignalActivity() {
               <div
                 key={`${sig.symbol}-${i}`}
                 className={cn(
-                  "flex items-center gap-3 py-2 px-1 rounded-md transition-colors",
-                  i === 0 && "bg-muted/40 signal-glow",
-                  i > 0 && "border-t border-border/40"
+                  "flex items-center gap-2 py-1.5 px-1.5 rounded-md transition-colors",
+                  i === 0 && "bg-muted/30 signal-glow",
+                  i > 0 && "border-t border-border/20"
                 )}
               >
                 {/* Direction icon */}
                 <div
                   className={cn(
-                    "flex items-center justify-center h-7 w-7 rounded-md shrink-0",
+                    "flex items-center justify-center h-6 w-6 rounded shrink-0",
                     isCall(sig.direction)
-                      ? "bg-emerald-500/10 text-emerald-500"
-                      : "bg-red-500/10 text-red-500"
+                      ? "bg-emerald-500/8 text-emerald-500"
+                      : "bg-red-500/8 text-red-500"
                   )}
                 >
                   {isCall(sig.direction) ? (
-                    <TrendingUp className="h-3.5 w-3.5" />
+                    <TrendingUp className="h-3 w-3" />
                   ) : (
-                    <TrendingDown className="h-3.5 w-3.5" />
+                    <TrendingDown className="h-3 w-3" />
                   )}
                 </div>
 
                 {/* Signal info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-semibold text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-[11px]">
                       {sig.symbol}
                     </span>
                     <Badge
                       variant={isCall(sig.direction) ? "success" : "danger"}
-                      className="text-2xs px-1.5 py-0"
+                      className="text-[9px] px-1 py-0 h-3.5"
                     >
                       {sig.direction.toUpperCase()}
                     </Badge>
                     {sig.strength && sig.strength !== "executed" && (
-                      <Badge variant="outline" className="text-2xs px-1.5 py-0">
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5">
                         {sig.strength}
                       </Badge>
                     )}
                     {sig.strength === "executed" && (
-                      <Badge variant="default" className="text-2xs px-1.5 py-0 bg-blue-500/10 text-blue-500 border-transparent">
+                      <Badge variant="default" className="text-[9px] px-1 py-0 h-3.5 bg-blue-500/10 text-blue-500 border-transparent">
                         Filled
                       </Badge>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    {sig.indicator && (
-                      <span className="text-2xs text-muted-foreground/70">
-                        via {sig.indicator}
-                      </span>
-                    )}
-                  </div>
+                  {sig.indicator && (
+                    <span className="text-[9px] text-muted-foreground/50">
+                      via {sig.indicator}
+                    </span>
+                  )}
                 </div>
 
                 {/* Timestamp */}
                 {sig.timestamp && (
-                  <span className="text-2xs text-muted-foreground/60 font-mono tabular-nums flex items-center gap-1 shrink-0">
-                    <Clock className="h-2.5 w-2.5" />
+                  <span className="text-[9px] text-muted-foreground/40 font-mono tabular-nums shrink-0">
                     {new Date(sig.timestamp).toLocaleTimeString("en-US", {
                       hour: "2-digit",
                       minute: "2-digit",

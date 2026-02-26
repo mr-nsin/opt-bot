@@ -26,7 +26,7 @@ import {
   RadioTower,
 } from "lucide-react";
 
-const ROW_HEIGHT = 30;
+const ROW_HEIGHT = 26;
 
 const levelConfig: Record<string, { color: string; icon: typeof Info; bg: string; badgeVariant: "default" | "secondary" | "destructive" | "outline" | "success" | "warning" | "danger" }> = {
   INFO: { color: "text-blue-400", icon: Info, bg: "", badgeVariant: "default" },
@@ -102,23 +102,23 @@ export const LogsPage = memo(function LogsPage() {
   }, [filtered.length, autoScroll]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <Terminal className="h-5 w-5 text-muted-foreground" />
+          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
+            <Terminal className="h-3.5 w-3.5 text-muted-foreground/50" />
             System Logs
           </h2>
-          <p className="text-xs text-muted-foreground">Trading engine and system log viewer</p>
+          <p className="text-[9px] text-muted-foreground/40">Trading engine and system log viewer</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setAutoScroll(!autoScroll)}>
-            <ArrowDown className={cn("h-3.5 w-3.5 mr-1.5", autoScroll && "text-primary")} />
+        <div className="flex gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => setAutoScroll(!autoScroll)} className="h-7 text-[11px]">
+            <ArrowDown className={cn("h-3 w-3 mr-1", autoScroll && "text-primary")} />
             Auto-scroll {autoScroll ? "ON" : "OFF"}
           </Button>
-          <Button variant="outline" size="sm" onClick={async () => { await logsApi.clear(); clearLogs(); }}>
-            <Trash2 className="h-3.5 w-3.5 mr-1.5" /> Clear
+          <Button variant="outline" size="sm" onClick={async () => { await logsApi.clear(); clearLogs(); }} className="h-7 text-[11px]">
+            <Trash2 className="h-3 w-3 mr-1" /> Clear
           </Button>
         </div>
       </div>
@@ -161,13 +161,13 @@ export const LogsPage = memo(function LogsPage() {
         <div className="flex-1" />
         {/* Inline search */}
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/50" />
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/40" />
           <input
             type="text"
             placeholder="Search logs…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 pl-8 pr-3 rounded-md border border-border/50 bg-muted/30 text-xs focus:outline-none focus:ring-2 focus:ring-ring w-56"
+            className="h-7 pl-7 pr-2.5 rounded-md border border-border/30 bg-muted/20 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring w-48"
           />
         </div>
       </div>
@@ -213,35 +213,35 @@ export const LogsPage = memo(function LogsPage() {
                     <div
                       key={`${l.timestamp}-${virtualRow.index}`}
                       className={cn(
-                        "absolute left-0 top-0 flex items-center gap-2.5 px-4 border-b border-border/20 hover:bg-muted/30 w-full transition-colors",
+                        "absolute left-0 top-0 flex items-center gap-2 px-3 border-b border-border/15 hover:bg-muted/20 w-full transition-colors stripe-row",
                         cfg.bg
                       )}
                       style={{ height: ROW_HEIGHT, transform: `translateY(${virtualRow.start}px)` }}
                     >
                       {/* Row number */}
-                      <span className="text-muted-foreground/20 shrink-0 w-8 text-right tabular-nums">
+                      <span className="text-muted-foreground/15 shrink-0 w-7 text-right tabular-nums text-[9px]">
                         {virtualRow.index + 1}
                       </span>
 
                       {/* Timestamp */}
-                      <span className="text-muted-foreground/40 shrink-0 w-16 tabular-nums">
+                      <span className="text-muted-foreground/35 shrink-0 w-14 tabular-nums text-[9px]">
                         {formatTime(l.timestamp)}
                       </span>
 
                       {/* Level icon + label */}
-                      <span className={cn("flex items-center gap-1 shrink-0 w-14", cfg.color)}>
-                        <LevelIcon className="h-3 w-3" />
-                        <span className="font-semibold">{l.level}</span>
+                      <span className={cn("flex items-center gap-0.5 shrink-0 w-12", cfg.color)}>
+                        <LevelIcon className="h-2.5 w-2.5" />
+                        <span className="font-semibold text-[9px]">{l.level}</span>
                       </span>
 
                       {/* Category icon + label */}
-                      <span className={cn("flex items-center gap-1 shrink-0 w-16", catCfg.color)}>
-                        <CatIcon className="h-3 w-3" />
-                        <span className="text-2xs opacity-70">{catCfg.label}</span>
+                      <span className={cn("flex items-center gap-0.5 shrink-0 w-14", catCfg.color)}>
+                        <CatIcon className="h-2.5 w-2.5" />
+                        <span className="text-[9px] opacity-60">{catCfg.label}</span>
                       </span>
 
                       {/* Message */}
-                      <span className="text-foreground/70 break-all flex-1">
+                      <span className="text-foreground/65 break-all flex-1 text-[10px] truncate">
                         {l.message}
                       </span>
                     </div>

@@ -23,12 +23,10 @@ export const LiveStats = memo(function LiveStats() {
   const wrPercent = totalTrades === 0 ? 0 : (winningTrades / totalTrades) * 100;
   const isRunning = status === "Running";
   const isIdle = status === "Idle";
-
-  // Show skeleton when starting up
   const isStarting = status === "Starting";
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+    <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
       <StatCard
         title="Daily P&L"
         value={dailyPnl.total}
@@ -37,7 +35,7 @@ export const LiveStats = memo(function LiveStats() {
         trend={dailyPnl.total > 0 ? "up" : dailyPnl.total < 0 ? "down" : "neutral"}
         flash={isRunning}
         loading={isStarting}
-        info="Total daily profit & loss (updates ~1s)"
+        info="Total daily profit & loss"
       />
       <StatCard
         title="Realized"
@@ -47,7 +45,7 @@ export const LiveStats = memo(function LiveStats() {
         trend={dailyPnl.realized > 0 ? "up" : dailyPnl.realized < 0 ? "down" : "neutral"}
         flash={isRunning}
         loading={isStarting}
-        info="P&L from closed trades today"
+        info="Closed trade P&L"
       />
       <StatCard
         title="Unrealized"
@@ -57,7 +55,7 @@ export const LiveStats = memo(function LiveStats() {
         trend={dailyPnl.unrealized > 0 ? "up" : dailyPnl.unrealized < 0 ? "down" : "neutral"}
         flash={isRunning}
         loading={isStarting}
-        info="P&L from open positions"
+        info="Open position P&L"
       />
       <StatCard
         title="Trades"
@@ -65,7 +63,7 @@ export const LiveStats = memo(function LiveStats() {
         icon={Target}
         subtitle={`${winningTrades}W / ${losingTrades}L`}
         loading={isStarting}
-        info="Total trades executed today"
+        info="Total trades today"
       />
       <StatCard
         title="Win Rate"
@@ -73,7 +71,7 @@ export const LiveStats = memo(function LiveStats() {
         icon={Percent}
         trend={wrPercent >= 50 ? "up" : wrPercent > 0 ? "down" : "neutral"}
         loading={isStarting}
-        info="Percentage of winning trades"
+        info="Win percentage"
       />
       <StatCard
         title="Engine"
@@ -82,7 +80,7 @@ export const LiveStats = memo(function LiveStats() {
         trend={isRunning ? "up" : isIdle ? "neutral" : "down"}
         subtitle={connectedToTws ? "TWS connected" : "TWS disconnected"}
         loading={isStarting}
-        info="Trading engine status"
+        info="Engine status"
       />
     </div>
   );

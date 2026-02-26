@@ -92,6 +92,10 @@ export default {
         elevated: "0 12px 32px -8px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(0 0 0 / 0.05)",
         "inner-glow": "inset 0 1px 0 0 rgb(255 255 255 / 0.04)",
         ticker: "0 1px 0 0 rgb(0 0 0 / 0.05)",
+        "glow-profit": "0 0 12px -2px hsl(160 84% 39% / 0.15)",
+        "glow-loss": "0 0 12px -2px hsl(0 84% 60% / 0.15)",
+        "glow-primary": "0 0 12px -2px hsl(217 92% 65% / 0.12)",
+        panel: "0 0 0 1px hsl(var(--border) / 0.3), 0 1px 3px hsl(0 0% 0% / 0.06)",
       },
       keyframes: {
         "pulse-green": {
@@ -114,6 +118,15 @@ export default {
           "0%": { opacity: "0", transform: "scale(0.95)" },
           "100%": { opacity: "1", transform: "scale(1)" },
         },
+        "data-pulse": {
+          "0%": { opacity: "0.6" },
+          "50%": { opacity: "1" },
+          "100%": { opacity: "0.6" },
+        },
+        "ticker-scroll": {
+          "0%": { transform: "translateX(0)" },
+          "100%": { transform: "translateX(-50%)" },
+        },
       },
       animation: {
         "pulse-green": "pulse-green 2s ease-in-out infinite",
@@ -121,6 +134,8 @@ export default {
         "slide-in-right": "slide-in-right 0.2s ease-out",
         "slide-down": "slide-down 0.15s ease-out",
         "scale-in": "scale-in 0.15s ease-out",
+        "data-pulse": "data-pulse 2s ease-in-out infinite",
+        "ticker-scroll": "ticker-scroll 30s linear infinite",
       },
     },
   },

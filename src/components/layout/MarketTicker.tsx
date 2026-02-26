@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { useTradingStore } from "@/stores/tradingStore";
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
@@ -13,7 +13,6 @@ interface TickerItem {
   volume?: number;
 }
 
-/** Static fallback tickers when no live data */
 const STATIC_TICKERS: TickerItem[] = [
   { symbol: "SPY", last: 0 },
   { symbol: "QQQ", last: 0 },
@@ -25,18 +24,12 @@ const STATIC_TICKERS: TickerItem[] = [
   { symbol: "AMZN", last: 0 },
 ];
 
-/**
- * MarketTicker — A horizontal scrolling market ticker strip showing live prices.
- * Sits between the header and the main content area.
- * Inspired by TradingView's top ticker and Bloomberg Terminal's price bar.
- */
 export const MarketTicker = memo(function MarketTicker() {
   const dataStatus = useTradingStore((s) => s.dataStatus);
   const connectedToTws = useTradingStore((s) => s.connectedToTws);
   const [prevPrices, setPrevPrices] = useState<Record<string, number>>({});
   const [flashMap, setFlashMap] = useState<Record<string, "up" | "down" | null>>({});
 
-  // Extract ticks from data status
   const ticks: TickerItem[] =
     (dataStatus as Record<string, unknown>)?.stock_ticks_sample
       ? ((dataStatus as Record<string, unknown>).stock_ticks_sample as TickerItem[])
@@ -44,7 +37,6 @@ export const MarketTicker = memo(function MarketTicker() {
 
   const items = ticks.length > 0 ? ticks : STATIC_TICKERS;
 
-  // Priority sort
   const priorityOrder = ["SPY", "QQQ", "VIX", "TSLA", "AAPL", "NVDA", "AMD", "MSFT", "AMZN", "BABA"];
   const sorted = [...items].sort((a, b) => {
     const ai = priorityOrder.indexOf(a.symbol);
@@ -52,7 +44,6 @@ export const MarketTicker = memo(function MarketTicker() {
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
   });
 
-  // Flash detection on price change
   useEffect(() => {
     const newFlashes: Record<string, "up" | "down" | null> = {};
     const newPrices: Record<string, number> = {};
@@ -83,25 +74,25 @@ export const MarketTicker = memo(function MarketTicker() {
   }, [sorted.map((t) => `${t.symbol}:${t.last}`).join(",")]);
 
   return (
-    <div className="h-7 bg-card/80 backdrop-blur-sm border-b border-border/50 flex items-center overflow-hidden shrink-0">
+    <div className="h-[22px] bg-card/50 backdrop-blur-sm border-b border-border/15 flex items-center overflow-hidden shrink-0">
       {/* Live indicator */}
-      <div className="flex items-center gap-1.5 px-3 border-r border-border/30 h-full shrink-0">
+      <div className="flex items-center gap-1 px-2 border-r border-border/10 h-full shrink-0">
         {connectedToTws ? (
           <>
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 live-dot" />
-            <span className="text-2xs font-semibold text-emerald-500 tracking-wider">LIVE</span>
+            <span className="h-1 w-1 rounded-full bg-emerald-400 live-dot" />
+            <span className="text-[8px] font-bold text-emerald-400/70 tracking-widest">MKT</span>
           </>
         ) : (
           <>
-            <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />
-            <span className="text-2xs font-semibold text-muted-foreground/50 tracking-wider">MKTD</span>
+            <span className="h-1 w-1 rounded-full bg-muted-foreground/15" />
+            <span className="text-[8px] font-bold text-muted-foreground/25 tracking-widest">MKT</span>
           </>
         )}
       </div>
 
-      {/* Scrolling ticker area */}
+      {/* Ticker strip */}
       <div className="flex-1 overflow-x-auto no-scrollbar">
-        <div className="flex items-center h-full gap-0">
+        <div className="flex items-center h-full">
           {sorted.map((tick) => {
             const change = tick.change ?? 0;
             const changePct = tick.changePct ?? 0;
@@ -114,48 +105,41 @@ export const MarketTicker = memo(function MarketTicker() {
               <div
                 key={tick.symbol}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 h-full border-r border-border/20 transition-colors duration-300 cursor-default select-none",
-                  flash === "up" && "bg-emerald-500/10",
-                  flash === "down" && "bg-red-500/10"
+                  "flex items-center gap-0.5 px-2 h-full border-r border-border/8 transition-colors duration-300 cursor-default select-none",
+                  flash === "up" && "bg-emerald-500/5",
+                  flash === "down" && "bg-red-500/5"
                 )}
               >
-                {/* Symbol */}
-                <span className="text-2xs font-bold text-foreground/80 tracking-wide">
+                <span className="text-[8px] font-bold text-foreground/50 tracking-wide">
                   {tick.symbol}
                 </span>
-
-                {/* Price */}
                 <span
                   className={cn(
-                    "font-mono font-semibold tabular-nums text-2xs",
+                    "font-mono font-semibold tabular-nums text-[9px]",
                     tick.last === 0
-                      ? "text-muted-foreground/30"
+                      ? "text-muted-foreground/15"
                       : isUp
-                        ? "text-emerald-500"
+                        ? "text-emerald-400"
                         : isDown
-                          ? "text-red-500"
-                          : "text-foreground/70"
+                          ? "text-red-400"
+                          : "text-foreground/50"
                   )}
                 >
                   {tick.last === 0 ? "—" : tick.last.toFixed(2)}
                 </span>
-
-                {/* Change arrow */}
                 {tick.last > 0 && (
                   <ChangeIcon
                     className={cn(
-                      "h-2.5 w-2.5",
-                      isUp ? "text-emerald-500/70" : isDown ? "text-red-500/70" : "text-muted-foreground/30"
+                      "h-1.5 w-1.5",
+                      isUp ? "text-emerald-400/50" : isDown ? "text-red-400/50" : "text-muted-foreground/15"
                     )}
                   />
                 )}
-
-                {/* Change % */}
                 {changePct !== 0 && (
                   <span
                     className={cn(
-                      "font-mono tabular-nums text-2xs",
-                      isUp ? "text-emerald-500/60" : "text-red-500/60"
+                      "font-mono tabular-nums text-[8px]",
+                      isUp ? "text-emerald-400/40" : "text-red-400/40"
                     )}
                   >
                     {changePct > 0 ? "+" : ""}{changePct.toFixed(2)}%

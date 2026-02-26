@@ -66,16 +66,16 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="space-y-3 max-w-3xl">
+    <div className="space-y-2.5 max-w-3xl">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-base font-semibold tracking-tight flex items-center gap-2">
-            <Monitor className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
+            <Monitor className="h-3.5 w-3.5 text-muted-foreground/60" />
             Settings
           </h2>
-          <p className="text-2xs text-muted-foreground">Application preferences and configuration</p>
+          <p className="text-[10px] text-muted-foreground/50">Application preferences and configuration</p>
         </div>
-        <Button size="sm" onClick={handleSave} disabled={saving}>
+        <Button size="sm" onClick={handleSave} disabled={saving} className="h-7 text-[11px]">
           {saved ? <><Check className="h-3 w-3" /> Saved</> : <><Save className="h-3 w-3" /> {saving ? "Saving…" : "Save All"}</>}
         </Button>
       </div>

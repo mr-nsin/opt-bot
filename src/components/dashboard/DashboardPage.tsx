@@ -25,52 +25,54 @@ export function DashboardPage() {
   const [activeTab, setActiveTab] = useState("overview");
 
   return (
-    <div className="space-y-3">
-      {/* Live P&L Stats - always visible at top (compact) */}
+    <div className="space-y-2.5">
+      {/* Live P&L Stats - always visible at top (compact row) */}
       <LiveStats />
 
       {/* Tab navigation */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">
-            <BarChart3 className="h-3.5 w-3.5" />
+            <BarChart3 className="h-3 w-3" />
             Overview
           </TabsTrigger>
           <TabsTrigger value="signals">
-            <Zap className="h-3.5 w-3.5" />
+            <Zap className="h-3 w-3" />
             Signals & Market
           </TabsTrigger>
           <TabsTrigger value="config">
-            <Settings2 className="h-3.5 w-3.5" />
+            <Settings2 className="h-3 w-3" />
             Configuration
           </TabsTrigger>
           <TabsTrigger value="engine">
-            <Radio className="h-3.5 w-3.5" />
+            <Radio className="h-3 w-3" />
             Engine
           </TabsTrigger>
           <TabsTrigger value="activity">
-            <Activity className="h-3.5 w-3.5" />
+            <Activity className="h-3 w-3" />
             Activity
           </TabsTrigger>
         </TabsList>
 
-        {/* === Overview Tab === */}
+        {/* === Overview Tab — Chart-centric === */}
         <TabsContent value="overview">
-          <div className="space-y-3">
-            {/* Top row: P&L Chart + Trading Controls */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <div className="lg:col-span-2">
+          <div className="space-y-2">
+            {/* Hero: P&L chart takes dominant space, controls tight on right */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-2">
+              <div className="lg:col-span-4">
                 <PnLSparkline />
               </div>
               <TradingControls />
             </div>
 
-            {/* Account + Risk */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              <div className="lg:col-span-2">
+            {/* Account + Risk — wider account panel */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-2">
+              <div className="lg:col-span-3">
                 <AccountSummary />
               </div>
-              <RiskManagement />
+              <div className="lg:col-span-2">
+                <RiskManagement />
+              </div>
             </div>
 
             {/* Data Feed */}
@@ -80,24 +82,28 @@ export function DashboardPage() {
 
         {/* === Signals & Market Tab === */}
         <TabsContent value="signals">
-          <div className="space-y-3">
+          <div className="space-y-2">
             <MarketOverview />
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <SignalActivity />
-              <DataFeedStatus />
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-2">
+              <div className="lg:col-span-3">
+                <SignalActivity />
+              </div>
+              <div className="lg:col-span-2">
+                <DataFeedStatus />
+              </div>
             </div>
           </div>
         </TabsContent>
 
         {/* === Configuration Tab === */}
         <TabsContent value="config">
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
               <TradingControls />
               <TradeParameters />
               <RiskManagement />
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
               <ConnectionConfig />
               <StockList />
             </div>
@@ -106,10 +112,14 @@ export function DashboardPage() {
 
         {/* === Engine Tab === */}
         <TabsContent value="engine">
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <EngineActivity />
-              <SignalActivity />
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-2">
+              <div className="lg:col-span-3">
+                <EngineActivity />
+              </div>
+              <div className="lg:col-span-2">
+                <SignalActivity />
+              </div>
             </div>
             <DataFeedStatus />
           </div>

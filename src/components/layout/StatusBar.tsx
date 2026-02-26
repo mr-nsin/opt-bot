@@ -14,11 +14,6 @@ import {
   Zap,
 } from "lucide-react";
 
-/**
- * StatusBar — A 24px bottom bar inspired by VS Code / NinjaTrader status bars.
- * Shows: connection status, engine state, data feed health, signal scanner,
- * error count, uptime, and clock.
- */
 export const StatusBar = memo(function StatusBar() {
   const connectedToTws = useTradingStore((s) => s.connectedToTws);
   const status = useTradingStore((s) => s.status);
@@ -32,18 +27,13 @@ export const StatusBar = memo(function StatusBar() {
   const isStarting = status === "Starting";
   const isError = typeof status === "object" && "Error" in status;
 
-  // Uptime counter
+  // Uptime
   const startTimeRef = useRef<number | null>(null);
   const [uptime, setUptime] = useState("");
 
   useEffect(() => {
-    if (isRunning && !startTimeRef.current) {
-      startTimeRef.current = Date.now();
-    }
-    if (!isRunning && status === "Idle") {
-      startTimeRef.current = null;
-      setUptime("");
-    }
+    if (isRunning && !startTimeRef.current) startTimeRef.current = Date.now();
+    if (!isRunning && status === "Idle") { startTimeRef.current = null; setUptime(""); }
   }, [isRunning, status]);
 
   useEffect(() => {
@@ -53,21 +43,14 @@ export const StatusBar = memo(function StatusBar() {
       const h = Math.floor(diff / 3600);
       const m = Math.floor((diff % 3600) / 60);
       const s = diff % 60;
-      setUptime(
-        h > 0
-          ? `${h}h ${m.toString().padStart(2, "0")}m`
-          : `${m}m ${s.toString().padStart(2, "0")}s`
-      );
+      setUptime(h > 0 ? `${h}h ${m.toString().padStart(2, "0")}m` : `${m}m ${s.toString().padStart(2, "0")}s`);
     };
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [isRunning]);
 
-  // Error count
   const errorCount = logs.filter((l) => l.level === "ERROR").length;
-
-  // Data feed info
   const feedSymbols = (dataStatus as Record<string, unknown>)?.subscribed_symbols;
   const feedCount = Array.isArray(feedSymbols) ? feedSymbols.length : 0;
 
@@ -91,88 +74,58 @@ export const StatusBar = memo(function StatusBar() {
   }, []);
 
   return (
-    <div className="h-6 bg-card/90 backdrop-blur-sm border-t border-border/50 flex items-center justify-between px-2 text-2xs shrink-0 select-none">
-      {/* Left section */}
-      <div className="flex items-center gap-0">
-        {/* Connection status */}
-        <StatusItem
+    <div className="h-5 bg-card/70 backdrop-blur-sm border-t border-border/15 flex items-center justify-between px-1 text-[8px] shrink-0 select-none">
+      {/* Left */}
+      <div className="flex items-center">
+        <SBItem
           icon={connectedToTws ? Wifi : WifiOff}
           label={connectedToTws ? "TWS" : "Disconnected"}
-          color={connectedToTws ? "text-emerald-500" : "text-red-500"}
-          bg={connectedToTws ? "bg-emerald-500/8" : "bg-red-500/8"}
+          color={connectedToTws ? "text-emerald-400" : "text-red-400"}
+          bg={connectedToTws ? "hover:bg-emerald-500/5" : "hover:bg-red-500/5"}
         />
-
-        {/* Engine status */}
-        <StatusItem
+        <SBItem
           icon={Activity}
-          label={
-            isRunning
-              ? "Running"
-              : isStarting
-                ? "Starting…"
-                : isError
-                  ? "Error"
-                  : "Idle"
-          }
-          color={
-            isRunning
-              ? "text-emerald-500"
-              : isStarting
-                ? "text-amber-500"
-                : isError
-                  ? "text-red-500"
-                  : "text-muted-foreground/50"
-          }
-          bg={isRunning ? "bg-emerald-500/5" : ""}
+          label={isRunning ? "Running" : isStarting ? "Starting…" : isError ? "Error" : "Idle"}
+          color={isRunning ? "text-emerald-400" : isStarting ? "text-amber-400" : isError ? "text-red-400" : "text-muted-foreground/40"}
           pulse={isStarting}
         />
-
-        {/* Signal scanner */}
         {isRunning && (
-          <StatusItem
+          <SBItem
             icon={Radio}
             label={isSignalScanning ? "Scanning" : "Idle"}
-            color={isSignalScanning ? "text-violet-400" : "text-muted-foreground/40"}
+            color={isSignalScanning ? "text-violet-400" : "text-muted-foreground/30"}
             pulse={isSignalScanning}
           />
         )}
-
-        {/* Data feed */}
         {isRunning && (
-          <StatusItem
+          <SBItem
             icon={Database}
             label={feedCount > 0 ? `${feedCount} feeds` : "No feeds"}
-            color={feedCount > 0 ? "text-cyan-500" : "text-muted-foreground/40"}
+            color={feedCount > 0 ? "text-cyan-400" : "text-muted-foreground/30"}
           />
         )}
-
-        {/* Error badge */}
         {errorCount > 0 && (
-          <StatusItem
+          <SBItem
             icon={AlertTriangle}
             label={`${errorCount} error${errorCount > 1 ? "s" : ""}`}
             color="text-red-400"
-            bg="bg-red-500/8"
+            bg="bg-red-500/5"
           />
         )}
       </div>
 
-      {/* Center: quick stats when running */}
+      {/* Center */}
       {isRunning && (
-        <div className="flex items-center gap-3 text-muted-foreground/60">
-          <span className="flex items-center gap-1">
-            <Zap className="h-2.5 w-2.5" />
+        <div className="flex items-center gap-2.5 text-muted-foreground/50">
+          <span className="flex items-center gap-0.5">
+            <Zap className="h-2 w-2" />
             <span className="font-mono tabular-nums">{totalTrades} trades</span>
           </span>
-          <span className="text-border/40">·</span>
+          <span className="text-border/30">·</span>
           <span
             className={cn(
               "font-mono tabular-nums font-semibold",
-              dailyPnl.total > 0
-                ? "text-emerald-500/70"
-                : dailyPnl.total < 0
-                  ? "text-red-500/70"
-                  : "text-muted-foreground/40"
+              dailyPnl.total > 0 ? "text-emerald-400/60" : dailyPnl.total < 0 ? "text-red-400/60" : "text-muted-foreground/30"
             )}
           >
             {dailyPnl.total >= 0 ? "+" : ""}${dailyPnl.total.toFixed(2)}
@@ -180,30 +133,20 @@ export const StatusBar = memo(function StatusBar() {
         </div>
       )}
 
-      {/* Right section */}
-      <div className="flex items-center gap-0">
-        {/* Uptime */}
-        {uptime && (
-          <StatusItem
-            icon={Cpu}
-            label={uptime}
-            color="text-muted-foreground/60"
-          />
-        )}
-
-        {/* NY Clock */}
-        <div className="flex items-center gap-1 px-2 h-full text-muted-foreground/50">
-          <Clock className="h-2.5 w-2.5" />
+      {/* Right */}
+      <div className="flex items-center">
+        {uptime && <SBItem icon={Cpu} label={uptime} color="text-muted-foreground/50" />}
+        <div className="flex items-center gap-0.5 px-1.5 h-full text-muted-foreground/40">
+          <Clock className="h-2 w-2" />
           <span className="font-mono tabular-nums">{nyClock}</span>
-          <span className="text-muted-foreground/30">ET</span>
+          <span className="text-muted-foreground/20">ET</span>
         </div>
       </div>
     </div>
   );
 });
 
-/** Small status bar item with icon + label */
-function StatusItem({
+function SBItem({
   icon: Icon,
   label,
   color,
@@ -217,13 +160,8 @@ function StatusItem({
   pulse?: boolean;
 }) {
   return (
-    <div
-      className={cn(
-        "flex items-center gap-1 px-2 h-6 transition-colors cursor-default hover:bg-muted/30",
-        bg
-      )}
-    >
-      <Icon className={cn("h-2.5 w-2.5", color, pulse && "animate-pulse")} />
+    <div className={cn("flex items-center gap-0.5 px-1 h-5 transition-colors cursor-default", bg)}>
+      <Icon className={cn("h-2 w-2", color, pulse && "animate-pulse")} />
       <span className={cn("font-medium", color)}>{label}</span>
     </div>
   );

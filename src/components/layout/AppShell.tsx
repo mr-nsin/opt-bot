@@ -11,10 +11,8 @@ export function AppShell() {
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Header />
         <MarketTicker />
-        <main className="flex-1 overflow-auto p-4">
-          <div className="animate-fade-up">
-            <Outlet />
-          </div>
+        <main className="flex-1 overflow-auto p-2.5">
+          <Outlet />
         </main>
         <StatusBar />
       </div>
