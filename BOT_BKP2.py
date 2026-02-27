@@ -88,7 +88,6 @@ global ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDay
 # -- LICENSE SYSTEM --
 LICENSE_FILE = "license.json"
 LICENSE_KEY = "TraderNova_987_90_1"
-LICENSE_EXPIRY_DAYS = 14  # Trial period in days
 
 def hard_exit():
     logger.error("HARD EXIT: Daily limit hit, terminating process")
@@ -100,71 +99,42 @@ def init_day_pnl(account_id):
     logger.info(f"Day PnL baseline captured: {START_REALI_DAILY_PNL}")
 
 
+
 def encrypt_string(plain_text):
     return base64.b64encode(plain_text.encode()).decode()
     
 def decrypt_string(encoded_text):
     return base64.b64decode(encoded_text.encode()).decode()
 
-def _get_or_create_install_date(file_path: str = LICENSE_FILE) -> datetime:
-    """
-    Returns the install/activation date.
-    - If license.json exists and has a valid 'issued' field, use that date.
-    - If license.json does not exist, create it with today as the activation date.
-    """
-    if Path(file_path).exists():
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                license_data = json.load(f)
-            issued_str = base64.b64decode(license_data["issued"]).decode()
-            return datetime.fromisoformat(issued_str)
-        except Exception:
-            pass  # Fall through to create a fresh file
-
-    # First run — stamp today as the activation date
-    activation_date = datetime.now()
-    license_data = {
-        "issued": base64.b64encode(activation_date.isoformat().encode()).decode()
-    }
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(license_data, f)
-        print(f"License activated. Trial valid for {LICENSE_EXPIRY_DAYS} days from today ({activation_date.strftime('%Y-%m-%d')}).")
-    except Exception as e:
-        print(f"Warning: Could not write license file: {e}")
-    return activation_date
-
 def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
-    """
-    Check whether the 14-day trial license is still valid.
-    Activation date is set on first run and stored in license.json.
-    """
     try:
-        activation_date = _get_or_create_install_date(file_path)
-        now = datetime.now()
-        days_used = (now - activation_date).days
-        days_remaining = LICENSE_EXPIRY_DAYS - days_used
+        if not Path(file_path).exists():
+            print("License file not found/Deleted.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
+            time.sleep(10)
+            sys.exit()
+            sys.exit(0)
+            sys.exit(1)
+        elif Path(file_path).exists():
+            print("License file present, Validating it")
 
-        if days_remaining > 0:
-            print(f"License is valid. {days_remaining} day(s) remaining in your trial.")
+        with open(file_path, "r",  encoding="utf-8") as f:
+            license_data = json.load(f)
+
+        issued_str = base64.b64decode(license_data["issued"]).decode()
+        issued_date = datetime.fromisoformat(issued_str)
+
+        now = datetime.now()
+        delta = now - issued_date
+        if delta.days <= 90:
+            print("License is valid.")
             return True
         else:
-            print("=" * 60)
-            print("        *** LICENSE EXPIRED ***")
-            print("=" * 60)
-            print(f"Your {LICENSE_EXPIRY_DAYS}-day trial license has expired.")
-            print("To continue using this software, please contact:")
-            print()
-            print("   quantdrift@gmail.com")
-            print()
-            print("=" * 60)
-            time.sleep(10)
+            print("Your License has expired.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
+            time.sleep(20)
             sys.exit(1)
 
     except Exception as e:
-        print(f"License validation error: {e}")
-        print("Please contact quantdrift@gmail.com for support.")
-        time.sleep(5)
+        print("License validation error:", e)
         return False
 
 
