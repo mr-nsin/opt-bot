@@ -50,6 +50,8 @@ class TwsApiClient(EWrapper, EClient):
         self.account_summary_cache = {}  # tag -> value (str from TWS; parse to float in engine)
         self._lock = threading.Lock()
         self.ACCOUNT_SUMMARY_REQ_ID = 2
+        # When True, reconnects are done by the trading engine only (avoids multiple TWS connections)
+        self.reconnect_handled_externally: bool = False
 
     @iswrapper
     def connectAck(self):
@@ -63,7 +65,11 @@ class TwsApiClient(EWrapper, EClient):
         
     @iswrapper
     def connectionClosed(self):
-        logger.error("TWS connection closed. Attempting to reconnect...")
+        logger.error("TWS connection closed.")
+        if getattr(self, "reconnect_handled_externally", False):
+            logger.info("Reconnect is handled by the trading engine; not reconnecting from client.")
+            return
+        logger.info("Attempting to reconnect...")
         self.try_reconnect()
         
     def try_reconnect(self, max_attempts=5, delay=5):
@@ -279,19 +285,25 @@ class TwsApiClient(EWrapper, EClient):
         threading.Thread(target=heartbeat, daemon=True).start()
         
     def get_contract_detail(self, contract: Contract):
+        """Request resolved contract from TWS. Uses shared state (not thread-safe); call from a single thread only."""
         reqId = self.nextTickerId()
         self.reqContractDetails(reqId=reqId, contract=contract)
         self.contract_detail_fetched = False
         self.temp_contract_detail = None
 
-        max_wait = 5  # seconds
+        max_wait = 10  # seconds (TWS can be slow when market is closed or under load)
         waited = 0
         while not self.contract_detail_fetched and waited < max_wait:
             time.sleep(0.5)
             waited += 0.5
-    
+
         if self.temp_contract_detail is None:
-            logger.warning(f"Contract details timeout for {contract}")
+            logger.warning(
+                "Contract details timeout for %s — TWS did not respond in %ds. "
+                "Using unresolved contract (trading may still work). Check: market hours, TWS connection, IB rate limits.",
+                contract,
+                max_wait,
+            )
             return contract
 
         return self.temp_contract_detail.contract

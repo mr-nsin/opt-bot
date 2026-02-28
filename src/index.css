@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    font-size: 14px;
+    font-size: 15px;
     --background: 220 16% 96%;
     --foreground: 224 71% 4%;
     --card: 0 0% 100%;

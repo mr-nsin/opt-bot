@@ -55,7 +55,13 @@ export const LogsPage = memo(function LogsPage() {
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    logsApi.get(undefined, undefined, 500).then(setLogs).catch(console.error);
+    // Defer setting 100 entries to next tick so the tab paints first and doesn't hang
+    logsApi
+      .get(undefined, undefined, 100)
+      .then((entries) => {
+        requestAnimationFrame(() => setLogs(entries));
+      })
+      .catch(console.error);
   }, [setLogs]);
 
   const filtered = useMemo(
@@ -96,9 +102,12 @@ export const LogsPage = memo(function LogsPage() {
   });
 
   useEffect(() => {
-    if (autoScroll && parentRef.current) {
-      parentRef.current.scrollTop = parentRef.current.scrollHeight;
-    }
+    if (!autoScroll || !parentRef.current) return;
+    // Defer scroll to avoid layout thrash in the same frame as a big log update
+    const id = requestAnimationFrame(() => {
+      if (parentRef.current) parentRef.current.scrollTop = parentRef.current.scrollHeight;
+    });
+    return () => cancelAnimationFrame(id);
   }, [filtered.length, autoScroll]);
 
   return (

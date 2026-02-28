@@ -224,6 +224,10 @@ class TradingEngine:
                 event_queue=self._event_queue,
                 callback=self._order_mgr.process_trade if self._order_mgr else None,
             )
+            # Let engine handle reconnects only (avoids duplicate connections from client's connectionClosed)
+            self._client.reconnect_handled_externally = True
+            # Grace period: don't treat "not yet connected" as disconnected and reconnect immediately
+            self._last_tws_reconnect_attempt = time.time()
             self._try_connect_tws()
         except Exception as e:
             self.connected = False
@@ -357,6 +361,30 @@ class TradingEngine:
             # Leave empty so first trades are not blocked by cooldown; cooldown applies after actual trades
             BOT.trade_time_dict = {}
 
+            # --- Required for checkAlgoAndTrade, checkConditionsAndTrade, takeTrade, placeOrder (same as main_call) ---
+            # Without these, BOT hits NameError or wrong behavior when processing signals/trades.
+            BOT.TRADE_COOLDOWN_SECONDS = int(getattr(self.config, "distance_between_trade", 610))
+            BOT.PROFIT_INCREMENT = float(getattr(self.config, "profit_increment", 0.03))
+            BOT.ATR_CHECKS = float(getattr(self.config, "atr_checks", 0.047))
+            BOT.ATR_VALUE = float(getattr(self.config, "atr_value", 0.99))
+            BOT.ORDER_EXPIRY_TIMER = int(getattr(self.config, "order_expiry_timer", 15))
+            BOT.USE_TIMER_IN_ORDER = str(getattr(self.config, "use_timer_in_order", "ON"))
+            BOT.MAX_CONTRACT_AMOUNT = float(getattr(self.config, "max_contract_amount", 350.0))
+            BOT.VWAP_ON_OFF = str(getattr(self.config, "vwap_on_off", "ON"))
+            BOT.MARKET_START_TIME = str(getattr(self.config, "market_start_time", "19:00:00"))
+            BOT.startTime = str(getattr(self.config, "script_start_time", "0935"))
+            BOT.endTime = str(getattr(self.config, "script_end_time", "1545"))
+            BOT.stockListDict = getattr(self.config, "stock_list_to_trade", None) or {s: "SMART" for s in stock_list}
+            BOT.dataInFile = len(stock_list)
+            BOT.EXPIRY = str(getattr(self.config, "expiry_to_trade", "next"))
+            BOT.useAmount = getattr(self.config, "stock_data", None) or {k: {"amount": getattr(self.config, "max_contract_amount", 350)} for k in stock_list}
+            BOT.ACTIVE_VOLUME = int(getattr(self.config, "active_volume", 5))
+            BOT.SHARE_VOLUME = int(getattr(self.config, "share_volume", 1))
+            BOT.BODY = float(getattr(self.config, "body", 2.0))
+            BOT.perDayTrades = int(getattr(self.config, "per_day_trades", 3))
+            BOT.USE_DIFF_EXPIRY_INDEX = str(getattr(self.config, "use_diff_expiry_index", "yes"))
+            BOT.TRANSMIT = getattr(self.config, "order_transmit", True)
+
             # Ensure expiryStrike.json exists in CWD before BOT runs (avoids "[Errno 2] No such file or directory").
             # When frozen: copy from bundled resource (_MEIPASS); otherwise create empty or copy from sidecar dir.
             cwd = os.getcwd()
@@ -420,7 +448,11 @@ class TradingEngine:
             self._data_feed_started = True
             self._last_signal_heartbeat_time = time.time()  # Reset heartbeat timer
             emit_log("Data feed and strategies started", "INFO", "system")
-            emit_log(f"Signal scanner started: monitoring {', '.join(stock_list)} for SuperTrend + Engulfing signals", "INFO", "signal")
+            emit_log(
+                f"IBKR data + signal scanner started: monitoring {', '.join(stock_list)}. "
+                "Logs will show 'Signal scan', 'IBKR bars', 'Trade check', and 'IBKR data' (every 10s) when data is flowing.",
+                "INFO", "signal"
+            )
         except Exception as e:
             emit_log(f"Start data feed/strategies failed: {e}", "ERROR", "system")
             emit_error(str(e))
@@ -753,12 +785,12 @@ class TradingEngine:
                 bar_count=bar_count,
             )
 
-            # Log one-line summary with latest price per configured symbol (or "—" if no tick yet)
+            # Log one-line summary: IBKR data received so user can see if something is going
             feed = "yes" if self._data_feed_started else "no"
             stk_opt = f" ({stk_count} STK, {fut_count} FUT, {opt_count} OPT)" if (stk_count or opt_count or fut_count) else ""
             summary = (
-                f"Data status: TWS={self.connected}, feed={feed}, symbols={len(symbols)}, "
-                f"queue={queue_size}, ticks={tick_count}{stk_opt}, bars={bar_count}"
+                f"IBKR data: TWS={self.connected}, feed={feed}, symbols={len(symbols)}, "
+                f"queue={queue_size}, tick_subs={tick_count}{stk_opt}, bar_series={bar_count}"
             )
             if symbols:
                 price_parts = [f"{sym}={symbol_last.get(sym) if symbol_last.get(sym) is not None else '—'}" for sym in symbols[:12]]
@@ -770,21 +802,14 @@ class TradingEngine:
                 summary += " | Latest prices: (waiting for ticks)"
             emit_log(summary, "INFO", "system")
 
-            # Log TWS data received: underlyings (STK/FUT) and options (OPT) so user sees data is working
+            # Single-line summary of TWS data (avoid flooding UI with per-symbol lines)
             if stk_full:
-                emit_log("TWS data (underlyings):", "INFO", "system")
-                for d in stk_full:
-                    emit_log(
-                        f"  {d['symbol']}: last={d['last']} bid={d['bid']} ask={d['ask']} close={d['close']} volume={d['volume']}",
-                        "INFO", "system"
-                    )
+                sample = ", ".join(f"{d['symbol']}={d['last']}" for d in stk_full[:5])
+                if len(stk_full) > 5:
+                    sample += f" (+{len(stk_full) - 5} more)"
+                emit_log(f"TWS underlyings: {sample}", "INFO", "system")
             if opt_sample:
-                emit_log("TWS data (options sample):", "INFO", "system")
-                for o in opt_sample:
-                    emit_log(
-                        f"  {o['label']}: last={o['last']} bid={o['bid']} ask={o['ask']}",
-                        "INFO", "system"
-                    )
+                emit_log(f"TWS options: {len(opt_sample)} contracts in sample (data flowing)", "INFO", "system")
             if not stk_full and not opt_sample:
                 if stk_count == 0 and fut_count == 0 and opt_count == 0:
                     emit_log(

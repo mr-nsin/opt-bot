@@ -449,11 +449,17 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
 def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
     from datetime import datetime
     logger.info(f"Checking BEARISH OR BULLISH Engulf Data for stock = {stock}")
+    _emit_log(f"Signal check: {stock} (need {limit} bars, indicator={indicator})", "DEBUG", "signal")
 
     # NOTE: commented by Saif
     # getCandlesData = getCurrentUndPrice(stock)
 
     getCandlesData = client.get_bars(stock=stock, barSize=candleTime, limit=limit)
+    n_bars = len(getCandlesData) if getCandlesData else 0
+    if getCandlesData is None or n_bars < limit:
+        _emit_log(f"IBKR bars: {stock} received {n_bars} bars (need {limit}) — {'no data' if not getCandlesData else 'insufficient'}", "INFO", "data")
+    else:
+        _emit_log(f"IBKR bars: {stock} received {n_bars} bars → computing {indicator}", "DEBUG", "data")
     
     #############################################################################################################################################################################
     #############################################################################################################################################################################
@@ -499,6 +505,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
         right = "CALL"
         if current_sig.lower() == "sell":
             right = "PUT"
+        _emit_log(f"Signal result: {stock} → {right} ({indicator} OK)", "INFO", "signal")
         return True, right,  stock, "strongBuy"
     else:
         if getCandlesData is None:
@@ -507,6 +514,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
         if len(getCandlesData) < 8:
             logger.info(f"{stock} not enough candles.")
             logger.info(f"\n Received Candles for stocks= {stock} are = {getCandlesData}\n")
+            _emit_log(f"IBKR bars: {stock} received {len(getCandlesData) if getCandlesData else 0} bars (need 8 for engulfing)", "INFO", "data")
             return False, "None", stock, "notrade"
         
         last2Candles = getCandlesData[1:8]
@@ -917,8 +925,11 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     
     getCandlesData = client.get_bars(stock=Stock, barSize=candleTime, limit=21)
     logger.info("candle Data is = {}".format(getCandlesData))
+    n_candles = len(getCandlesData) if getCandlesData else 0
+    _emit_log(f"Algo: {Stock} IBKR bars={n_candles} (need 21 for ATR/VWAP/EMA)", "DEBUG", "signal")
     if not getCandlesData or len(getCandlesData) < 2:
         logger.warning(f"No/insufficient candle data for {Stock}; skipping algo check (historical data may not be ready)")
+        _emit_log(f"Algo: {Stock} insufficient bars ({n_candles}) — skipping trade check", "INFO", "signal")
         return (False, 0.0, ([0], [0], [0]))
 
     logger.info("\nVWAP_ON_OFF => {}\n".format(VWAP_ON_OFF))
@@ -1014,6 +1025,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
     rightMatch = stockData[1].upper()
     stockName = stockData[2].upper()
     signalStrength = stockData[3].lower()
+    _emit_log(f"Trade check: {stockName} {rightMatch} (strength={signalStrength})", "INFO", "signal")
 
     dataReturn = "None"
     tradeExpiry = tradeExpiry_val
@@ -1258,7 +1270,9 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                 # logger.info("stockMapperDict Current Value After Checks is  = {}".format(stockMapperDict))
     except Exception as tradeError:
         logger.error(f"Current Error During Trade logic = {tradeError}", exc_info=True)
-    logger.info(f"Stock {dataValueSet[0][2].upper()} checkConditionsAndTrade - end")
+    stock_name = dataValueSet[0][2].upper() if dataValueSet and len(dataValueSet[0]) > 2 else "?"
+    logger.info(f"Stock {stock_name} checkConditionsAndTrade - end")
+    _emit_log(f"Trade check result: {stock_name} → {dataReturn}", "INFO", "signal")
     return dataReturn
 
 def getAllPositions():
@@ -1304,11 +1318,15 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
     pnlData, realizedPNL = client.get_pnl(SUB_ACCOUNT_ID)
     logger.info(f"Account {SUB_ACCOUNT_ID} PNL is {pnlData}")
     try:
+        # Use global endTime if set (by main_call or trading engine); else default 15:45
+        end_time_val = globals().get("endTime", "1545")
         marketTime = datetime.now().astimezone(NY_TZ).strftime("%H-%M")
-        if marketTime.replace("-", "") > endTime.toString("HHmm"):
-            logger.info(f"Market Time is ={marketTime} > {endTime}.So Closing All Placed Orders if Any Or Closing Execution if no Orders Present")
+        # endTime from config is already a string like "1545" (HHmm)
+        end_time_str = str(end_time_val).replace(":", "").replace("-", "")[:4]
+        if marketTime.replace("-", "") > end_time_str:
+            logger.info(f"Market Time is ={marketTime} > {end_time_val}. So Closing All Placed Orders if Any Or Closing Execution if no Orders Present")
             tradeMarketTime = True
-            _emit_log(f"Market hours ended ({marketTime} > {endTime}) — closing all positions", "WARN", "risk")
+            _emit_log(f"Market hours ended ({marketTime} > {end_time_val}) — closing all positions", "WARN", "risk")
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price")
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
@@ -1321,8 +1339,8 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
         else:
-            logger.info(f"timeCheckAndCloseProgram:=>> Market Time is = {marketTime} <={endTime}. Keep Going Trade")
-            logger.info(f"Accoun Current: ${pnlData} SL: -${loss_amount_day} TP: ${profit_amount_day}...")
+            logger.info(f"timeCheckAndCloseProgram:=>> Market Time is = {marketTime} <={end_time_val}. Keep Going Trade")
+            logger.info(f"Account Current: ${pnlData} SL: -${loss_amount_day} TP: ${profit_amount_day}...")
     except Exception as lastError:
         logger.info(f"Got error during final call of day is = {lastError}")
         logger.info("Please Close All Positions Manually")
@@ -2013,13 +2031,16 @@ def event_processor(event_queue: Queue, count: int) -> None:
             # Get the event data from the queue
             event_data = event_queue.get(block=False, timeout=0.20)
             tick: Tick = event_data["tick"]
+            sym = getattr(tick.contract, "symbol", "") or getattr(tick.contract, "localSymbol", "") or getattr(tick, "symbol", "")
+            sec_type = getattr(tick.contract, "secType", "")
+            _emit_log(f"IBKR tick: {sym} ({sec_type}) last={getattr(tick, 'last', -1)} bid={getattr(tick, 'bid', -1)}", "DEBUG", "data")
             
             # If the security type is 'OPT' and an active order exists
             if tick.contract.secType == "OPT" and tick.active_order is not None:
                 order_mgr.check_and_close_position(tick=tick)
             elif tick.contract.secType == "STK":
                 # Get the result of the call/put engulf check
-                _emit_log(f"Scanning {tick.contract.symbol} for signal (SuperTrend + Engulfing)", "DEBUG", "signal")
+                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick received → SuperTrend + Engulfing)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
                 logger.info(f"\n dataEngulf = {dataEngulf}\n")
                 if dataEngulf[0]:

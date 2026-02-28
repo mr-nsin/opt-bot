@@ -28,7 +28,7 @@
     "QUANTITY": 2,
     "fetchValue": "1 D",
     "candleTime": "5 mins",
-    "distance_between_trade": 610,
+    "distance_between_trade": 120,
     "AVG_VOLUMNS_CANDLES": 30,
     "stockData": {
         "SPY": {

@@ -6,6 +6,7 @@ import { useLogStore } from "@/stores/logStore";
 import { useNotificationStore } from "@/stores/notificationStore";
 
 const PNL_THROTTLE_MS = 1000;
+const LOG_BATCH_MS = 150;
 
 /**
  * Global trading event listeners.
@@ -27,8 +28,19 @@ export function useTradingEvents() {
     setSignalScanning,
   } = useTradingStore();
   const { settings } = useConfigStore();
-  const { addLog } = useLogStore();
+  const { addLogsBatch } = useLogStore();
   const { addToast } = useNotificationStore();
+
+  const logPending = useRef<Array<{ timestamp: string; level: string; category: string; message: string }>>([]);
+  const logFlushScheduled = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushLogs = () => {
+    if (logPending.current.length === 0) return;
+    const batch = logPending.current;
+    logPending.current = [];
+    logFlushScheduled.current = null;
+    addLogsBatch(batch);
+  };
 
   const pnlPending = useRef<{ realized: number; unrealized: number; total: number } | null>(null);
   const pnlFlushScheduled = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -99,20 +111,24 @@ export function useTradingEvents() {
     }
   });
 
-  // ---- Log messages from the sidecar ----
+  // ---- Log messages from the sidecar (batched to avoid UI hang when many entries) ----
   useTauriEvent("trading:log_message", (data: any) => {
     const ts = data.timestamp || new Date().toISOString();
     const category = data.category || "trading";
     const message = data.message || "";
 
-    addLog({
+    logPending.current.push({
       timestamp: ts,
       level: data.level || "INFO",
       category,
       message,
     });
+    if (logFlushScheduled.current == null) {
+      logFlushScheduled.current = setTimeout(() => {
+        flushLogs();
+      }, LOG_BATCH_MS);
+    }
 
-    // Detect signal-scan heartbeat logs to mark engine as actively scanning
     if (
       category === "signal" &&
       message.toLowerCase().includes("signal scanner active")

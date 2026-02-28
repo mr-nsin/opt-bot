@@ -96,7 +96,14 @@ def emit_order_update(order_id: int, status: str, symbol: str, **kwargs):
     })
 
 
+# Log levels that are sent to the UI; DEBUG is omitted to keep UI logs informational only
+_UI_LOG_LEVELS = frozenset({"INFO", "WARN", "ERROR"})
+
+
 def emit_log(message: str, level: str = "INFO", category: str = "trading"):
+    """Emit a log message to the host. Only INFO, WARN, ERROR are sent to the UI; DEBUG is skipped."""
+    if level not in _UI_LOG_LEVELS:
+        return
     send_event("log_message", {
         "timestamp": datetime.now().isoformat(),
         "level": level,

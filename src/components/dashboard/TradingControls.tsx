@@ -52,27 +52,27 @@ export function TradingControls() {
   return (
     <>
       <Card className="h-full flex flex-col">
-        <CardHeader className="pb-1">
-          <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+        <CardHeader className="pb-1.5">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
             Controls
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-1.5 flex-1 flex flex-col">
+        <CardContent className="space-y-2 flex-1 flex flex-col">
           <Button
             onClick={handleStart}
             disabled={!canStart || isStarting}
-            className="w-full h-7 text-[11px]"
+            className="w-full h-9 text-xs font-medium"
             variant="success"
             title={!tradingConfig ? "Load config first (open Dashboard or refresh)" : undefined}
           >
             {isStarting ? (
-              <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Starting…</>
+              <><Loader2 className="h-4 w-4 animate-spin" /> Starting…</>
             ) : (
-              <><Play className="h-3.5 w-3.5" /> Start Trading</>
+              <><Play className="h-4 w-4" /> Start Trading</>
             )}
           </Button>
           {startDurationSec != null && isRunning && (
-            <p className="text-2xs text-muted-foreground/50 text-center">
+            <p className="text-[11px] text-muted-foreground/60 text-center">
               Started in {startDurationSec}s
             </p>
           )}
@@ -80,36 +80,36 @@ export function TradingControls() {
           <Button
             onClick={handleStop}
             disabled={!isRunning || isStopping}
-            className="w-full h-7 text-[11px]"
+            className="w-full h-9 text-xs font-medium"
             variant="outline"
           >
             {isStopping ? (
-              <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Stopping…</>
+              <><Loader2 className="h-4 w-4 animate-spin" /> Stopping…</>
             ) : (
-              <><Square className="h-3.5 w-3.5" /> Stop Trading</>
+              <><Square className="h-4 w-4" /> Stop Trading</>
             )}
           </Button>
 
           <Button
             onClick={() => setShowEmergencyConfirm(true)}
             variant="destructive"
-            className="w-full h-7 text-[11px]"
+            className="w-full h-9 text-xs font-medium"
           >
-            <AlertTriangle className="h-3.5 w-3.5" /> Emergency Stop
+            <AlertTriangle className="h-4 w-4" /> Emergency Stop
           </Button>
 
           <div className="flex-1" />
 
-          <div className="pt-1.5 mt-auto border-t border-border/30">
+          <div className="pt-2 mt-auto border-t border-border/30">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-muted-foreground/50">Status</span>
+              <span className="text-[11px] text-muted-foreground/60">Status</span>
               <div className="flex items-center gap-1.5">
                 <span className={cn(
                   "h-1.5 w-1.5 rounded-full",
                   isRunning ? "bg-emerald-500 live-dot" : isIdle ? "bg-muted-foreground/30" : "bg-amber-500"
                 )} />
                 <span className={cn(
-                  "text-[10px] font-medium",
+                  "text-[11px] font-medium",
                   isRunning && "text-emerald-500",
                   isIdle && "text-muted-foreground/50",
                   typeof status === "object" && "text-red-500"
@@ -121,7 +121,7 @@ export function TradingControls() {
           </div>
 
           {error && (
-            <p className="text-[10px] text-red-500 bg-red-500/10 rounded-md p-2 border border-red-500/20">
+            <p className="text-[11px] text-red-500 bg-red-500/10 rounded-md p-2 border border-red-500/20">
               {error}
             </p>
           )}
