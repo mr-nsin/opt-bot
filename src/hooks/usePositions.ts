@@ -33,7 +33,11 @@ export function usePositions() {
       );
       if (pos) {
         addClosedPosition({ ...pos, ...data });
-        removePosition(data.symbol);
+        removePosition(
+          data.symbol,
+          data.strike != null ? Number(data.strike) : undefined,
+          data.right != null ? String(data.right) : undefined
+        );
       }
     }
   });

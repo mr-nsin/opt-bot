@@ -165,7 +165,24 @@ class OrderManager:
         order: OptionOrder = self.orders_cache.get(order_id, None)
 
         if order is None:
-            logger.error(f"Order: {order_id} not found")
+            # Untracked order (e.g. squareOff / close-all MKT orders placed directly via placeOrder).
+            # If it filled, emit trade_closed so the UI removes the position and records the close.
+            if status == 'filled' and trade.contract is not None:
+                contract = trade.contract
+                logger.info(f"Untracked order {order_id} filled — emitting trade_closed for {contract.symbol}")
+                _emit_trade_closed({
+                    "symbol": contract.symbol or "",
+                    "right": getattr(contract, 'right', '') or "",
+                    "strike": float(getattr(contract, 'strike', 0) or 0),
+                    "expiry": getattr(contract, 'lastTradeDateOrContractMonth', '') or "",
+                    "quantity": int(trade.executed_qty or 0),
+                    "pnl": 0,
+                    "entry_price": 0,
+                    "exit_price": float(trade.average_price or 0),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                })
+            else:
+                logger.error(f"Order: {order_id} not found")
             return
 
         logger.info(f"{status} - {order_id} - {order}")

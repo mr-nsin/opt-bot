@@ -773,6 +773,8 @@ class TwsApiClient(EWrapper, EClient):
 
         position_obj.position = position
         position_obj.avg_cost = avgCost
+        if position == 0:
+            self.positions.pop(ticker, None)
         logger.info(position_obj)
 
         # self.positions.append(

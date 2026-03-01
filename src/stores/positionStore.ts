@@ -8,7 +8,7 @@ interface PositionState {
 
   setPositions: (positions: Position[]) => void;
   updatePosition: (symbol: string, updates: Partial<Position>) => void;
-  removePosition: (symbol: string) => void;
+  removePosition: (symbol: string, strike?: number, right?: string) => void;
   addClosedPosition: (position: Position) => void;
   setLoading: (loading: boolean) => void;
   clearAll: () => void;
@@ -30,9 +30,14 @@ export const usePositionStore = create<PositionState>((set) => ({
           : p
       ),
     })),
-  removePosition: (symbol) =>
+  removePosition: (symbol, strike, right) =>
     set((state) => ({
-      positions: state.positions.filter((p) => p.symbol !== symbol),
+      positions: state.positions.filter((p) => {
+        if (p.symbol !== symbol) return true;
+        if (strike != null && Number(p.strike) !== strike) return true;
+        if (right != null && right !== "" && p.right !== right) return true;
+        return false;
+      }),
     })),
   addClosedPosition: (position) =>
     set((state) => ({

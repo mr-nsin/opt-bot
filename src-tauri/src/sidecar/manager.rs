@@ -198,7 +198,7 @@ async fn handle_sidecar_message(
                             .trading
                             .positions
                             .iter_mut()
-                            .find(|p| p.symbol == pos.symbol && p.strike == pos.strike)
+                            .find(|p| p.symbol == pos.symbol && (p.strike - pos.strike).abs() < 0.01 && p.right == pos.right)
                         {
                             *existing = pos;
                         } else {
