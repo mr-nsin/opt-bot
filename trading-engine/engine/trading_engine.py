@@ -149,23 +149,51 @@ class TradingEngine:
         }
 
     def get_positions(self) -> list:
-        """Get current positions."""
+        """Get current positions with live price and P&L from tick cache and order manager."""
         if not self._client:
             return []
 
         positions = []
         if hasattr(self._client, 'positions'):
             for key, pos in self._client.positions.items():
+                qty = getattr(pos, 'position', 0)
+                if qty == 0:
+                    continue
+
+                # avg_cost from TWS is per-share cost (for options: price * multiplier)
+                avg_cost = getattr(pos, 'avg_cost', 0)
+                avg_price = avg_cost / 100.0 if avg_cost > 1 else avg_cost
+
+                # Try to get live price from tick cache or order manager
+                current_price = 0.0
+                symbol = getattr(pos, 'symbol', str(key))
+                strike = getattr(pos, 'strike', 0)
+                right = getattr(pos, 'right', '')
+                expiry = getattr(pos, 'expiry', '')
+
+                if self._order_mgr:
+                    opt_key = f"{symbol}_{right}"
+                    entry_order = self._order_mgr.entry_orders_cache.get(symbol)
+                    if entry_order:
+                        tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
+                        if tick and hasattr(tick, 'last') and tick.last > 0:
+                            current_price = tick.last
+                        elif tick and hasattr(tick, 'bid') and tick.bid > 0:
+                            current_price = tick.bid
+
+                pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
+                pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
+
                 positions.append({
-                    "symbol": getattr(pos, 'symbol', str(key)),
-                    "strike": getattr(pos, 'strike', 0),
-                    "right": getattr(pos, 'right', ''),
-                    "expiry": getattr(pos, 'expiry', ''),
-                    "quantity": getattr(pos, 'position', 0),
-                    "avg_price": getattr(pos, 'avg_price', 0),
-                    "current_price": 0,
-                    "pnl": 0,
-                    "pnl_percent": 0,
+                    "symbol": symbol,
+                    "strike": strike,
+                    "right": right,
+                    "expiry": expiry,
+                    "quantity": qty,
+                    "avg_price": round(avg_price, 4),
+                    "current_price": round(current_price, 4),
+                    "pnl": round(pnl, 2),
+                    "pnl_percent": round(pnl_pct, 2),
                 })
         return positions
 

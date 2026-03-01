@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { Position } from "@/lib/types";
-import { cn, formatCurrency, pnlColor } from "@/lib/utils";
+import { cn, formatCurrency, formatTime, pnlColor } from "@/lib/utils";
 
 export function PositionHistory({ positions }: { positions: Position[] }) {
   return (
@@ -24,7 +24,8 @@ export function PositionHistory({ positions }: { positions: Position[] }) {
                   <th className="py-2 pr-3 font-medium">Qty</th>
                   <th className="py-2 pr-3 font-medium">Entry</th>
                   <th className="py-2 pr-3 font-medium">Exit</th>
-                  <th className="py-2 font-medium">P&L</th>
+                  <th className="py-2 pr-3 font-medium">P&L</th>
+                  <th className="py-2 font-medium">Time</th>
                 </tr>
               </thead>
               <tbody>
@@ -34,9 +35,10 @@ export function PositionHistory({ positions }: { positions: Position[] }) {
                     <td className="py-2 pr-3"><Badge variant={p.right === "C" ? "success" : "danger"} className="text-2xs">{p.right === "C" ? "CALL" : "PUT"}</Badge></td>
                     <td className="py-2 pr-3 font-mono tabular-nums">${p.strike.toFixed(1)}</td>
                     <td className="py-2 pr-3 font-mono tabular-nums">{p.quantity}</td>
-                    <td className="py-2 pr-3 font-mono tabular-nums">${p.avg_price.toFixed(2)}</td>
-                    <td className="py-2 pr-3 font-mono tabular-nums">${p.current_price.toFixed(2)}</td>
-                    <td className={cn("py-2 font-mono font-semibold tabular-nums", pnlColor(p.pnl))}>{formatCurrency(p.pnl)}</td>
+                    <td className="py-2 pr-3 font-mono tabular-nums">${(p.avg_price ?? p.entry_price ?? 0).toFixed(2)}</td>
+                    <td className="py-2 pr-3 font-mono tabular-nums">${(p.exit_price ?? p.current_price ?? 0).toFixed(2)}</td>
+                    <td className={cn("py-2 pr-3 font-mono font-semibold tabular-nums", pnlColor(p.pnl ?? 0))}>{formatCurrency(p.pnl ?? 0)}</td>
+                    <td className="py-2 text-muted-foreground font-mono tabular-nums">{p.timestamp ? formatTime(p.timestamp as string) : "—"}</td>
                   </tr>
                 ))}
               </tbody>

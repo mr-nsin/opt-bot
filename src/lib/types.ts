@@ -69,8 +69,18 @@ export interface SignalEvent {
 }
 
 export interface TradeRecord {
+  id?: number;
   symbol?: string;
+  right?: string;
+  strike?: number;
+  expiry?: string;
+  side?: string;
+  quantity?: number;
+  entry_price?: number;
+  exit_price?: number;
   pnl?: number;
+  status?: string;
+  timestamp?: string;
   [key: string]: unknown;
 }
 
@@ -84,9 +94,22 @@ export type AccountMetrics = Record<string, number>;
 export interface Position {
   symbol: string;
   type?: string;
+  right?: string;
   strike?: number;
+  expiry?: string;
   qty?: number;
+  quantity?: number;
+  avg_price?: number;
+  current_price?: number;
+  entry_price?: number;
+  exit_price?: number;
   pnl?: number;
+  pnl_percent?: number;
+  profit_price?: number;
+  stoploss_price?: number;
+  delta?: number;
+  entry_time?: string;
+  timestamp?: string;
   [key: string]: unknown;
 }
 

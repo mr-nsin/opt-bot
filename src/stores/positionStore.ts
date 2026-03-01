@@ -23,7 +23,11 @@ export const usePositionStore = create<PositionState>((set) => ({
   updatePosition: (symbol, updates) =>
     set((state) => ({
       positions: state.positions.map((p) =>
-        p.symbol === symbol ? { ...p, ...updates } : p
+        p.symbol === symbol &&
+        (updates.strike == null || Number(p.strike) === Number(updates.strike)) &&
+        (updates.right == null || p.right === updates.right)
+          ? { ...p, ...updates }
+          : p
       ),
     })),
   removePosition: (symbol) =>

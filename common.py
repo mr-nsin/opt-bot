@@ -123,6 +123,7 @@ class Position:
     strike: float = None
     right: str = None
     expiry: str = None
+    avg_cost: float = 0.0
     
 @dataclass
 class PNL:

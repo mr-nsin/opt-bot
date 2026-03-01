@@ -766,12 +766,13 @@ class TwsApiClient(EWrapper, EClient):
         ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
         position_obj = self.positions.get(ticker, None)
         if position_obj is None:
-            position_obj = Position(account=account, symbol=contract.symbol, position=position, strike=contract.strike, right=contract.right, expiry=contract.lastTradeDateOrContractMonth)
+            position_obj = Position(account=account, symbol=contract.symbol, position=position, strike=contract.strike, right=contract.right, expiry=contract.lastTradeDateOrContractMonth, avg_cost=avgCost)
             self.positions[ticker] = position_obj
             logger.info(position_obj)
             return
 
         position_obj.position = position
+        position_obj.avg_cost = avgCost
         logger.info(position_obj)
 
         # self.positions.append(

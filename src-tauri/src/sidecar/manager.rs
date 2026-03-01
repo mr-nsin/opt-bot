@@ -228,9 +228,27 @@ async fn handle_sidecar_message(
                             app.trading.losing_trades += 1;
                         }
                     }
-                    // Remove from active positions
-                    if let Some(symbol) = event.data.get("symbol").and_then(|v| v.as_str()) {
-                        app.trading.positions.retain(|p| p.symbol != symbol);
+                    // Remove matching position (by symbol + strike + right for options)
+                    let closed_symbol = event.data.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                    let closed_strike = event.data.get("strike").and_then(|v| v.as_f64());
+                    let closed_right = event.data.get("right").and_then(|v| v.as_str());
+                    if !closed_symbol.is_empty() {
+                        app.trading.positions.retain(|p| {
+                            if p.symbol != closed_symbol {
+                                return true;
+                            }
+                            if let Some(s) = closed_strike {
+                                if (p.strike - s).abs() > 0.01 {
+                                    return true;
+                                }
+                            }
+                            if let Some(r) = closed_right {
+                                if !r.is_empty() && p.right != r {
+                                    return true;
+                                }
+                            }
+                            false
+                        });
                     }
                 }
 

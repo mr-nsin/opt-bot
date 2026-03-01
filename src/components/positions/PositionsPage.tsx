@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PositionRow } from "./PositionRow";
 import { PositionHistory } from "./PositionHistory";
+import { TradeBlotter } from "./TradeBlotter";
 import { usePositions } from "@/hooks/usePositions";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -184,6 +185,8 @@ export const PositionsPage = memo(function PositionsPage() {
           )}
         </CardContent>
       </Card>
+
+      <TradeBlotter />
 
       <PositionHistory positions={closedPositions} />
 
