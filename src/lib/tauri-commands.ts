@@ -33,6 +33,7 @@ export const trading = {
       losing_trades: number;
     }>("get_trading_status"),
   getAccountMetrics: () => invoke<Record<string, number> | null>("get_account_metrics"),
+  simulateDemo: () => invoke<string>("simulate_demo"),
 };
 
 /** Positions: getAll, close(symbol), closeAll */

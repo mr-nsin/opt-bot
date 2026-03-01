@@ -197,6 +197,113 @@ class TradingEngine:
                 })
         return positions
 
+    def simulate_demo(self, params: dict) -> dict:
+        """Run a demo simulation that emits fake positions, trades, signals, and closes.
+        Tests the full UI pipeline without needing TWS connection."""
+        import random
+        demo_thread = threading.Thread(target=self._run_demo_simulation, daemon=True)
+        demo_thread.start()
+        return {"status": "demo_started"}
+
+    def _run_demo_simulation(self):
+        """Background thread that simulates a full trading cycle."""
+        import random
+        from datetime import datetime
+
+        demo_symbols = [
+            {"symbol": "AAPL", "strike": 230.0, "right": "C", "expiry": "20260306"},
+            {"symbol": "TSLA", "strike": 350.0, "right": "P", "expiry": "20260306"},
+            {"symbol": "SPY",  "strike": 580.0, "right": "C", "expiry": "20260306"},
+        ]
+
+        emit_log("DEMO: Starting simulation — 3 fake positions + trades", "INFO", "system")
+
+        # Phase 1: Emit signals
+        time.sleep(1)
+        for s in demo_symbols:
+            emit_signal(s["symbol"], s["right"], s["strike"], round(random.uniform(1.5, 5.0), 2),
+                        f"DEMO SuperTrend flip → {s['right']}")
+            emit_log(f"DEMO: Signal detected for {s['symbol']} {s['strike']}{s['right'][0]}", "INFO", "signal")
+            time.sleep(0.5)
+
+        # Phase 2: Emit trade_executed (entry fills)
+        time.sleep(1)
+        entries = {}
+        for i, s in enumerate(demo_symbols):
+            entry_price = round(random.uniform(1.5, 4.5), 2)
+            qty = random.choice([1, 2, 3])
+            trade_id = 10000 + i
+            entries[s["symbol"]] = {"entry_price": entry_price, "qty": qty, "id": trade_id}
+            emit_trade_executed({
+                "id": trade_id,
+                "symbol": s["symbol"],
+                "right": s["right"],
+                "strike": s["strike"],
+                "expiry": s["expiry"],
+                "side": "BUY",
+                "quantity": qty,
+                "entry_price": entry_price,
+                "price": entry_price,
+                "status": "open",
+                "timestamp": datetime.now().isoformat(),
+            })
+            emit_log(f"DEMO: ENTRY FILLED {s['symbol']} {s['strike']}{s['right'][0]} {qty}x @ ${entry_price:.2f}", "INFO", "order")
+            time.sleep(0.5)
+
+        # Phase 3: Emit positions with live P&L updates (every 2s for 12s)
+        emit_log("DEMO: Positions open — updating P&L every 2s for 12s", "INFO", "system")
+        for tick in range(6):
+            for s in demo_symbols:
+                e = entries[s["symbol"]]
+                price_move = round(random.uniform(-0.3, 0.5), 2)
+                current = round(e["entry_price"] + price_move * (tick + 1) / 3, 2)
+                current = max(0.01, current)
+                pnl = round((current - e["entry_price"]) * e["qty"] * 100, 2)
+                pnl_pct = round((current - e["entry_price"]) / e["entry_price"] * 100, 2) if e["entry_price"] > 0 else 0
+                emit_position({
+                    "symbol": s["symbol"],
+                    "strike": s["strike"],
+                    "right": s["right"],
+                    "expiry": s["expiry"],
+                    "quantity": e["qty"],
+                    "avg_price": e["entry_price"],
+                    "current_price": current,
+                    "pnl": pnl,
+                    "pnl_percent": pnl_pct,
+                })
+            # Emit fake P&L
+            total_pnl = sum(
+                round((entries[s["symbol"]]["entry_price"] + random.uniform(-0.2, 0.4)) - entries[s["symbol"]]["entry_price"], 2) * entries[s["symbol"]]["qty"] * 100
+                for s in demo_symbols
+            )
+            emit_pnl(daily_pnl=round(total_pnl, 2), unrealized=round(total_pnl * 0.7, 2), realized=round(total_pnl * 0.3, 2))
+            time.sleep(2)
+
+        # Phase 4: Close positions one by one
+        emit_log("DEMO: Closing positions one by one", "INFO", "system")
+        for s in demo_symbols:
+            e = entries[s["symbol"]]
+            exit_price = round(e["entry_price"] + random.uniform(-0.5, 1.0), 2)
+            exit_price = max(0.01, exit_price)
+            trade_pnl = round((exit_price - e["entry_price"]) * e["qty"] * 100, 2)
+            emit_trade_closed({
+                "symbol": s["symbol"],
+                "right": s["right"],
+                "strike": s["strike"],
+                "expiry": s["expiry"],
+                "quantity": e["qty"],
+                "pnl": trade_pnl,
+                "entry_price": e["entry_price"],
+                "exit_price": exit_price,
+                "timestamp": datetime.now().isoformat(),
+            })
+            emit_log(f"DEMO: EXIT FILLED {s['symbol']} {s['strike']}{s['right'][0]} @ ${exit_price:.2f} | P&L: ${trade_pnl:+.2f}", "INFO", "order")
+            time.sleep(1.5)
+
+        emit_log("DEMO: Simulation complete — all positions closed", "INFO", "system")
+        emit_log("DEMO: Check Positions page (active → blotter → closed), Analytics, and Dashboard", "INFO", "system")
+        emit_engine_status("Idle", connected=False)
+
     def close_position(self, params: dict) -> dict:
         """Close a specific position by symbol."""
         symbol = params.get("symbol", "")

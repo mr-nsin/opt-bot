@@ -11,8 +11,9 @@ export function usePositions() {
   // Listen to position updates — use getState() to avoid stale closure
   useTauriEvent<Position>("trading:position_update", (data) => {
     const current = usePositionStore.getState().positions;
+    const normalRight = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
     const existing = current.find(
-      (p) => p.symbol === data.symbol && p.strike === data.strike && p.right === data.right
+      (p) => p.symbol === data.symbol && Number(p.strike) === Number(data.strike) && normalRight(p.right) === normalRight(data.right)
     );
     if (existing) {
       updatePosition(data.symbol, data);
@@ -25,11 +26,12 @@ export function usePositions() {
   useTauriEvent("trading:trade_closed", (data: any) => {
     if (data.symbol) {
       const current = usePositionStore.getState().positions;
+      const nr = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
       const pos = current.find(
         (p) =>
           p.symbol === data.symbol &&
           (data.strike == null || Number(p.strike) === Number(data.strike)) &&
-          (data.right == null || p.right === data.right)
+          (data.right == null || nr(p.right) === nr(data.right))
       );
       if (pos) {
         addClosedPosition({ ...pos, ...data });

@@ -32,8 +32,8 @@ export function PositionHistory({ positions }: { positions: Position[] }) {
                 {positions.map((p, i) => (
                   <tr key={i} className="border-b last:border-0">
                     <td className="py-2 pr-3 font-mono font-semibold">{p.symbol}</td>
-                    <td className="py-2 pr-3"><Badge variant={p.right === "C" ? "success" : "danger"} className="text-2xs">{p.right === "C" ? "CALL" : "PUT"}</Badge></td>
-                    <td className="py-2 pr-3 font-mono tabular-nums">${p.strike.toFixed(1)}</td>
+                    <td className="py-2 pr-3"><Badge variant={p.right === "C" || p.right === "CALL" ? "success" : "danger"} className="text-2xs">{p.right === "C" || p.right === "CALL" ? "CALL" : "PUT"}</Badge></td>
+                    <td className="py-2 pr-3 font-mono tabular-nums">${p.strike?.toFixed(1) ?? "—"}</td>
                     <td className="py-2 pr-3 font-mono tabular-nums">{p.quantity}</td>
                     <td className="py-2 pr-3 font-mono tabular-nums">${(p.avg_price ?? p.entry_price ?? 0).toFixed(2)}</td>
                     <td className="py-2 pr-3 font-mono tabular-nums">${(p.exit_price ?? p.current_price ?? 0).toFixed(2)}</td>

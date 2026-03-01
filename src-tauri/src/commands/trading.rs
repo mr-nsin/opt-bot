@@ -105,6 +105,27 @@ pub async fn get_trading_status(
 }
 
 #[tauri::command]
+pub async fn simulate_demo(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    // Spawn sidecar if not running
+    if !manager::is_running().await {
+        manager::spawn_sidecar(&app_handle).await?;
+        // Brief pause for sidecar to initialize
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+
+    let request = SidecarRequest::new(methods::SIMULATE_DEMO, None);
+    manager::send_request(&request).await?;
+
+    let mut app = state.lock().await;
+    app.sidecar_running = true;
+
+    Ok("Demo simulation started".into())
+}
+
+#[tauri::command]
 pub async fn get_account_metrics(
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<Option<serde_json::Value>, String> {

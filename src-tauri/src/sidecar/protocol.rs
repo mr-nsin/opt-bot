@@ -67,6 +67,7 @@ pub mod methods {
     pub const CLOSE_ALL: &str = "close_all";
     pub const UPDATE_CONFIG: &str = "update_config";
     pub const PING: &str = "ping";
+    pub const SIMULATE_DEMO: &str = "simulate_demo";
 }
 
 impl SidecarRequest {

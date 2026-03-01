@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useConfigStore } from "@/stores/configStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useLicense } from "@/hooks/useLicense";
-import { config as configApi } from "@/lib/tauri-commands";
+import { config as configApi, trading as tradingApi } from "@/lib/tauri-commands";
+import { useTauriEvent } from "@/hooks/useTauri";
 import {
   Save,
   Moon,
@@ -24,6 +25,7 @@ import {
   FileJson,
   Keyboard,
   Monitor,
+  FlaskConical,
 } from "lucide-react";
 import { LicenseStatus } from "@/components/license/LicenseStatus";
 import { LicenseInput } from "@/components/license/LicenseInput";
@@ -202,6 +204,8 @@ export function SettingsPage() {
               </CardContent>
             </Card>
 
+            <DemoTestCard />
+
             {settingsFile && (
               <Card>
                 <CardHeader className="py-3">
@@ -299,6 +303,64 @@ function SettingRow({
       </div>
       {children}
     </div>
+  );
+}
+
+function DemoTestCard() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const demoStartedRef = useRef(false);
+
+  useTauriEvent<{ status: string }>("trading:engine_status", (data) => {
+    if (demoStartedRef.current && data.status === "Idle") {
+      demoStartedRef.current = false;
+      setRunning(false);
+      setResult("Demo complete");
+    }
+  });
+
+  const runDemo = async () => {
+    setRunning(true);
+    demoStartedRef.current = true;
+    setResult(null);
+    try {
+      await tradingApi.simulateDemo();
+    } catch (e: unknown) {
+      setResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+      setRunning(false);
+      demoStartedRef.current = false;
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="py-3">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <FlaskConical className="h-4 w-4 text-violet-500" /> Demo Test
+        </CardTitle>
+        <CardDescription className="text-2xs">
+          Simulate a full trading cycle (signals, entries, P&L updates, exits) without TWS.
+          Watch the Positions, Analytics, and Log pages update in real-time.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="flex items-center gap-3">
+          <Button size="sm" variant="outline" onClick={runDemo} disabled={running}>
+            <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
+            {running ? "Running\u2026" : "Run Demo Simulation"}
+          </Button>
+          {result && (
+            <span className={`text-2xs ${result.startsWith("Error") ? "text-red-500" : "text-green-500"}`}>
+              {result}
+            </span>
+          )}
+        </div>
+        <p className="text-2xs text-muted-foreground">
+          Creates 3 fake option positions (AAPL, TSLA, SPY), updates P&L for ~12 seconds, then closes them.
+          The full cycle takes about 20 seconds.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -12,6 +12,7 @@ CLOSE_POSITION = "close_position"
 CLOSE_ALL = "close_all"
 UPDATE_CONFIG = "update_config"
 PING = "ping"
+SIMULATE_DEMO = "simulate_demo"
 
 # Event types (Python -> Rust)
 TICK_UPDATE = "tick_update"

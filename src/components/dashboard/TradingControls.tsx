@@ -1,10 +1,12 @@
-import { useState, useRef } from "react";
-import { Play, Square, AlertTriangle, Loader2 } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Play, Square, AlertTriangle, Loader2, FlaskConical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { useTradingEngine } from "@/hooks/useTradingEngine";
 import { useConfigStore } from "@/stores/configStore";
+import { useTauriEvent } from "@/hooks/useTauri";
+import { trading as tradingApi } from "@/lib/tauri-commands";
 import { cn } from "@/lib/utils";
 
 export function TradingControls() {
@@ -13,6 +15,15 @@ export function TradingControls() {
   const tradingConfig = useConfigStore((s) => s.tradingConfig);
   const [showEmergencyConfirm, setShowEmergencyConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [demoRunning, setDemoRunning] = useState(false);
+  const demoStartedRef = useRef(false);
+
+  useTauriEvent<{ status: string }>("trading:engine_status", (data) => {
+    if (demoStartedRef.current && data.status === "Idle") {
+      demoStartedRef.current = false;
+      setDemoRunning(false);
+    }
+  });
   const [startDurationSec, setStartDurationSec] = useState<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
   const emergencyStopPendingRef = useRef(false);
@@ -105,6 +116,30 @@ export function TradingControls() {
             className="w-full h-10 text-sm font-semibold"
           >
             <AlertTriangle className="h-4 w-4" /> Emergency Stop
+          </Button>
+
+          <Button
+            onClick={async () => {
+              setDemoRunning(true);
+              demoStartedRef.current = true;
+              setError(null);
+              try {
+                await tradingApi.simulateDemo();
+              } catch (e) {
+                setError(String(e));
+                setDemoRunning(false);
+                demoStartedRef.current = false;
+              }
+            }}
+            disabled={demoRunning || isRunning}
+            variant="outline"
+            className="w-full h-10 text-sm font-semibold border-violet-500/30 text-violet-400 hover:bg-violet-500/10"
+          >
+            {demoRunning ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Demo Running…</>
+            ) : (
+              <><FlaskConical className="h-4 w-4" /> Demo Test</>
+            )}
           </Button>
 
           <div className="flex-1" />

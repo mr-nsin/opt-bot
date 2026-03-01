@@ -70,6 +70,7 @@ def main():
     handler.register(messages.CLOSE_ALL, lambda params: engine.close_all())
     handler.register(messages.UPDATE_CONFIG, lambda params: engine.update_config(params))
     handler.register(messages.PING, lambda params: {"pong": True, "timestamp": time.time()})
+    handler.register(messages.SIMULATE_DEMO, lambda params: engine.simulate_demo(params))
 
     # Signal handlers for graceful shutdown
     def shutdown(signum, frame):

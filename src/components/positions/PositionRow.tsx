@@ -59,8 +59,8 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         </td>
 
         <td>
-          <Badge variant={position.right === "C" ? "success" : "danger"} className="text-xs font-bold px-1.5 py-0">
-            {position.right === "C" ? "CALL" : "PUT"}
+          <Badge variant={position.right === "C" || position.right === "CALL" ? "success" : "danger"} className="text-xs font-bold px-1.5 py-0">
+            {position.right === "C" || position.right === "CALL" ? "CALL" : "PUT"}
           </Badge>
         </td>
 
