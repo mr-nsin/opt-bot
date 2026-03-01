@@ -8,9 +8,20 @@ from threading import Lock
 
 # ---- Frontend log emitter (sends logs to Tauri UI via JSON-RPC stdout) ----
 try:
-    from protocol.emitter import emit_log as _emit_log
+    from protocol.emitter import (
+        emit_log as _emit_log,
+        emit_order_update as _emit_order_update,
+        emit_trade_executed as _emit_trade_executed,
+        emit_trade_closed as _emit_trade_closed,
+    )
 except ImportError:
     def _emit_log(message, level="INFO", category="trading"):
+        pass
+    def _emit_order_update(*args, **kwargs):
+        pass
+    def _emit_trade_executed(*args, **kwargs):
+        pass
+    def _emit_trade_closed(*args, **kwargs):
         pass
 
 
@@ -159,6 +170,16 @@ class OrderManager:
 
         logger.info(f"{status} - {order_id} - {order}")
 
+        # Notify UI of order status change (order tracking)
+        _emit_order_update(
+            order_id=order_id,
+            status=status,
+            symbol=order.option_symbol or order.symbol or "",
+            filled=trade.executed_qty,
+            remaining=trade.remaining_qty,
+            avg_fill_price=trade.average_price,
+        )
+
         if status == 'inactive':
             # The order was rejected by the broker.
             order.order_status = status
@@ -245,17 +266,43 @@ class OrderManager:
                 option_tick.active_order = None
                 entry_order.active = False
 
+                # Notify UI that position was closed (trade_closed). Use underlying symbol to match UI positions.
+                _emit_trade_closed({
+                    "symbol": entry_order.symbol or entry_order.option_symbol or "",
+                    "right": entry_order.right or "",
+                    "strike": float(entry_order.strike or 0),
+                    "expiry": entry_order.expiration or "",
+                    "quantity": int(order.executed_qty or 0),
+                    "pnl": float(trade_pnl),
+                    "entry_price": float(entry_avg),
+                    "exit_price": float(exit_avg),
+                    "timestamp": datetime.datetime.now().isoformat(),
+                })
+
                 # Delete both the entry order and exit order from the database
                 self.db.delete(order=entry_order)
                 self.db.delete(order=order)
 
-        # If this was an entry order, log a message with its status
+        # If this was an entry order, log a message with its status and notify UI
         else:
             logger.info(f'ENTRY Order ({order.id}) {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
             _emit_log(
                 f"ENTRY FILLED: {order.option_symbol} {order.order_side} {order.order_qty}x @ ${order.average_price:.2f} | TP=${order.profit_price:.2f} SL=${order.stoploss_price:.2f}",
                 "INFO", "order"
             )
+            _emit_trade_executed({
+                "id": int(order.id) if order.id is not None else 0,
+                "symbol": order.symbol or "",
+                "right": order.right or "",
+                "strike": float(order.strike or 0),
+                "expiry": order.expiration or "",
+                "side": order.order_side or "BUY",
+                "quantity": int(order.executed_qty or 0),
+                "entry_price": float(order.average_price or 0),
+                "price": float(order.average_price or 0),
+                "status": "open",
+                "timestamp": datetime.datetime.now().isoformat(),
+            })
 
 
     def close_position(self, order: OptionOrder, option_tick: Tick) -> None:

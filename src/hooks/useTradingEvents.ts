@@ -23,6 +23,7 @@ export function useTradingEvents() {
     setTradeStats,
     setLastSignal,
     addTrade,
+    updateTradePnl,
     setDataStatus,
     setAccountMetrics,
     setSignalScanning,
@@ -220,8 +221,19 @@ export function useTradingEvents() {
 
   // ---- Trade closed ----
   useTauriEvent("trading:trade_closed", (data: any) => {
-    const pnl = data.pnl || 0;
+    const pnl = data.pnl ?? 0;
     const state = useTradingStore.getState();
+
+    // Update the matching open trade in todayTrades with PnL so Analytics shows it
+    updateTradePnl(
+      {
+        symbol: data.symbol != null ? String(data.symbol) : undefined,
+        right: data.right != null ? String(data.right) : undefined,
+        strike: data.strike != null ? Number(data.strike) : undefined,
+      },
+      Number(pnl),
+      data.exit_price != null ? Number(data.exit_price) : undefined
+    );
 
     if (pnl > 0) {
       setTradeStats(

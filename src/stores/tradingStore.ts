@@ -28,6 +28,8 @@ interface TradingState {
   setTradeStats: (total: number, wins: number, losses: number) => void;
   setLastSignal: (signal: SignalEvent | null) => void;
   addTrade: (trade: TradeRecord) => void;
+  /** Update the first matching open trade with PnL when position is closed */
+  updateTradePnl: (match: { symbol?: string; right?: string; strike?: number }, pnl: number, exitPrice?: number) => void;
   setDataStatus: (data: DataStatus | null) => void;
   setAccountMetrics: (metrics: AccountMetrics | null) => void;
   /** Mark the engine as actively signal-scanning (called when heartbeat log is received) */
@@ -63,6 +65,20 @@ export const useTradingStore = create<TradingState>((set) => ({
   setLastSignal: (signal) => set({ lastSignal: signal }),
   addTrade: (trade) =>
     set((state) => ({ todayTrades: [trade, ...state.todayTrades].slice(0, 100) })),
+  updateTradePnl: (match, pnl, exitPrice) =>
+    set((state) => {
+      const idx = state.todayTrades.findIndex(
+        (t) =>
+          (t.status === "open" || t.status === undefined) &&
+          (match.symbol == null || t.symbol === match.symbol) &&
+          (match.right == null || t.right === match.right) &&
+          (match.strike == null || Number(t.strike) === match.strike)
+      );
+      if (idx < 0) return state;
+      const next = [...state.todayTrades];
+      next[idx] = { ...next[idx], pnl, status: "closed", exit_price: exitPrice };
+      return { todayTrades: next };
+    }),
   setDataStatus: (data) => set({ dataStatus: data }),
   setAccountMetrics: (metrics) => set({ accountMetrics: metrics }),
   setSignalScanning: (scanning, timestamp) =>

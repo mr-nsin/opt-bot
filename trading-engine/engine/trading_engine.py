@@ -54,6 +54,8 @@ class TradingEngine:
         self._last_account_metrics_time: float = 0
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
+        self._last_positions_time: float = 0
+        self._positions_interval_sec: float = 5.0
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
 
@@ -559,6 +561,11 @@ class TradingEngine:
                     self._last_data_status_time = now
                     self._emit_data_status()
 
+                # Every 5s: emit current positions so UI Positions page stays in sync
+                if self._client and self.connected and now - self._last_positions_time >= self._positions_interval_sec:
+                    self._last_positions_time = now
+                    self._emit_positions()
+
                 # Every 30s: heartbeat to show the engine is alive and scanning for signals
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
                     self._last_signal_heartbeat_time = now
@@ -614,6 +621,27 @@ class TradingEngine:
                     break
         except Exception:
             pass  # Silently skip P&L errors
+
+    def _emit_positions(self):
+        """Emit current positions to the UI so the Positions page shows active positions."""
+        try:
+            positions = self.get_positions()
+            for pos in positions:
+                payload = {
+                    "symbol": pos.get("symbol", ""),
+                    "strike": float(pos.get("strike", 0)),
+                    "right": pos.get("right", ""),
+                    "expiry": pos.get("expiry", ""),
+                    "quantity": int(pos.get("quantity", 0)),
+                    "qty": int(pos.get("quantity", 0)),
+                    "avg_price": float(pos.get("avg_price", 0)),
+                    "current_price": float(pos.get("current_price", 0)),
+                    "pnl": float(pos.get("pnl", 0)),
+                    "pnl_percent": float(pos.get("pnl_percent", 0)),
+                }
+                emit_position(payload)
+        except Exception as e:
+            emit_log(f"Emit positions failed: {e}", "WARN", "system")
 
     def _emit_account_metrics(self):
         """Read TWS account_summary_cache and emit account_metrics event (P0: continuous IBKR metrics)."""
@@ -759,13 +787,24 @@ class TradingEngine:
                             symbol_last[sym] = price
                         elif sym not in symbol_last:
                             symbol_last[sym] = None
-                    # Ordered list for event (symbols from config first, then any extra)
+                    # Build full tick payload (symbol, last, bid, ask, volume) for UI grid
+                    def _entry(sym, last_val):
+                        e = {"symbol": sym, "last": last_val}
+                        for d in stk_full:
+                            if d.get("symbol") == sym:
+                                bid, ask, vol = d.get("bid"), d.get("ask"), d.get("volume")
+                                if bid not in (-1, None): e["bid"] = round(float(bid), 2)
+                                if ask not in (-1, None): e["ask"] = round(float(ask), 2)
+                                if vol not in (-1, None): e["volume"] = int(vol)
+                                break
+                        return e
+                    # Ordered: config symbols first, then any extra from cache
                     for sym in symbols:
                         if sym in symbol_last and symbol_last[sym] is not None:
-                            stock_ticks.append({"symbol": sym, "last": symbol_last[sym]})
+                            stock_ticks.append(_entry(sym, symbol_last[sym]))
                     for sym, last in symbol_last.items():
                         if last is not None and sym not in symbols:
-                            stock_ticks.append({"symbol": sym, "last": last})
+                            stock_ticks.append(_entry(sym, last))
                     stock_ticks = stock_ticks[:15]
                 except Exception:
                     pass

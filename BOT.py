@@ -2047,6 +2047,13 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     sig_direction = dataEngulf[1]  # CALL or PUT
                     sig_strength = dataEngulf[3]    # strongBuy, heavyBuy, etc.
                     _emit_log(f"Signal detected: {tick.contract.symbol} → {sig_direction} ({sig_strength})", "INFO", "signal")
+                    _emit_signal(
+                        tick.contract.symbol,
+                        sig_direction,
+                        0.0,
+                        0.0,
+                        sig_strength or "signal",
+                    )
                     result = checkConditionsAndTrade((dataEngulf, dataStrike), tick)
                     logger.info(f"checkConditionsAndTrade: {result}")
                     if result == "orderPlaced":

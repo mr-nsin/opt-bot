@@ -20,6 +20,10 @@ pub struct DailyPnL {
     pub total: f64,
 }
 
+fn default_trade_status() -> String {
+    "open".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeRecord {
     pub id: i64,
@@ -32,6 +36,7 @@ pub struct TradeRecord {
     pub entry_price: f64,
     pub exit_price: Option<f64>,
     pub pnl: Option<f64>,
+    #[serde(default = "default_trade_status")]
     pub status: String,
     pub timestamp: String,
 }
