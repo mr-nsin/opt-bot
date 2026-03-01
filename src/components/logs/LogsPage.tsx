@@ -115,18 +115,18 @@ export const LogsPage = memo(function LogsPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
-            <Terminal className="h-3.5 w-3.5 text-muted-foreground/50" />
+          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <Terminal className="h-5 w-5 text-primary/80" />
             System Logs
           </h2>
-          <p className="text-[9px] text-muted-foreground/40">Trading engine and system log viewer</p>
+          <p className="text-xs text-muted-foreground/60">Trading engine and system log viewer</p>
         </div>
         <div className="flex gap-1.5">
-          <Button variant="outline" size="sm" onClick={() => setAutoScroll(!autoScroll)} className="h-7 text-[11px]">
+          <Button variant="outline" size="sm" onClick={() => setAutoScroll(!autoScroll)} className="h-8 text-xs">
             <ArrowDown className={cn("h-3 w-3 mr-1", autoScroll && "text-primary")} />
             Auto-scroll {autoScroll ? "ON" : "OFF"}
           </Button>
-          <Button variant="outline" size="sm" onClick={async () => { await logsApi.clear(); clearLogs(); }} className="h-7 text-[11px]">
+          <Button variant="outline" size="sm" onClick={async () => { await logsApi.clear(); clearLogs(); }} className="h-8 text-xs">
             <Trash2 className="h-3 w-3 mr-1" /> Clear
           </Button>
         </div>
@@ -176,7 +176,7 @@ export const LogsPage = memo(function LogsPage() {
             placeholder="Search logs…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-7 pl-7 pr-2.5 rounded-md border border-border/30 bg-muted/20 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring w-48"
+            className="h-8 pl-7 pr-2.5 rounded-xl border border-border/20 bg-muted/20 text-xs focus:outline-none focus:ring-1 focus:ring-ring w-48"
           />
         </div>
       </div>
@@ -228,29 +228,29 @@ export const LogsPage = memo(function LogsPage() {
                       style={{ height: ROW_HEIGHT, transform: `translateY(${virtualRow.start}px)` }}
                     >
                       {/* Row number */}
-                      <span className="text-muted-foreground/15 shrink-0 w-7 text-right tabular-nums text-[9px]">
+                      <span className="text-muted-foreground/40 shrink-0 w-7 text-right tabular-nums text-xs">
                         {virtualRow.index + 1}
                       </span>
 
                       {/* Timestamp */}
-                      <span className="text-muted-foreground/35 shrink-0 w-14 tabular-nums text-[9px]">
+                      <span className="text-muted-foreground/50 shrink-0 w-14 tabular-nums text-xs">
                         {formatTime(l.timestamp)}
                       </span>
 
                       {/* Level icon + label */}
                       <span className={cn("flex items-center gap-0.5 shrink-0 w-12", cfg.color)}>
                         <LevelIcon className="h-2.5 w-2.5" />
-                        <span className="font-semibold text-[9px]">{l.level}</span>
+                        <span className="font-semibold text-xs">{l.level}</span>
                       </span>
 
                       {/* Category icon + label */}
                       <span className={cn("flex items-center gap-0.5 shrink-0 w-14", catCfg.color)}>
                         <CatIcon className="h-2.5 w-2.5" />
-                        <span className="text-[9px] opacity-60">{catCfg.label}</span>
+                        <span className="text-xs opacity-70">{catCfg.label}</span>
                       </span>
 
                       {/* Message */}
-                      <span className="text-foreground/65 break-all flex-1 text-[10px] truncate">
+                      <span className="text-foreground/80 break-all flex-1 text-xs truncate">
                         {l.message}
                       </span>
                     </div>

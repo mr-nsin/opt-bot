@@ -69,13 +69,13 @@ export function SettingsPage() {
     <div className="space-y-2.5 max-w-3xl">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
-            <Monitor className="h-3.5 w-3.5 text-muted-foreground/60" />
+          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <Monitor className="h-5 w-5 text-primary/80" />
             Settings
           </h2>
-          <p className="text-[10px] text-muted-foreground/50">Application preferences and configuration</p>
+          <p className="text-sm text-muted-foreground/70">Application preferences and configuration</p>
         </div>
-        <Button size="sm" onClick={handleSave} disabled={saving} className="h-7 text-[11px]">
+        <Button size="sm" onClick={handleSave} disabled={saving} className="h-8 text-xs">
           {saved ? <><Check className="h-3 w-3" /> Saved</> : <><Save className="h-3 w-3" /> {saving ? "Saving…" : "Save All"}</>}
         </Button>
       </div>
@@ -124,8 +124,8 @@ export function SettingsPage() {
                   <Input
                     type="number"
                     className="w-20 h-8 text-xs"
-                    value={settings.font_size ?? 14}
-                    onChange={(e) => updateSettings({ font_size: parseInt(e.target.value, 10) || 14 })}
+                    value={settings.font_size ?? 16}
+                    onChange={(e) => updateSettings({ font_size: parseInt(e.target.value, 10) || 16 })}
                   />
                 </SettingRow>
               </CardContent>

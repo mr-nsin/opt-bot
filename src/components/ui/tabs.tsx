@@ -30,7 +30,7 @@ function TabsList({ className, children, ...props }: React.HTMLAttributes<HTMLDi
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-0.5 rounded-lg bg-muted/40 p-0.5 border border-border/20",
+        "inline-flex items-center gap-1 rounded-xl bg-muted/50 p-1.5 border border-border/30",
         className
       )}
       role="tablist"
@@ -55,11 +55,11 @@ function TabsTrigger({ value, className, children, ...props }: TabsTriggerProps)
       aria-selected={isActive}
       onClick={() => ctx.onValueChange(value)}
       className={cn(
-        "inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-[10px] font-medium transition-all",
+        "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition-all",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         isActive
-          ? "bg-card text-foreground shadow-sm border border-border/25"
-          : "text-muted-foreground/50 hover:text-foreground/60 hover:bg-card/40 border border-transparent"
+          ? "bg-primary text-primary-foreground shadow-md"
+          : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
       , className)}
       {...props}
     >
@@ -79,7 +79,7 @@ function TabsContent({ value, className, children, ...props }: TabsContentProps)
   return (
     <div
       role="tabpanel"
-      className={cn("mt-2 animate-fade-up", className)}
+      className={cn("mt-3", className)}
       {...props}
     >
       {children}

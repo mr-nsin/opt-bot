@@ -26,7 +26,7 @@ export const LiveStats = memo(function LiveStats() {
   const isStarting = status === "Starting";
 
   return (
-    <div className="grid grid-cols-3 md:grid-cols-6 gap-1.5">
+    <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
       <StatCard
         title="Daily P&L"
         value={dailyPnl.total}

@@ -82,18 +82,18 @@ export const PositionsPage = memo(function PositionsPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
-            <Briefcase className="h-3.5 w-3.5 text-muted-foreground/50" />
+          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <Briefcase className="h-5 w-5 text-primary/80" />
             Positions
           </h2>
-          <p className="text-[9px] text-muted-foreground/40">Active and closed positions</p>
+          <p className="text-xs text-muted-foreground/60">Active and closed positions</p>
         </div>
         <div className="flex gap-1.5">
-          <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-7 text-[11px]">
+          <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-8 text-xs">
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
           {positions.length > 0 && (
-            <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-7 text-[11px]">
+            <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-8 text-xs">
               <XCircle className="h-3 w-3 mr-1" /> Close All
             </Button>
           )}
@@ -134,11 +134,11 @@ export const PositionsPage = memo(function PositionsPage() {
       {/* Positions table */}
       <Card>
         <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">
-          <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/80 flex items-center gap-1.5">
             <Briefcase className="h-3 w-3" />
             Active Positions
           </CardTitle>
-          <Badge variant={positions.length > 0 ? "success" : "secondary"} className="text-[9px] h-4 px-1.5">
+          <Badge variant={positions.length > 0 ? "success" : "secondary"} className="text-xs h-5 px-2">
             {positions.length}
           </Badge>
         </CardHeader>
@@ -152,8 +152,8 @@ export const PositionsPage = memo(function PositionsPage() {
           ) : positions.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8">
               <Briefcase className="h-6 w-6 text-muted-foreground/10 mb-1.5" />
-              <p className="text-[11px] text-muted-foreground/50">No active positions</p>
-              <p className="text-[10px] text-muted-foreground/30 mt-0.5">
+              <p className="text-sm text-muted-foreground/70">No active positions</p>
+              <p className="text-xs text-muted-foreground/50 mt-0.5">
                 Positions appear when trades are executed
               </p>
             </div>
@@ -253,7 +253,7 @@ function MiniStat({
     <div className="rounded-md border border-border/25 bg-card p-2 card-elevated">
       <div className="flex items-center gap-1 mb-0.5">
         <Icon className={cn("h-2.5 w-2.5", iconColor)} />
-        <span className="text-[8px] font-semibold text-muted-foreground/40 uppercase tracking-[0.1em]">{label}</span>
+        <span className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-wider">{label}</span>
       </div>
       <p className={cn("text-sm font-bold font-mono tabular-nums", valueColor)}>{value}</p>
     </div>

@@ -147,7 +147,7 @@ impl Default for AppSettings {
         Self {
             theme: "dark".into(),
             trading_mode: "demo".into(),
-            font_size: 14,
+            font_size: 16,
             show_notifications: true,
             auto_start_trading: false,
             log_level: "info".into(),

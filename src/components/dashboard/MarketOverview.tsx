@@ -27,8 +27,8 @@ export const MarketOverview = memo(function MarketOverview() {
     return (
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-            <Activity className="h-3.5 w-3.5 text-cyan-500" />
+          <CardTitle className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
+            <Activity className="h-5 w-5 text-primary/80" />
             Market Overview
           </CardTitle>
         </CardHeader>
@@ -52,9 +52,9 @@ export const MarketOverview = memo(function MarketOverview() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
+        <CardTitle className="text-xl font-bold tracking-tight text-foreground flex items-center justify-between">
           <span className="flex items-center gap-2">
-            <Activity className="h-3.5 w-3.5 text-cyan-500" />
+            <Activity className="h-5 w-5 text-primary/80" />
             Market Overview
           </span>
           <Badge variant="success" className="text-2xs gap-1 animate-pulse">
@@ -80,8 +80,8 @@ export const MarketOverview = memo(function MarketOverview() {
               <div
                 key={tick.symbol}
                 className={cn(
-                  "flex flex-col p-2 rounded-lg border border-border/40 bg-muted/20",
-                  "hover:bg-muted/40 transition-colors"
+                  "flex flex-col p-3 rounded-xl border border-border/15 bg-muted/10",
+                  "hover:bg-muted/20 transition-colors"
                 )}
               >
                 <div className="flex items-center justify-between mb-1">

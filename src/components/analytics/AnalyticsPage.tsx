@@ -18,18 +18,18 @@ export const AnalyticsPage = memo(function AnalyticsPage() {
   const totalTrades = useTradingStore((s) => s.totalTrades);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold tracking-tight flex items-center gap-2">
-            <BarChart3 className="h-3.5 w-3.5 text-muted-foreground/50" />
+          <h2 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-primary/80" />
             Analytics
           </h2>
-          <p className="text-[9px] text-muted-foreground/40">Performance metrics and trade analysis</p>
+          <p className="text-sm text-muted-foreground">Performance metrics and trade analysis</p>
         </div>
         {totalTrades > 0 && (
-          <div className="text-[9px] text-muted-foreground/30 font-mono tabular-nums">
+          <div className="text-sm text-muted-foreground font-mono tabular-nums">
             {totalTrades} trade{totalTrades !== 1 ? "s" : ""} today
           </div>
         )}

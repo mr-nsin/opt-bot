@@ -49,8 +49,8 @@ export const SignalActivity = memo(function SignalActivity() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
-          <Zap className="h-3 w-3 text-violet-400/70" />
+        <CardTitle className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
+          <Zap className="h-5 w-5 text-primary/80" />
           Signal Activity
         </CardTitle>
       </CardHeader>
@@ -58,10 +58,10 @@ export const SignalActivity = memo(function SignalActivity() {
         {signals.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-5 text-center">
             <BarChart3 className="h-6 w-6 text-muted-foreground/15 mb-1.5" />
-            <p className="text-[11px] text-muted-foreground/50">
+            <p className="text-2xs text-muted-foreground/70">
               No signals detected yet
             </p>
-            <p className="text-[9px] text-muted-foreground/30 mt-0.5">
+            <p className="text-2xs text-muted-foreground/50 mt-0.5">
               Signals appear when opportunities are detected
             </p>
           </div>
@@ -95,28 +95,28 @@ export const SignalActivity = memo(function SignalActivity() {
                 {/* Signal info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <span className="font-mono font-bold text-[11px]">
+                    <span className="font-mono font-bold text-xs">
                       {sig.symbol}
                     </span>
                     <Badge
                       variant={isCall(sig.direction) ? "success" : "danger"}
-                      className="text-[9px] px-1 py-0 h-3.5"
+                      className="text-xs px-1.5 py-0 h-4"
                     >
                       {sig.direction.toUpperCase()}
                     </Badge>
                     {sig.strength && sig.strength !== "executed" && (
-                      <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5">
+                      <Badge variant="outline" className="text-xs px-1.5 py-0 h-4">
                         {sig.strength}
                       </Badge>
                     )}
                     {sig.strength === "executed" && (
-                      <Badge variant="default" className="text-[9px] px-1 py-0 h-3.5 bg-blue-500/10 text-blue-500 border-transparent">
+                      <Badge variant="default" className="text-xs px-1.5 py-0 h-4 bg-blue-500/10 text-blue-500 border-transparent">
                         Filled
                       </Badge>
                     )}
                   </div>
                   {sig.indicator && (
-                    <span className="text-[9px] text-muted-foreground/50">
+                    <span className="text-xs text-muted-foreground/60">
                       via {sig.indicator}
                     </span>
                   )}
@@ -124,7 +124,7 @@ export const SignalActivity = memo(function SignalActivity() {
 
                 {/* Timestamp */}
                 {sig.timestamp && (
-                  <span className="text-[9px] text-muted-foreground/40 font-mono tabular-nums shrink-0">
+                  <span className="text-xs text-muted-foreground/50 font-mono tabular-nums shrink-0">
                     {new Date(sig.timestamp).toLocaleTimeString("en-US", {
                       hour: "2-digit",
                       minute: "2-digit",

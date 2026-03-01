@@ -77,8 +77,16 @@ function AppContent() {
       }
 
       try {
-        const loadedSettings = await config.getSettings();
-        setSettings(loadedSettings);
+        const loaded = (await config.getSettings()) as Record<string, unknown> | null;
+        const loadedSettings = loaded ?? {};
+        // Default font_size to 16; migrate old default 14 -> 16
+        const fontSize = loadedSettings.font_size as number | undefined;
+        const resolvedFontSize = fontSize === 14 ? 16 : (fontSize ?? 16);
+        const settingsToApply = { ...loadedSettings, font_size: resolvedFontSize };
+        setSettings(settingsToApply as Parameters<typeof setSettings>[0]);
+        if (resolvedFontSize === 16 && fontSize === 14) {
+          config.saveSettings(settingsToApply).catch(() => {});
+        }
       } catch (err) {
         console.warn("Failed to load settings, using defaults:", err);
       }

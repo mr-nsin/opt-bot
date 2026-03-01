@@ -72,7 +72,7 @@ export const ActivityLog = memo(function ActivityLog() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+        <CardTitle className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
           <Terminal className="h-3.5 w-3.5" /> Activity
         </CardTitle>
         <div className="flex items-center gap-1.5">

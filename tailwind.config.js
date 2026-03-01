@@ -75,16 +75,19 @@ export default {
       },
       borderRadius: {
         xl: "calc(var(--radius) + 4px)",
-        lg: "var(--radius)",
+        lg: "var(--radius-lg)",
+        "2xl": "var(--radius-xl)",
+        DEFAULT: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        sans: ["Plus Jakarta Sans", "system-ui", "-apple-system", "sans-serif"],
         mono: ["JetBrains Mono", "SF Mono", "Fira Code", "monospace"],
       },
       fontSize: {
-        "2xs": ["0.625rem", { lineHeight: "0.875rem" }],
+        "2xs": ["0.75rem", { lineHeight: "1.25rem" }],
+        "3xs": ["0.8125rem", { lineHeight: "1.25rem" }],
       },
       boxShadow: {
         card: "0 1px 2px 0 rgb(0 0 0 / 0.03), 0 1px 3px 0 rgb(0 0 0 / 0.06)",
@@ -96,6 +99,8 @@ export default {
         "glow-loss": "0 0 12px -2px hsl(0 84% 60% / 0.15)",
         "glow-primary": "0 0 12px -2px hsl(217 92% 65% / 0.12)",
         panel: "0 0 0 1px hsl(var(--border) / 0.3), 0 1px 3px hsl(0 0% 0% / 0.06)",
+        "card-soft": "0 1px 3px rgba(0, 0, 0, 0.08)",
+        "card-soft-hover": "0 4px 12px -2px rgba(0, 0, 0, 0.06)",
       },
       keyframes: {
         "pulse-green": {

@@ -25,32 +25,32 @@ export function ConnectionConfig() {
       <CardContent className="space-y-3">
         <div className="grid grid-cols-3 gap-2.5">
           <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">IP</label>
+            <label className="text-xs font-medium text-muted-foreground">IP</label>
             <Input value={tradingConfig.ip} onChange={(e) => updateTradingConfig({ ip: e.target.value })} placeholder="127.0.0.1" />
           </div>
           <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Port</label>
+            <label className="text-xs font-medium text-muted-foreground">Port</label>
             <Input type="number" value={tradingConfig.port} onChange={(e) => updateTradingConfig({ port: parseInt(e.target.value) })} />
           </div>
           <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Client ID</label>
+            <label className="text-xs font-medium text-muted-foreground">Client ID</label>
             <Input type="number" value={tradingConfig.client_id} onChange={(e) => updateTradingConfig({ client_id: parseInt(e.target.value) })} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2.5">
           <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Account</label>
+            <label className="text-xs font-medium text-muted-foreground">Account</label>
             <Input value={tradingConfig.account_id} onChange={(e) => updateTradingConfig({ account_id: e.target.value })} placeholder="U1234567" />
           </div>
           <div className="space-y-1">
-            <label className="text-2xs font-medium text-muted-foreground">Order Expiry (s)</label>
+            <label className="text-xs font-medium text-muted-foreground">Order Expiry (s)</label>
             <Input type="number" value={tradingConfig.order_expiry_timer} onChange={(e) => updateTradingConfig({ order_expiry_timer: parseInt(e.target.value) })} />
           </div>
         </div>
         <div className="flex items-center justify-between pt-1">
           <div>
             <p className="text-xs font-medium">Transmit Orders</p>
-            <p className="text-2xs text-muted-foreground">Send orders to market</p>
+            <p className="text-xs text-muted-foreground">Send orders to market</p>
           </div>
           <Switch checked={tradingConfig.order_transmit} onCheckedChange={(c) => updateTradingConfig({ order_transmit: c })} />
         </div>

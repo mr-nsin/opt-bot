@@ -22,8 +22,13 @@ const TAG_LABELS: Record<string, string> = {
   EquityWithLoanValue: "Equity w/ Loan",
 };
 
-// Primary tags shown prominently
-const PRIMARY_TAGS = ["NetLiquidation", "BuyingPower", "AvailableFunds", "EquityWithLoanValue"];
+// Top grid: 4 cols × 2 rows — each column has (row1, row2) so Total Cash aligns under Net Liquidation
+const TOP_GRID_ORDER: [string, string][] = [
+  ["NetLiquidation", "TotalCashValue"],
+  ["EquityWithLoanValue", "GrossPositionValue"],
+  ["BuyingPower", "ExcessLiquidity"],
+  ["AvailableFunds", "MaintMarginReq"],
+];
 
 // P&L related tags
 const PNL_TAGS = ["RealizedPnL", "UnrealizedPnL"];
@@ -89,19 +94,20 @@ export function AccountSummary() {
       }))
     : [];
 
-  const primaryEntries = entries.filter((e) => PRIMARY_TAGS.includes(e.tag));
+  const entryMap = Object.fromEntries(entries.map((e) => [e.tag, e]));
   const pnlEntries = entries.filter((e) => PNL_TAGS.includes(e.tag));
-  const secondaryEntries = entries.filter(
-    (e) => !PRIMARY_TAGS.includes(e.tag) && !PNL_TAGS.includes(e.tag)
+  const restTags = TAG_ORDER.filter(
+    (tag) => !TOP_GRID_ORDER.flat().includes(tag) && !PNL_TAGS.includes(tag)
   );
+  const restEntries = restTags.map((tag) => entryMap[tag]).filter(Boolean);
 
   return (
-    <Card>
-      <CardHeader className="py-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
-          <Wallet className="h-3 w-3 text-primary/60" />
+    <Card className="min-w-0 overflow-hidden h-full flex flex-col">
+      <CardHeader className="py-2 flex flex-row items-center justify-between shrink-0">
+        <CardTitle className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
+          <Wallet className="h-5 w-5 text-primary/80" />
           Account Summary
-          <Badge variant="outline" className="text-[9px] font-normal h-4 px-1">IBKR</Badge>
+          <Badge variant="outline" className="text-xs font-medium h-5 px-1.5">IBKR</Badge>
         </CardTitle>
         <div className="flex items-center gap-2">
           {connectedToTws && (
@@ -115,10 +121,9 @@ export function AccountSummary() {
           )}
         </div>
       </CardHeader>
-      <CardContent className="pt-0">
+      <CardContent className="pt-0 flex-1 flex flex-col min-h-0">
         {entries.length === 0 ? (
           loading ? (
-            /* Skeleton loading state */
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-3">
               {Array.from({ length: 8 }).map((_, i) => (
                 <div key={i} className="space-y-1">
@@ -128,43 +133,56 @@ export function AccountSummary() {
               ))}
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground py-4 text-center">
+            <p className="text-sm text-muted-foreground/90 py-6 text-center">
               Connect to TWS and start trading to see live account metrics (updates every 5s).
             </p>
           )
         ) : (
-          <div className="space-y-2">
-            {/* Primary metrics */}
-            {primaryEntries.length > 0 && (
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5">
-                {primaryEntries.map(({ tag, label, value }) => (
-                  <div key={tag} className="rounded-md bg-muted/20 border border-border/30 p-2">
-                    <span className="text-[9px] text-muted-foreground/50 block mb-0.5">{label}</span>
-                    <span className="font-mono font-bold tabular-nums text-xs">
-                      {formatCurrency(value)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
+          <div className="space-y-2 flex-1 flex flex-col min-h-0">
+            {/* Top grid: 4 columns × 2 rows — Total Cash directly under Net Liquidation */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+              {TOP_GRID_ORDER.map(([topTag, bottomTag]) => (
+                <div key={`${topTag}-${bottomTag}`} className="flex flex-col gap-2 min-w-0">
+                  {entryMap[topTag] && (
+                    <div className="min-w-0 rounded-xl bg-muted/20 border border-border/15 p-3 overflow-hidden">
+                      <span className="text-sm font-medium text-muted-foreground block mb-0.5 truncate">
+                        {TAG_LABELS[topTag] ?? topTag}
+                      </span>
+                      <span className="font-mono font-bold tabular-nums text-lg block truncate" title={formatCurrency(entryMap[topTag].value)}>
+                        {formatCurrency(entryMap[topTag].value)}
+                      </span>
+                    </div>
+                  )}
+                  {entryMap[bottomTag] && (
+                    <div className="min-w-0 rounded-xl bg-muted/20 border border-border/15 p-3 overflow-hidden">
+                      <span className="text-sm font-medium text-muted-foreground block mb-0.5 truncate">
+                        {TAG_LABELS[bottomTag] ?? bottomTag}
+                      </span>
+                      <span className="font-mono font-bold tabular-nums text-lg block truncate" title={formatCurrency(entryMap[bottomTag].value)}>
+                        {formatCurrency(entryMap[bottomTag].value)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
 
-            {/* P&L entries with color coding */}
             {pnlEntries.length > 0 && (
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-2 gap-2">
                 {pnlEntries.map(({ tag, label, value }) => (
-                  <div key={tag} className="flex items-center gap-2 rounded-md bg-muted/20 border border-border/30 p-2">
+                  <div key={tag} className="flex items-center gap-2 min-w-0 rounded-xl bg-muted/20 border border-border/15 p-3 overflow-hidden">
                     {value >= 0 ? (
-                      <TrendingUp className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                      <TrendingUp className="h-4 w-4 text-emerald-500 shrink-0" />
                     ) : (
-                      <TrendingDown className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                      <TrendingDown className="h-4 w-4 text-red-500 shrink-0" />
                     )}
-                    <div>
-                      <span className="text-[9px] text-muted-foreground/50 block">{label}</span>
+                    <div className="min-w-0 flex-1 overflow-hidden">
+                      <span className="text-sm font-medium text-muted-foreground block truncate">{label}</span>
                       <span className={cn(
-                        "font-mono font-bold tabular-nums text-xs",
+                        "font-mono font-bold tabular-nums text-lg block truncate",
                         pnlColor(value),
                         value > 0 ? "metric-profit" : value < 0 ? "metric-loss" : ""
-                      )}>
+                      )} title={formatCurrency(value)}>
                         {formatCurrency(value)}
                       </span>
                     </div>
@@ -173,13 +191,12 @@ export function AccountSummary() {
               </div>
             )}
 
-            {/* Secondary metrics - compact */}
-            {secondaryEntries.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 gap-y-1.5 text-[10px] pt-1.5 border-t border-border/20">
-                {secondaryEntries.map(({ tag, label, value }) => (
-                  <div key={tag} className="flex flex-col">
-                    <span className="text-muted-foreground/50 text-[9px]">{label}</span>
-                    <span className="font-mono font-semibold tabular-nums text-[11px]">
+            {restEntries.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 gap-y-2 text-xs pt-3 border-t border-border/15">
+                {restEntries.map(({ tag, label, value }) => (
+                  <div key={tag} className="flex flex-col min-w-0 overflow-hidden">
+                    <span className="text-muted-foreground text-sm font-medium truncate">{label}</span>
+                    <span className="font-mono font-semibold tabular-nums text-sm truncate" title={formatCurrency(value)}>
                       {formatCurrency(value)}
                     </span>
                   </div>

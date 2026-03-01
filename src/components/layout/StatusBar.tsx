@@ -27,7 +27,6 @@ export const StatusBar = memo(function StatusBar() {
   const isStarting = status === "Starting";
   const isError = typeof status === "object" && "Error" in status;
 
-  // Uptime
   const startTimeRef = useRef<number | null>(null);
   const [uptime, setUptime] = useState("");
 
@@ -54,7 +53,6 @@ export const StatusBar = memo(function StatusBar() {
   const feedSymbols = (dataStatus as Record<string, unknown>)?.subscribed_symbols;
   const feedCount = Array.isArray(feedSymbols) ? feedSymbols.length : 0;
 
-  // NY clock
   const [nyClock, setNyClock] = useState("");
   useEffect(() => {
     const tick = () => {
@@ -74,9 +72,9 @@ export const StatusBar = memo(function StatusBar() {
   }, []);
 
   return (
-    <div className="h-5 bg-card/70 backdrop-blur-sm border-t border-border/15 flex items-center justify-between px-1 text-[8px] shrink-0 select-none">
+    <div className="h-8 bg-card/80 backdrop-blur-sm border-t border-border/10 flex items-center justify-between px-3 text-xs shrink-0 select-none">
       {/* Left */}
-      <div className="flex items-center">
+      <div className="flex items-center gap-0.5">
         <SBItem
           icon={connectedToTws ? Wifi : WifiOff}
           label={connectedToTws ? "TWS" : "Disconnected"}
@@ -116,9 +114,9 @@ export const StatusBar = memo(function StatusBar() {
 
       {/* Center */}
       {isRunning && (
-        <div className="flex items-center gap-2.5 text-muted-foreground/50">
-          <span className="flex items-center gap-0.5">
-            <Zap className="h-2 w-2" />
+        <div className="flex items-center gap-3 text-muted-foreground/50">
+          <span className="flex items-center gap-1">
+            <Zap className="h-2.5 w-2.5" />
             <span className="font-mono tabular-nums">{totalTrades} trades</span>
           </span>
           <span className="text-border/30">·</span>
@@ -136,10 +134,10 @@ export const StatusBar = memo(function StatusBar() {
       {/* Right */}
       <div className="flex items-center">
         {uptime && <SBItem icon={Cpu} label={uptime} color="text-muted-foreground/50" />}
-        <div className="flex items-center gap-0.5 px-1.5 h-full text-muted-foreground/40">
-          <Clock className="h-2 w-2" />
+        <div className="flex items-center gap-1 px-2 h-full text-muted-foreground/45">
+          <Clock className="h-2.5 w-2.5" />
           <span className="font-mono tabular-nums">{nyClock}</span>
-          <span className="text-muted-foreground/20">ET</span>
+          <span className="text-muted-foreground/25 ml-0.5">ET</span>
         </div>
       </div>
     </div>
@@ -160,8 +158,8 @@ function SBItem({
   pulse?: boolean;
 }) {
   return (
-    <div className={cn("flex items-center gap-0.5 px-1 h-5 transition-colors cursor-default", bg)}>
-      <Icon className={cn("h-2 w-2", color, pulse && "animate-pulse")} />
+    <div className={cn("flex items-center gap-1.5 px-2 h-8 transition-colors cursor-default rounded", bg)}>
+      <Icon className={cn("h-3.5 w-3.5", color, pulse && "animate-pulse")} />
       <span className={cn("font-medium", color)}>{label}</span>
     </div>
   );

@@ -1,17 +1,16 @@
+import { memo } from "react";
 import { Outlet } from "react-router-dom";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
-import { MarketTicker } from "./MarketTicker";
 import { StatusBar } from "./StatusBar";
 
-export function AppShell() {
+function AppShellInner() {
   return (
     <div className="h-screen flex overflow-hidden bg-background">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
         <Header />
-        <MarketTicker />
-        <main className="flex-1 overflow-auto p-2.5">
+        <main className="flex-1 overflow-auto p-4 min-h-0 overflow-x-hidden">
           <Outlet />
         </main>
         <StatusBar />
@@ -19,3 +18,5 @@ export function AppShell() {
     </div>
   );
 }
+
+export const AppShell = memo(AppShellInner);

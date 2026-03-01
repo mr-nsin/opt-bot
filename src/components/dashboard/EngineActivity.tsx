@@ -165,7 +165,7 @@ export const EngineActivity = memo(function EngineActivity() {
     <Card className="h-full">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 flex items-center gap-1.5">
+          <CardTitle className="text-xl font-bold tracking-tight text-foreground flex items-center gap-1.5">
             <Activity className="h-3 w-3 text-cyan-400/70" />
             Engine Activity
             {isRunning && isSignalScanning && (
@@ -211,10 +211,10 @@ export const EngineActivity = memo(function EngineActivity() {
         {tradingLogs.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-6 text-center px-4">
             <Radio className="h-6 w-6 text-muted-foreground/15 mb-1.5" />
-            <p className="text-[11px] text-muted-foreground/50">
+            <p className="text-sm text-muted-foreground/70">
               {isRunning ? "Waiting for activity…" : "Engine not running"}
             </p>
-            <p className="text-[9px] text-muted-foreground/30 mt-0.5">
+            <p className="text-xs text-muted-foreground/50 mt-0.5">
               {isRunning
                 ? "Signal scans, orders, and risk alerts appear here"
                 : "Start trading to see engine activity"}
@@ -223,7 +223,7 @@ export const EngineActivity = memo(function EngineActivity() {
         ) : (
           <div
             ref={feedRef}
-            className="max-h-[300px] overflow-y-auto font-mono text-[10px]"
+            className="max-h-[300px] overflow-y-auto font-mono text-xs"
           >
             {tradingLogs.map((l, i) => {
               const dec = getLogDecoration(l.message, l.category?.toLowerCase() || "", l.level);
@@ -249,7 +249,7 @@ export const EngineActivity = memo(function EngineActivity() {
                   <div className="flex-1 min-w-0 truncate">
                     <span className="flex items-center gap-1">
                       {symbol && (
-                        <span className="font-bold text-foreground/85 text-[10px]">
+                        <span className="font-bold text-foreground/85 text-xs">
                           {symbol}
                         </span>
                       )}
@@ -267,7 +267,7 @@ export const EngineActivity = memo(function EngineActivity() {
                   </div>
 
                   {/* Timestamp */}
-                  <span className="text-muted-foreground/25 shrink-0 tabular-nums text-[9px]">
+                  <span className="text-muted-foreground/40 shrink-0 tabular-nums text-xs">
                     {formatTs(l.timestamp)}
                   </span>
                 </div>

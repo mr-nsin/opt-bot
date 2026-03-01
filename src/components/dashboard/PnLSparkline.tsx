@@ -76,15 +76,18 @@ export const PnLSparkline = memo(function PnLSparkline() {
 
   return (
     <Card className="h-full">
-      <CardHeader className="pb-0 pt-2.5 px-3">
+      <CardHeader className="pb-0 pt-4 px-4">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-[9px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/50 flex items-center gap-1.5">
-            <Activity className="h-2.5 w-2.5 text-primary/50" />
-            Intraday P&L
-          </CardTitle>
+          <div>
+            <p className="text-sm font-medium text-muted-foreground mb-0.5">All Assets</p>
+            <CardTitle className="text-2xl font-bold tracking-tight text-foreground flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary/80" />
+              My Balance
+            </CardTitle>
+          </div>
           <div className="flex items-center gap-2">
             {isRunning && (
-              <Badge variant="outline" className="text-[9px] gap-1 h-4 px-1.5">
+              <Badge variant="outline" className="text-xs gap-1 h-5 px-2">
                 <span className="h-1 w-1 rounded-full bg-emerald-500 live-dot" />
                 LIVE
               </Badge>
@@ -93,7 +96,7 @@ export const PnLSparkline = memo(function PnLSparkline() {
         </div>
 
         {/* Current P&L summary */}
-        <div className="flex items-center gap-2 mt-0.5">
+        <div className="flex flex-wrap items-baseline gap-2 mt-2">
           <div className="flex items-center gap-1">
             {isPositive ? (
               <TrendingUp className="h-3 w-3 text-emerald-400" />
@@ -102,7 +105,7 @@ export const PnLSparkline = memo(function PnLSparkline() {
             )}
             <span
               className={cn(
-                "text-base font-bold font-mono tabular-nums",
+                "text-3xl font-bold font-mono tabular-nums",
                 pnlColor(currentPnl),
                 isPositive ? "metric-profit" : currentPnl < 0 ? "metric-loss" : ""
               )}
@@ -111,7 +114,7 @@ export const PnLSparkline = memo(function PnLSparkline() {
             </span>
           </div>
           {hasData && (
-            <div className="flex items-center gap-2 text-[9px] text-muted-foreground/50">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>
                 H <span className="font-mono tabular-nums text-emerald-500/60">{formatCurrency(maxPnl)}</span>
               </span>
@@ -121,14 +124,17 @@ export const PnLSparkline = memo(function PnLSparkline() {
             </div>
           )}
         </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          {hasData ? "Session P&L · Updates in real-time" : isRunning ? "Collecting data…" : "Start trading to see chart"}
+        </p>
       </CardHeader>
 
       <CardContent className="pb-2 px-2">
         {!hasData ? (
           <div className="h-[130px] flex items-center justify-center">
             <div className="text-center">
-              <Activity className="h-5 w-5 text-muted-foreground/10 mx-auto mb-1" />
-              <p className="text-[10px] text-muted-foreground/30">
+              <Activity className="h-6 w-6 text-muted-foreground/25 mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground/75">
                 {isRunning ? "Collecting P&L data…" : "Start trading to see P&L chart"}
               </p>
             </div>

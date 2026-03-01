@@ -15,6 +15,7 @@ export function TradingControls() {
   const [error, setError] = useState<string | null>(null);
   const [startDurationSec, setStartDurationSec] = useState<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
+  const emergencyStopPendingRef = useRef(false);
 
   const isStarting = status === "Starting";
   const isStopping = status === "Stopping";
@@ -45,15 +46,23 @@ export function TradingControls() {
   };
 
   const handleEmergencyStop = async () => {
+    if (emergencyStopPendingRef.current) return;
+    emergencyStopPendingRef.current = true;
     setShowEmergencyConfirm(false);
-    try { await emergencyStop(); } catch (err) { setError(String(err)); }
+    try {
+      await emergencyStop();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      emergencyStopPendingRef.current = false;
+    }
   };
 
   return (
     <>
       <Card className="h-full flex flex-col">
         <CardHeader className="pb-1.5">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/60">
+          <CardTitle className="text-2xl font-bold tracking-tight text-foreground">
             Controls
           </CardTitle>
         </CardHeader>
@@ -61,7 +70,7 @@ export function TradingControls() {
           <Button
             onClick={handleStart}
             disabled={!canStart || isStarting}
-            className="w-full h-9 text-xs font-medium"
+            className="w-full h-10 text-sm font-semibold"
             variant="success"
             title={!tradingConfig ? "Load config first (open Dashboard or refresh)" : undefined}
           >
@@ -72,7 +81,7 @@ export function TradingControls() {
             )}
           </Button>
           {startDurationSec != null && isRunning && (
-            <p className="text-[11px] text-muted-foreground/60 text-center">
+            <p className="text-sm text-muted-foreground text-center">
               Started in {startDurationSec}s
             </p>
           )}
@@ -80,7 +89,7 @@ export function TradingControls() {
           <Button
             onClick={handleStop}
             disabled={!isRunning || isStopping}
-            className="w-full h-9 text-xs font-medium"
+            className="w-full h-10 text-sm font-semibold"
             variant="outline"
           >
             {isStopping ? (
@@ -93,7 +102,7 @@ export function TradingControls() {
           <Button
             onClick={() => setShowEmergencyConfirm(true)}
             variant="destructive"
-            className="w-full h-9 text-xs font-medium"
+            className="w-full h-10 text-sm font-semibold"
           >
             <AlertTriangle className="h-4 w-4" /> Emergency Stop
           </Button>
@@ -102,14 +111,14 @@ export function TradingControls() {
 
           <div className="pt-2 mt-auto border-t border-border/30">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] text-muted-foreground/60">Status</span>
+              <span className="text-xs font-semibold text-foreground/80">Status</span>
               <div className="flex items-center gap-1.5">
                 <span className={cn(
-                  "h-1.5 w-1.5 rounded-full",
+                  "h-2 w-2 rounded-full",
                   isRunning ? "bg-emerald-500 live-dot" : isIdle ? "bg-muted-foreground/30" : "bg-amber-500"
                 )} />
                 <span className={cn(
-                  "text-[11px] font-medium",
+                  "text-xs font-semibold",
                   isRunning && "text-emerald-500",
                   isIdle && "text-muted-foreground/50",
                   typeof status === "object" && "text-red-500"
@@ -121,7 +130,7 @@ export function TradingControls() {
           </div>
 
           {error && (
-            <p className="text-[11px] text-red-500 bg-red-500/10 rounded-md p-2 border border-red-500/20">
+            <p className="text-xs text-red-500 bg-red-500/10 rounded-lg p-2 border border-red-500/20">
               {error}
             </p>
           )}

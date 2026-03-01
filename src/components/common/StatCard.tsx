@@ -53,7 +53,7 @@ export const StatCard = memo(function StatCard({
 
   if (loading) {
     return (
-      <div className={cn("rounded-lg border border-border/30 bg-card p-2.5 card-elevated", className)}>
+      <div className={cn("rounded-2xl border border-border/20 bg-card p-3 shadow-sm", className)}>
         <div className="flex items-start justify-between mb-1">
           <Skeleton className="h-2 w-12" />
           <Skeleton className="h-5 w-5 rounded" />
@@ -67,33 +67,33 @@ export const StatCard = memo(function StatCard({
   return (
     <div
       className={cn(
-        "rounded-lg border border-border/30 bg-card p-2.5 group hover:border-border/50 transition-all duration-200 card-elevated",
+        "rounded-2xl border border-border/15 bg-card p-3 group hover:border-border/20 transition-colors duration-150 shadow-card-soft",
         className
       )}
       title={info}
     >
       <div className="flex items-start justify-between mb-0.5">
-        <p className="text-[9px] font-semibold text-muted-foreground/50 uppercase tracking-[0.08em]">
+        <p className="text-sm font-semibold text-foreground/90 uppercase tracking-wider">
           {title}
         </p>
         {Icon && (
           <div
             className={cn(
-              "h-5 w-5 rounded flex items-center justify-center",
+              "h-7 w-7 rounded-xl flex items-center justify-center shrink-0",
               trend === "up"
-                ? "bg-emerald-500/8 text-emerald-500"
+                ? "bg-emerald-500/10 text-emerald-500"
                 : trend === "down"
-                  ? "bg-red-500/8 text-red-500"
-                  : "bg-muted/50 text-muted-foreground/40"
+                  ? "bg-red-500/10 text-red-500"
+                  : "bg-muted/50 text-muted-foreground/60"
             )}
           >
-            <Icon className="h-2.5 w-2.5" />
+            <Icon className="h-3.5 w-3.5" />
           </div>
         )}
       </div>
       <p
         className={cn(
-          "text-base font-bold font-mono tabular-nums tracking-tight rounded-sm px-0.5 transition-colors leading-tight",
+          "text-xl font-bold font-mono tabular-nums tracking-tight rounded-sm px-0.5 transition-colors leading-tight",
           valueColor,
           flashClass,
           isCurrency && typeof value === "number" && value > 0 && "metric-profit",
@@ -103,7 +103,7 @@ export const StatCard = memo(function StatCard({
         {displayValue}
       </p>
       {subtitle && (
-        <p className="text-[9px] text-muted-foreground/40 mt-0.5 font-medium">{subtitle}</p>
+        <p className="text-sm text-muted-foreground mt-0.5 font-medium">{subtitle}</p>
       )}
     </div>
   );
