@@ -43,11 +43,12 @@ export const positions = {
   closeAll: () => invoke<string>("close_all_positions"),
 };
 
-/** License: validate, getStatus, activate(key, email), deactivate, getHardwareId */
+/** License: validate, getStatus, activate(key, email), deactivate, getHardwareId, getLicenseInfo */
 export const license = {
   validate: () => invoke<unknown>("validate_license"),
   getStatus: () => invoke<unknown>("get_license_status"),
   activate: (key: string, email: string) => invoke<unknown>("activate_license", { key, email }),
   deactivate: () => invoke<void>("deactivate_license"),
   getHardwareId: () => invoke<string>("get_hardware_id"),
+  getLicenseInfo: () => invoke<{ email: string; license_key: string } | null>("get_license_info"),
 };

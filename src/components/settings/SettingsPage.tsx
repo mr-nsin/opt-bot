@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useConfigStore } from "@/stores/configStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useLicense } from "@/hooks/useLicense";
-import { config as configApi, trading as tradingApi } from "@/lib/tauri-commands";
+import { config as configApi, trading as tradingApi, license as licenseApi } from "@/lib/tauri-commands";
 import { useTauriEvent } from "@/hooks/useTauri";
 import {
   Save,
@@ -19,7 +19,6 @@ import {
   Bell,
   Palette,
   Zap,
-  KeyRound,
   Check,
   LayoutGrid,
   FileJson,
@@ -45,15 +44,24 @@ const SHORTCUTS = [
 export function SettingsPage() {
   const { settings, updateSettings, tradingConfig } = useConfigStore();
   const { isDark, toggleTheme } = useTheme();
-  const { licenseStatus, isLicensed, activateLicense, deactivateLicense } = useLicense();
+  const { licenseStatus, isLicensed, activateLicense } = useLicense();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [settingsFile, setSettingsFile] = useState<Record<string, unknown> | null>(null);
+  const [licenseInfo, setLicenseInfo] = useState<{ email: string; license_key: string } | null>(null);
   const [activeTab, setActiveTab] = useState("general");
 
   useEffect(() => {
     configApi.getSettingsFile().then(setSettingsFile).catch(() => setSettingsFile(null));
   }, []);
+
+  useEffect(() => {
+    if (isLicensed) {
+      licenseApi.getLicenseInfo().then((info) => setLicenseInfo(info ?? null)).catch(() => setLicenseInfo(null));
+    } else {
+      setLicenseInfo(null);
+    }
+  }, [isLicensed]);
 
   const handleSave = async () => {
     if (!tradingConfig) return;
@@ -268,10 +276,14 @@ export function SettingsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               {licenseStatus ? <LicenseStatus status={licenseStatus} /> : null}
-              {!isLicensed && <><Separator /><LicenseInput onActivate={activateLicense} /></>}
-              {isLicensed && (
-                <><Separator /><Button variant="outline" size="sm" onClick={deactivateLicense} className="text-red-500 hover:bg-red-500/10"><KeyRound className="h-3 w-3 mr-1.5" /> Deactivate</Button></>
+              {isLicensed && licenseInfo && (
+                <div className="rounded-lg bg-muted/30 p-3 space-y-2 text-sm">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Registered License</p>
+                  <p><span className="text-muted-foreground">Email:</span> <span className="font-mono">{licenseInfo.email}</span></p>
+                  <p><span className="text-muted-foreground">License:</span> <code className="font-mono text-xs tracking-wider">{licenseInfo.license_key}</code></p>
+                </div>
               )}
+              {!isLicensed && <><Separator /><LicenseInput onActivate={activateLicense} /></>}
             </CardContent>
           </Card>
         </TabsContent>

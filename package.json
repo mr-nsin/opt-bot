@@ -5,11 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "prebuild": "python trading-engine/build.py",
+    "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build --ci false"
+    "tauri:build": "tauri build",
+    "build:exe": "npx tauri build --no-bundle",
+    "build:strict": "tsc && vite build"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.18",

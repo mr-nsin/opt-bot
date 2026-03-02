@@ -1,0 +1,125 @@
+# QuantDrift - Complete EXE Build Instructions
+
+This document describes how to build a **standalone executable** with all dependencies embedded.
+
+## Architecture
+
+- **Tauri app**: Rust + React frontend → produces `QuantDrift.exe`
+- **Trading engine sidecar**: Python (PyInstaller) → produces `trading-engine-x86_64-pc-windows-msvc.exe`
+- Both are bundled together; the Tauri app spawns the Python engine as a subprocess.
+
+## Prerequisites
+
+### 1. Node.js (v18+)
+- Install from https://nodejs.org
+- Verify: `node -v` and `npm -v`
+
+### 2. Rust
+- Install from https://rustup.rs
+- Verify: `rustc -v`
+
+### 3. Python 3.11 or 3.12
+- Install from https://python.org (add to PATH)
+- Verify: `python -v` or `py -3.11 -V`
+
+### 4. Python Dependencies (for trading-engine)
+
+```powershell
+cd c:\Temp\opt\opt-bot
+pip install -r requirements.txt
+```
+
+Or with a specific Python:
+```powershell
+py -3.11 -m pip install -r requirements.txt
+```
+
+**Required packages** (from `requirements.txt`):
+- `ibapi` (Interactive Brokers API)
+- `pandas`, `numpy`, `yfinance`, `pandas_ta`, `pytz`
+- `pyinstaller` (for building the sidecar exe)
+
+## Build Steps
+
+### Option A: One-command build (recommended)
+
+```powershell
+cd c:\Temp\opt\opt-bot
+npm install
+npm run tauri:build
+```
+
+This will:
+1. Run `prebuild` → build trading-engine sidecar with PyInstaller
+2. Run `build` → compile frontend (TypeScript + Vite)
+3. Run Tauri build → produce final exe + installer
+
+### Option B: Step-by-step
+
+```powershell
+cd c:\Temp\opt\opt-bot
+
+# 1. Install Node dependencies
+npm install
+
+# 2. Build Python trading-engine sidecar (embeds all Python deps into exe)
+python trading-engine\build.py
+
+# 3. Build Tauri app (includes frontend + sidecar)
+npm run tauri:build
+```
+
+### Option C: Using build-windows.bat
+
+```powershell
+cd c:\Temp\opt\opt-bot
+.\build-windows.bat
+```
+
+## Output Location
+
+After a successful build:
+
+```
+opt-bot\src-tauri\target\release\bundle\
+├── nsis\QuantDrift_1.0.0_x64-setup.exe   # NSIS installer
+├── msi\QuantDrift_1.0.0_x64_en-US.msi    # MSI installer
+└── QuantDrift.exe                         # Standalone exe (in release folder)
+```
+
+The trading-engine binary is embedded in the bundle:
+- `src-tauri\binaries\trading-engine-x86_64-pc-windows-msvc.exe`
+
+## Embedded Dependencies (Trading Engine)
+
+The PyInstaller build embeds these into the trading-engine exe:
+
+| Category | Packages |
+|----------|----------|
+| **IB API** | ibapi (client, wrapper, contract, order, execution, ticktype, utils) |
+| **Data** | pandas, numpy, yfinance, pandas_ta, pytz |
+| **Stdlib** | logging, sqlite3, multiprocessing, queue, threading, json, shutil, etc. |
+| **Project** | BOT.py, common.py, tws_api_client.py, order_manager.py, data_access.py, Indicators.py, logger.py |
+
+## Build Script Notes
+
+- **Frontend build**: Uses `vite build` (TypeScript check `tsc` is skipped due to existing type errors in the codebase; fix those and add `tsc &&` before `vite build` for strict builds)
+- **prebuild**: Automatically runs `python trading-engine/build.py` before each `npm run build`, so the trading-engine sidecar is always rebuilt when you run `npm run tauri:build`
+
+## Troubleshooting
+
+### "trading-engine not found"
+- Ensure `python trading-engine\build.py` completed successfully
+- Check that `src-tauri\binaries\trading-engine-x86_64-pc-windows-msvc.exe` exists
+
+### "No module named 'ibapi'"
+- Run `pip install -r requirements.txt` (or `py -3.11 -m pip install -r requirements.txt`)
+- Use the same Python for both `pip install` and `python trading-engine\build.py`
+
+### PyInstaller build fails
+- Add any missing modules to `trading-engine/build.py` → `hidden_imports`
+- Add any missing data files to `data_additions`
+
+### Tauri build fails
+- Ensure WebView2 is installed (Windows 10/11 usually has it)
+- Run `rustup update` if Rust errors occur

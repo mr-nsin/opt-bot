@@ -30,6 +30,7 @@ pub fn run() {
             commands::license::activate_license,
             commands::license::deactivate_license,
             commands::license::get_hardware_id,
+            commands::license::get_license_info,
             // Trading commands
             commands::trading::start_trading,
             commands::trading::stop_trading,

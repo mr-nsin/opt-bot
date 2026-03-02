@@ -11,8 +11,17 @@ fn normalize(s: &str) -> String {
         .join(" ")
 }
 
+/// Get primary MAC address for hardware binding (more stable than hostname alone).
+fn primary_mac() -> String {
+    mac_address::get_mac_address()
+        .ok()
+        .flatten()
+        .map(|m| normalize(&m.to_string()))
+        .unwrap_or_else(|| "unknown".into())
+}
+
 /// Generate a unique hardware fingerprint for this machine.
-/// Combines hostname, CPU brand, total memory, and OS info into a SHA-256 hash.
+/// Combines hostname, CPU brand, total memory, OS info, and MAC address into a SHA-256 hash.
 /// Bound to one machine: copying the license file to another PC will not work
 /// (different hardware_id and different decryption key).
 pub fn get_hardware_id() -> String {
@@ -27,10 +36,11 @@ pub fn get_hardware_id() -> String {
     let total_memory = sys.total_memory();
     let os_name = normalize(&System::name().unwrap_or_else(|| "unknown".into()));
     let os_version = normalize(&System::os_version().unwrap_or_else(|| "unknown".into()));
+    let mac = primary_mac();
 
     let fingerprint = format!(
-        "{}|{}|{}|{}|{}|quantdrift-salt-v1",
-        hostname, cpu_brand, total_memory, os_name, os_version
+        "{}|{}|{}|{}|{}|{}|quantdrift-salt-v1",
+        hostname, cpu_brand, total_memory, os_name, os_version, mac
     );
 
     let mut hasher = Sha256::new();

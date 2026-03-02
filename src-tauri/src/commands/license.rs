@@ -8,6 +8,23 @@ pub fn get_hardware_id() -> String {
     hardware_id::get_hardware_id()
 }
 
+/// Returns email and license key when a valid license is active (for display in UI).
+#[tauri::command]
+pub async fn get_license_info(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Option<serde_json::Value>, String> {
+    let app = state.lock().await;
+    if let Some(ref lic) = app.license {
+        if validator::validate_license(lic).is_ok() {
+            return Ok(Some(serde_json::json!({
+                "email": lic.customer_email,
+                "license_key": lic.license_key
+            })));
+        }
+    }
+    Ok(None)
+}
+
 const DEFAULT_REGISTRY_URL: &str =
     "https://drive.google.com/uc?export=download&id=1_d6-xEbniM2MNqZu1JQtAxrUCsV8-rae";
 const DEFAULT_PUBLIC_KEY_HEX: &str =

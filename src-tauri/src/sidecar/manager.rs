@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
@@ -7,6 +9,14 @@ use super::protocol::{SidecarMessage, SidecarRequest};
 use crate::commands::logs::{push_log, LogEntry};
 use crate::state::app_state::AppState;
 use crate::state::trading_state::{Position, TradeRecord, TradingStatus};
+
+/// Embedded trading-engine binary (built by prebuild before Tauri compile).
+/// Enables single-exe distribution: extract and run when sidecar not found.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const EMBEDDED_ENGINE: &[u8] = include_bytes!("../../binaries/trading-engine-x86_64-pc-windows-msvc.exe");
+
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+const EMBEDDED_ENGINE: &[u8] = &[];
 
 /// Global sidecar child process handle
 static SIDECAR_CHILD: once_cell::sync::Lazy<
@@ -19,7 +29,24 @@ pub async fn init(_handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Spawn the Python trading engine sidecar
+/// Extract embedded trading-engine to temp file and return path.
+fn extract_embedded_engine() -> Result<PathBuf, String> {
+    if EMBEDDED_ENGINE.is_empty() {
+        return Err("Embedded trading engine not available for this platform".into());
+    }
+    let temp_dir = std::env::temp_dir().join("quantdrift");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Create temp dir: {}", e))?;
+    let exe_path = temp_dir.join("trading-engine.exe");
+    let mut f = std::fs::File::create(&exe_path).map_err(|e| format!("Create temp exe: {}", e))?;
+    f.write_all(EMBEDDED_ENGINE).map_err(|e| format!("Write temp exe: {}", e))?;
+    f.sync_all().map_err(|e| format!("Sync temp exe: {}", e))?;
+    drop(f);
+    log::info!("Extracted embedded trading-engine to {:?}", exe_path);
+    Ok(exe_path)
+}
+
+/// Spawn the Python trading engine sidecar.
+/// Tries Tauri sidecar first (when binaries/ exists); falls back to embedded exe for single-file distribution.
 pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
     let mut child_lock = SIDECAR_CHILD.lock().await;
 
@@ -27,24 +54,45 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
         return Err("Sidecar is already running".into());
     }
 
-    // NOTE:
-    // `tauri-plugin-shell`'s `sidecar("name")` expects just the binary *name*.
-    // Tauri will automatically resolve this to `src-tauri/binaries/name-<target>`.
-    // Our `tauri.conf.json` lists the external bin as "binaries/trading-engine",
-    // but the sidecar API should still be called with just "trading-engine".
     let shell = handle.shell();
-    let sidecar_command = shell
-        .sidecar("trading-engine")
-        .map_err(|e| format!("Failed to create sidecar command: {}", e))?;
 
-    let (mut rx, child) = sidecar_command.spawn().map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("not compatible") || msg.contains("os error 216") {
-            "Trading engine executable is missing or invalid. Build it with: cd trading-engine && python build.py (requires Python 3.10–3.13 and PyInstaller).".to_string()
-        } else {
-            format!("Failed to spawn sidecar: {}", msg)
+    // Try sidecar first (when running from build or installed bundle)
+    let (mut rx, child) = match shell.sidecar("trading-engine") {
+        Ok(cmd) => match cmd.spawn() {
+            Ok((rx, child)) => (rx, child),
+            Err(e) => {
+                let msg = e.to_string();
+                // Fallback to embedded when sidecar binary not found
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                if msg.contains("not compatible") || msg.contains("os error 216") || msg.contains("not found") || msg.contains("The system cannot find") {
+                    let exe_path = extract_embedded_engine()?;
+                    let (rx, child) = shell
+                        .command(exe_path.to_string_lossy().as_ref())
+                        .spawn()
+                        .map_err(|e2| format!("Failed to spawn embedded trading engine: {}", e2))?;
+                    (rx, child)
+                } else {
+                    return Err(format!("Failed to spawn trading engine: {}", msg));
+                }
+                #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+                return Err(format!("Failed to spawn trading engine: {}", msg));
+            }
+        },
+        Err(e) => {
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            {
+                log::warn!("Sidecar not found ({}), trying embedded engine", e);
+                let exe_path = extract_embedded_engine()?;
+                let (rx, child) = shell
+                    .command(exe_path.to_string_lossy().as_ref())
+                    .spawn()
+                    .map_err(|e2| format!("Failed to spawn embedded trading engine: {}", e2))?;
+                (rx, child)
+            }
+            #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+            return Err(format!("Trading engine not found: {}. Build with: cd trading-engine && python build.py", e));
         }
-    })?;
+    };
 
     *child_lock = Some(child);
     drop(child_lock);

@@ -40,10 +40,12 @@ def build():
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Hidden imports: everything required at start/trading (match what works on Mac)
+    # Hidden imports: everything required at start/trading - all dependencies embedded into exe
     # - logging: logger.py, common.py use RotatingFileHandler
     # - ibapi: BOT, common, tws_api_client, order_manager use client/wrapper/contract/order/execution/ticktype/utils
     # - data: BOT uses Indicators (yfinance, pandas, numpy), tws_api_client uses pandas
+    # - multiprocessing: BOT uses Process, Pool
+    # - shutil: trading_engine copies expiryStrike.json when frozen
     hidden_imports = [
         "logging",
         "logging.handlers",
@@ -60,12 +62,23 @@ def build():
         "numpy",
         "yfinance",
         "pandas_ta",
+        "numba",
+        "numba.core",
+        "llvmlite",
         "pytz",
         "sqlite3",
         "pathlib",
         "dataclasses",
         "queue",
         "concurrent.futures",
+        "multiprocessing",
+        "multiprocessing.spawn",
+        "shutil",
+        "json",
+        "bisect",
+        "threading",
+        "copy",
+        "typing",
     ]
 
     # Project-root modules (BOT.py, common, etc.) — bundled so sidecar finds them in _MEIPASS
