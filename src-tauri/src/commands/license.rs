@@ -8,15 +8,22 @@ pub fn get_hardware_id() -> String {
     hardware_id::get_hardware_id()
 }
 
+const DEFAULT_REGISTRY_URL: &str =
+    "https://drive.google.com/uc?export=download&id=1_d6-xEbniM2MNqZu1JQtAxrUCsV8-rae";
+const DEFAULT_PUBLIC_KEY_HEX: &str =
+    "5a838c50f67a4abbf6c1136f1acf1e8ee630b25c62fa87cd4c16953cb552a821";
+
 fn registry_config() -> Option<(String, String)> {
     let url = std::env::var("REGISTRY_URL")
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string());
     let key = std::env::var("REGISTRY_LICENSE_PUBLIC_KEY_HEX")
         .ok()
         .map(|s| s.trim().replace("0x", "").replace("0X", ""))
-        .filter(|s| s.len() == 64)?;
+        .filter(|s| s.len() == 64)
+        .unwrap_or_else(|| DEFAULT_PUBLIC_KEY_HEX.to_string());
     Some((url, key))
 }
 
