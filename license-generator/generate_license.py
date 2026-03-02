@@ -152,9 +152,24 @@ def main():
         data = {REGISTRY_LICENSES_KEY: []}
 
     licenses = data.get(REGISTRY_LICENSES_KEY, [])
-    # Avoid duplicate key (optional: allow same key for different hardware?)
-    licenses = [e for e in licenses if e.get("license_key") != license_key]
-    licenses.append(entry)
+    # Check if entry already exists for this email + hardware_id
+    existing_idx = next(
+        (i for i, e in enumerate(licenses)
+         if e.get("email") == args.email and e.get("hardware_id") == args.hardware_id),
+        None,
+    )
+
+    if existing_idx is not None:
+        old = licenses[existing_idx]
+        print(f"Existing entry found for email={args.email} and hardware_id={args.hardware_id}")
+        print(f"  Previous key: {old.get('license_key')} (expires: {old.get('expires_at')})")
+        print(f"  Updating with new license key and expiry...")
+        licenses[existing_idx] = entry
+    else:
+        # Avoid duplicate license_key elsewhere (same key for different email/hw = replace)
+        licenses = [e for e in licenses if e.get("license_key") != license_key]
+        licenses.append(entry)
+
     data[REGISTRY_LICENSES_KEY] = licenses
 
     with open(registry_path, "w", encoding="utf-8") as f:
