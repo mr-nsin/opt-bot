@@ -174,9 +174,10 @@ cython_debug/
 db/
 
 # Log files
-# logs/
-# *.log
-# *.log.*
+logs/
+*.log
+*.log.*
+trading-engine/logs/
 
 # Backup files
 *_bkp.py
@@ -268,3 +269,7 @@ license_state.json
 
 # License generator: never commit private key
 license-generator/private_key.pem
+license-generator/license_registry.json
+
+# Runtime / generated data
+expiryStrike.json
