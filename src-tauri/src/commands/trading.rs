@@ -27,7 +27,11 @@ pub async fn start_trading(
 
     // Spawn sidecar if not running
     if !manager::is_running().await {
-        manager::spawn_sidecar(&app_handle).await?;
+        if let Err(e) = manager::spawn_sidecar(&app_handle).await {
+            let mut app = state.lock().await;
+            app.trading.status = TradingStatus::Idle;
+            return Err(e);
+        }
     }
 
     // Send start command to sidecar
@@ -36,7 +40,11 @@ pub async fn start_trading(
         Some(serde_json::json!({ "config": config })),
     );
 
-    manager::send_request(&request).await?;
+    if let Err(e) = manager::send_request(&request).await {
+        let mut app = state.lock().await;
+        app.trading.status = TradingStatus::Idle;
+        return Err(e);
+    }
 
     // Update state
     let mut app = state.lock().await;
@@ -60,7 +68,11 @@ pub async fn stop_trading(
     drop(app);
 
     let request = SidecarRequest::new(methods::STOP_TRADING, None);
-    manager::send_request(&request).await?;
+    if let Err(e) = manager::send_request(&request).await {
+        let mut app = state.lock().await;
+        app.trading.status = TradingStatus::Running;
+        return Err(e);
+    }
 
     let mut app = state.lock().await;
     app.trading.status = TradingStatus::Idle;

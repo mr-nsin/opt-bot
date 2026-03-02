@@ -310,12 +310,14 @@ function DemoTestCard() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const demoStartedRef = useRef(false);
+  const demoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useTauriEvent<{ status: string }>("trading:engine_status", (data) => {
     if (demoStartedRef.current && data.status === "Idle") {
       demoStartedRef.current = false;
       setRunning(false);
       setResult("Demo complete");
+      if (demoTimerRef.current) { clearTimeout(demoTimerRef.current); demoTimerRef.current = null; }
     }
   });
 
@@ -323,12 +325,20 @@ function DemoTestCard() {
     setRunning(true);
     demoStartedRef.current = true;
     setResult(null);
+    demoTimerRef.current = setTimeout(() => {
+      if (demoStartedRef.current) {
+        demoStartedRef.current = false;
+        setRunning(false);
+        setResult("Demo timed out");
+      }
+    }, 30000);
     try {
       await tradingApi.simulateDemo();
     } catch (e: unknown) {
       setResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
       setRunning(false);
       demoStartedRef.current = false;
+      if (demoTimerRef.current) { clearTimeout(demoTimerRef.current); demoTimerRef.current = null; }
     }
   };
 

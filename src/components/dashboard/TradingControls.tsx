@@ -17,11 +17,13 @@ export function TradingControls() {
   const [error, setError] = useState<string | null>(null);
   const [demoRunning, setDemoRunning] = useState(false);
   const demoStartedRef = useRef(false);
+  const demoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useTauriEvent<{ status: string }>("trading:engine_status", (data) => {
     if (demoStartedRef.current && data.status === "Idle") {
       demoStartedRef.current = false;
       setDemoRunning(false);
+      if (demoTimerRef.current) { clearTimeout(demoTimerRef.current); demoTimerRef.current = null; }
     }
   });
   const [startDurationSec, setStartDurationSec] = useState<number | null>(null);
@@ -123,12 +125,19 @@ export function TradingControls() {
               setDemoRunning(true);
               demoStartedRef.current = true;
               setError(null);
+              demoTimerRef.current = setTimeout(() => {
+                if (demoStartedRef.current) {
+                  demoStartedRef.current = false;
+                  setDemoRunning(false);
+                }
+              }, 30000);
               try {
                 await tradingApi.simulateDemo();
               } catch (e) {
                 setError(String(e));
                 setDemoRunning(false);
                 demoStartedRef.current = false;
+                if (demoTimerRef.current) { clearTimeout(demoTimerRef.current); demoTimerRef.current = null; }
               }
             }}
             disabled={demoRunning || isRunning}

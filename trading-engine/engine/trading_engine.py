@@ -92,7 +92,7 @@ class TradingEngine:
             if "No module named 'ibapi'" in msg:
                 human_msg = (
                     "Python environment is missing the Interactive Brokers API package 'ibapi'. "
-                    "Please install trading-engine dependencies using Python 3.13 (e.g. py -3.13) in the 'trading-engine/.venv' folder, then restart the app. "
+                    "Please install trading-engine dependencies using Python 3.13 (e.g. py -3.13) "
                     "in the 'trading-engine/.venv' folder, then restart the app."
                 )
                 emit_log(human_msg, "ERROR", "system")
@@ -200,7 +200,8 @@ class TradingEngine:
     def simulate_demo(self, params: dict) -> dict:
         """Run a demo simulation that emits fake positions, trades, signals, and closes.
         Tests the full UI pipeline without needing TWS connection."""
-        import random
+        if self.running:
+            return {"status": "error", "message": "Cannot run demo while trading engine is active"}
         demo_thread = threading.Thread(target=self._run_demo_simulation, daemon=True)
         demo_thread.start()
         return {"status": "demo_started"}
@@ -302,7 +303,8 @@ class TradingEngine:
 
         emit_log("DEMO: Simulation complete — all positions closed", "INFO", "system")
         emit_log("DEMO: Check Positions page (active → blotter → closed), Analytics, and Dashboard", "INFO", "system")
-        emit_engine_status("Idle", connected=False)
+        if not self.running:
+            emit_engine_status("Idle", connected=False)
 
     def close_position(self, params: dict) -> dict:
         """Close a specific position by symbol."""

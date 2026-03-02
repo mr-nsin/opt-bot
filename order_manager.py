@@ -270,7 +270,7 @@ class OrderManager:
 
             # Find the corresponding entry order and deactivate it
             entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
-            logger.info(f'99999999999999999999999 EXIT Order ({order.id}) [{entry_order.id}] {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
+            logger.info(f'EXIT Order ({order.id}) [{entry_order.id if entry_order else "?"}] {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
             # Calculate P&L for the closed trade
             entry_avg = entry_order.average_price if entry_order else 0
             exit_avg = order.average_price if order.average_price else 0

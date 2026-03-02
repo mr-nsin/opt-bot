@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type { TradingStatus, DailyPnL, SignalEvent, TradeRecord, DataStatus, AccountMetrics } from "@/lib/types";
 
+const nr = (r?: string) => (r === "CALL" ? "C" : r === "PUT" ? "P" : r);
+
 interface TradingState {
   status: TradingStatus;
   sidecarRunning: boolean;
@@ -71,7 +73,7 @@ export const useTradingStore = create<TradingState>((set) => ({
         (t) =>
           (t.status === "open" || t.status === undefined) &&
           (match.symbol == null || t.symbol === match.symbol) &&
-          (match.right == null || t.right === match.right) &&
+          (match.right == null || nr(t.right) === nr(match.right)) &&
           (match.strike == null || Number(t.strike) === match.strike)
       );
       if (idx < 0) return state;

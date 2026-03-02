@@ -73,8 +73,8 @@ export const PositionsPage = memo(function PositionsPage() {
 
   const summary = useMemo(() => {
     const totalPnl = positions.reduce((s, p) => s + (p.pnl ?? 0), 0);
-    const callCount = positions.filter((p) => p.right === "C").length;
-    const putCount = positions.filter((p) => p.right === "P").length;
+    const callCount = positions.filter((p) => p.right === "C" || p.right === "CALL").length;
+    const putCount = positions.filter((p) => p.right === "P" || p.right === "PUT").length;
     return { totalPnl, callCount, putCount };
   }, [positions]);
 

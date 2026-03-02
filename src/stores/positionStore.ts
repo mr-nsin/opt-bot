@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import type { Position } from "@/lib/types";
 
+const nr = (r?: string) => (r === "CALL" ? "C" : r === "PUT" ? "P" : r);
+
 interface PositionState {
   positions: Position[];
   closedPositions: Position[];
@@ -25,7 +27,7 @@ export const usePositionStore = create<PositionState>((set) => ({
       positions: state.positions.map((p) =>
         p.symbol === symbol &&
         (updates.strike == null || Number(p.strike) === Number(updates.strike)) &&
-        (updates.right == null || p.right === updates.right)
+        (updates.right == null || nr(p.right) === nr(updates.right))
           ? { ...p, ...updates }
           : p
       ),
@@ -35,7 +37,7 @@ export const usePositionStore = create<PositionState>((set) => ({
       positions: state.positions.filter((p) => {
         if (p.symbol !== symbol) return true;
         if (strike != null && Number(p.strike) !== strike) return true;
-        if (right != null && right !== "" && p.right !== right) return true;
+        if (right != null && right !== "" && nr(p.right) !== nr(right)) return true;
         return false;
       }),
     })),
