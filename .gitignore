@@ -273,3 +273,4 @@ license-generator/license_registry.json
 
 # Runtime / generated data
 expiryStrike.json
+db/
