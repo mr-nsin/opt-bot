@@ -96,6 +96,14 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Kill trading engine sidecar when app is closed (X button, quit, etc.)
+                if let Err(e) = tauri::async_runtime::block_on(sidecar::manager::kill_sidecar()) {
+                    log::warn!("Failed to kill trading engine on exit: {}", e);
+                }
+            }
+        });
 }
