@@ -5,7 +5,7 @@ import { useConfigStore } from "@/stores/configStore";
 import { useTradingStore } from "@/stores/tradingStore";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 
-export function RiskManagement() {
+export function RiskManagement({ disabled }: { disabled?: boolean }) {
   const { tradingConfig, updateTradingConfig } = useConfigStore();
   const { dailyPnl, totalTrades } = useTradingStore();
   if (!tradingConfig) return null;
@@ -24,26 +24,26 @@ export function RiskManagement() {
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-0.5">
             <label className="text-sm font-semibold text-muted-foreground">Profit Target</label>
-            <Input type="number" value={tradingConfig.profit_amount_day} onChange={(e) => updateTradingConfig({ profit_amount_day: parseFloat(e.target.value) })} />
+            <Input type="number" value={tradingConfig.profit_amount_day} onChange={(e) => !disabled && updateTradingConfig({ profit_amount_day: parseFloat(e.target.value) })} disabled={disabled} />
           </div>
           <div className="space-y-0.5">
             <label className="text-sm font-semibold text-muted-foreground">Loss Limit</label>
-            <Input type="number" value={tradingConfig.loss_amount_day} onChange={(e) => updateTradingConfig({ loss_amount_day: parseFloat(e.target.value) })} />
+            <Input type="number" value={tradingConfig.loss_amount_day} onChange={(e) => !disabled && updateTradingConfig({ loss_amount_day: parseFloat(e.target.value) })} disabled={disabled} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-0.5">
             <label className="text-sm font-semibold text-muted-foreground">Max Trades</label>
-            <Input type="number" value={tradingConfig.per_day_trades} onChange={(e) => updateTradingConfig({ per_day_trades: parseInt(e.target.value) })} />
+            <Input type="number" value={tradingConfig.per_day_trades} onChange={(e) => !disabled && updateTradingConfig({ per_day_trades: parseInt(e.target.value) })} disabled={disabled} />
           </div>
           <div className="space-y-0.5">
             <label className="text-sm font-semibold text-muted-foreground">Max Contract $</label>
-            <Input type="number" value={tradingConfig.max_contract_amount} onChange={(e) => updateTradingConfig({ max_contract_amount: parseFloat(e.target.value) })} />
+            <Input type="number" value={tradingConfig.max_contract_amount} onChange={(e) => !disabled && updateTradingConfig({ max_contract_amount: parseFloat(e.target.value) })} disabled={disabled} />
           </div>
         </div>
         <div className="space-y-0.5">
             <label className="text-sm font-semibold text-muted-foreground">Trailing Increment</label>
-          <Input type="number" step="0.01" value={tradingConfig.profit_increment} onChange={(e) => updateTradingConfig({ profit_increment: parseFloat(e.target.value) })} />
+          <Input type="number" step="0.01" value={tradingConfig.profit_increment} onChange={(e) => !disabled && updateTradingConfig({ profit_increment: parseFloat(e.target.value) })} disabled={disabled} />
         </div>
 
         <div className="pt-2 mt-0.5 border-t border-border/20 space-y-2">

@@ -120,9 +120,11 @@ pub fn validate_license(license: &LicenseInfo) -> Result<LicenseStatus, LicenseE
         return Err(LicenseError::Expired);
     }
 
-    // num_days() counts full 24h periods, so e.g. 23h left → 0. Show at least 1 day when any time remains.
-    let raw_days = (license.expires_at - now).num_days();
-    let days_remaining = if raw_days == 0 { 1 } else { raw_days };
+    // Use calendar date difference so "30 days" shows 30, not 29 (num_days on duration truncates full 24h periods)
+    let expiry_date = license.expires_at.date_naive();
+    let today = now.date_naive();
+    let raw_days = (expiry_date - today).num_days();
+    let days_remaining = raw_days.max(1);
 
     Ok(LicenseStatus {
         valid: true,

@@ -5,9 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useConfigStore } from "@/stores/configStore";
-import { config as configApi } from "@/lib/tauri-commands";
 
-export function StockList() {
+export function StockList({ disabled }: { disabled?: boolean }) {
   const { tradingConfig, updateTradingConfig } = useConfigStore();
   const [newSymbol, setNewSymbol] = useState("");
   if (!tradingConfig) return null;
@@ -19,7 +18,6 @@ export function StockList() {
 
   const persist = (next: typeof tradingConfig) => {
     updateTradingConfig(next);
-    configApi.save(next).catch((e) => console.warn("Failed to save symbols:", e));
   };
 
   const exchangeForSymbol = (sym: string) =>
@@ -61,17 +59,18 @@ export function StockList() {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-2xs text-muted-foreground">
-          Sidecar subscribes to these symbols. FUT = futures only (e.g. MNQU5, NQU5). OPT = stocks + options (e.g. SPY, QQQ). Default: MNQU5 and NQU5 (both always included when either is present). If <code className="text-2xs bg-muted px-0.5 rounded">config/settings.json</code> exists, its symbols and broker are merged on startup.
+          Symbols loaded from config.json (root). Use Save Configuration to persist changes.
         </p>
         <div className="flex gap-2">
           <Input
             placeholder="Add symbol (e.g. MNQU5, NQU5)..."
             value={newSymbol}
-            onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
-            onKeyDown={(e) => e.key === "Enter" && addStock()}
+            onChange={(e) => !disabled && setNewSymbol(e.target.value.toUpperCase())}
+            onKeyDown={(e) => !disabled && e.key === "Enter" && addStock()}
             className="flex-1 font-mono"
+            disabled={disabled}
           />
-          <Button size="sm" onClick={addStock} disabled={!newSymbol.trim()}>
+          <Button size="sm" onClick={addStock} disabled={!newSymbol.trim() || disabled}>
             <Plus className="h-4 w-4" />
           </Button>
         </div>
@@ -81,8 +80,8 @@ export function StockList() {
               <span className="font-mono font-semibold text-xs text-foreground">{symbol}</span>
               <span className="text-2xs text-muted-foreground font-mono">${tradingConfig.stock_data[symbol]?.amount || 350}</span>
               <button
-                onClick={() => removeStock(symbol)}
-                disabled={stocks.length <= 1}
+                onClick={() => !disabled && removeStock(symbol)}
+                disabled={stocks.length <= 1 || disabled}
                 title={stocks.length <= 1 ? "Keep at least one symbol" : "Remove symbol"}
                 className="ml-0.5 h-4 w-4 rounded hover:bg-destructive/20 flex items-center justify-center opacity-40 group-hover:opacity-100 transition-opacity disabled:opacity-20 disabled:pointer-events-none"
               >

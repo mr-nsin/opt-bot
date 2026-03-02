@@ -21,8 +21,8 @@ pub async fn save_config(
     let mut app = state.lock().await;
     app.config.trading = config;
 
-    // Persist to app data directory
-    ConfigState::save_trading_config(&app.config.trading)?;
+    // Persist full config (trading + settings) to config.json
+    ConfigState::save_full_config(&app.config)?;
 
     // If the trading engine is running, push config so it picks up changes at runtime
     if manager::is_running().await {
@@ -55,14 +55,14 @@ pub async fn save_settings(
     let mut app = state.lock().await;
     app.config.settings = settings;
 
-    // Persist settings to disk so they survive restarts
-    ConfigState::save_settings(&app.config.settings)?;
+    // Persist full config (trading + settings) to config.json
+    ConfigState::save_full_config(&app.config)?;
 
     Ok("Settings saved".into())
 }
 
-/// Read config/settings.json from project if present (trading, strategy, databento, etc.) for UI display.
+/// Read config.json (single source) for UI display — returns settings + trading summary.
 #[tauri::command]
 pub async fn get_settings_file() -> Result<Option<serde_json::Value>, String> {
-    Ok(ConfigState::read_settings_file_raw())
+    Ok(ConfigState::read_config_raw())
 }

@@ -56,34 +56,21 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // ---- Load config and settings from disk synchronously during setup ----
+            // ---- Load config from config.json only (single source: trading + settings) ----
             {
                 let state_arc = app.state::<Arc<Mutex<AppState>>>().inner().clone();
                 let mut app_state = state_arc.blocking_lock();
 
-                // Load trading config (tries app data dir, then legacy ./config.json)
-                match ConfigState::load_trading_config() {
-                    Some(config) => {
+                match ConfigState::load_config() {
+                    Some(full_config) => {
+                        app_state.config = full_config;
                         log::info!(
-                            "Loaded trading config ({} symbols)",
-                            config.stock_list_to_trade.len()
+                            "Loaded config from config.json ({} symbols)",
+                            app_state.config.trading.stock_list_to_trade.len()
                         );
-                        app_state.config.trading = config;
                     }
-                    None => log::info!("No saved config found, using defaults"),
+                    None => log::info!("No config.json found, using defaults"),
                 }
-
-                // Load app settings (theme, notifications, etc.)
-                match ConfigState::load_settings() {
-                    Some(settings) => {
-                        log::info!("Loaded app settings from disk");
-                        app_state.config.settings = settings;
-                    }
-                    None => log::info!("No saved settings found, using defaults"),
-                }
-
-                // Merge config/settings.json (project-style) if present (symbols, broker, limits, ui)
-                ConfigState::try_merge_settings_file(&mut app_state.config);
             }
 
             // ---- Spawn async initialization tasks ----

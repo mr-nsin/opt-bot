@@ -214,25 +214,19 @@ export function SettingsPage() {
 
             <DemoTestCard />
 
-            {settingsFile && (
+            {settingsFile && typeof settingsFile === "object" && (
               <Card>
                 <CardHeader className="py-3">
-                  <CardTitle className="text-sm flex items-center gap-2"><FileJson className="h-4 w-4 text-amber-500" /> config/settings.json</CardTitle>
-                  <CardDescription className="text-2xs">Read-only values from project settings file</CardDescription>
+                  <CardTitle className="text-sm flex items-center gap-2"><FileJson className="h-4 w-4 text-amber-500" /> config.json</CardTitle>
+                  <CardDescription className="text-2xs">Single source: ui and trading</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3 text-xs">
-                  {settingsFile.trading && typeof settingsFile.trading === "object" ? (
-                    <ConfigSection title="Trading" data={settingsFile.trading as Record<string, unknown>} />
-                  ) : null}
-                  {settingsFile.strategy && typeof settingsFile.strategy === "object" ? (
-                    <ConfigSection title="Strategy" data={settingsFile.strategy as Record<string, unknown>} />
-                  ) : null}
-                  {settingsFile.broker && typeof settingsFile.broker === "object" ? (
-                    <ConfigSection title="Broker" data={settingsFile.broker as Record<string, unknown>} />
-                  ) : null}
-                  {settingsFile.logging && typeof settingsFile.logging === "object" ? (
-                    <ConfigSection title="Logging" data={settingsFile.logging as Record<string, unknown>} />
-                  ) : null}
+                  {(settingsFile as Record<string, unknown>).ui && typeof (settingsFile as Record<string, unknown>).ui === "object" && (
+                    <ConfigSection title="UI" data={(settingsFile as Record<string, unknown>).ui as Record<string, unknown>} />
+                  )}
+                  {(settingsFile as Record<string, unknown>).stockListToTrade && (
+                    <ConfigSection title="Symbols" data={{ stockListToTrade: (settingsFile as Record<string, unknown>).stockListToTrade }} />
+                  )}
                 </CardContent>
               </Card>
             )}
