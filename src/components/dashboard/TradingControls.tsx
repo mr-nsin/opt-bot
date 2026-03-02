@@ -140,7 +140,7 @@ export function TradingControls() {
                 if (demoTimerRef.current) { clearTimeout(demoTimerRef.current); demoTimerRef.current = null; }
               }
             }}
-            disabled={demoRunning || isRunning}
+            disabled={demoRunning || !isIdle}
             variant="outline"
             className="w-full h-10 text-sm font-semibold border-violet-500/30 text-violet-400 hover:bg-violet-500/10"
           >
