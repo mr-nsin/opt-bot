@@ -61,7 +61,9 @@ pub fn run() {
                 let state_arc = app.state::<Arc<Mutex<AppState>>>().inner().clone();
                 let mut app_state = state_arc.blocking_lock();
 
-                match ConfigState::load_config() {
+                // Use bundled resource path when running as exe (config.json in resources/)
+                let resource_path = app.path().resource_dir().ok().map(|d| d.join("config.json"));
+                match ConfigState::load_config_with_resource_path(resource_path) {
                     Some(full_config) => {
                         app_state.config = full_config;
                         log::info!(

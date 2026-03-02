@@ -79,15 +79,27 @@ pub struct TradingConfig {
     pub profit_amount_day: f64,
 }
 
+/// Default symbols aligned with config.json — all symbols from stockData/stockListToTrade.
+const DEFAULT_SYMBOLS: &[(&str, &str)] = &[
+    ("SPY", "NASDAQ"),
+    ("QQQ", "NASDAQ"),
+    ("TSLA", "NASDAQ"),
+    ("AMZN", "NASDAQ"),
+    ("AAPL", "NASDAQ"),
+    ("AMD", "NASDAQ"),
+    ("NVDA", "NASDAQ"),
+    ("MSFT", "NASDAQ"),
+    ("BABA", "NASDAQ"),
+];
+
 impl Default for TradingConfig {
     fn default() -> Self {
         let mut stock_data = HashMap::new();
-        stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
-        stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
-
         let mut stock_list = HashMap::new();
-        stock_list.insert("MNQU5".into(), "CME".into());
-        stock_list.insert("NQU5".into(), "CME".into());
+        for (sym, exch) in DEFAULT_SYMBOLS {
+            stock_data.insert((*sym).into(), StockConfig { amount: 350.0 });
+            stock_list.insert((*sym).into(), (*exch).into());
+        }
 
         Self {
             profit_increment: 0.03,
@@ -176,6 +188,14 @@ impl Default for ConfigState {
 // File I/O helpers for config persistence
 // ==========================================
 
+/// Config.json embedded at compile time from project root.
+/// Used as fallback when running as standalone exe (no resources folder).
+/// Build from project root so this path resolves: src-tauri/src/state/ -> ../../../config.json
+#[cfg(not(test))]
+const EMBEDDED_CONFIG: &str = include_str!("../../../config.json");
+#[cfg(test)]
+const EMBEDDED_CONFIG: &str = "{}";
+
 /// UI settings nested under "ui" key in config.json.
 #[derive(serde::Deserialize, Default)]
 #[serde(default)]
@@ -233,26 +253,18 @@ impl ConfigState {
         paths
     }
 
+    /// Ensure at least one symbol; use all config.json defaults when empty.
     fn fix_trading_symbols(config: &mut TradingConfig) {
         if config.stock_list_to_trade.is_empty() {
-            config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
-            config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
+            for (sym, exch) in DEFAULT_SYMBOLS {
+                config.stock_list_to_trade.insert((*sym).into(), (*exch).into());
+            }
             if config.stock_data.is_empty() {
-                config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
-                config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
+                for (sym, _) in DEFAULT_SYMBOLS {
+                    config.stock_data.insert((*sym).into(), StockConfig { amount: 350.0 });
+                }
             }
-            log::info!("Config had no symbols; defaulting to MNQU5, NQU5");
-        } else {
-            let has_mnq = config.stock_list_to_trade.contains_key("MNQU5");
-            let has_nq = config.stock_list_to_trade.contains_key("NQU5");
-            if has_mnq && !has_nq {
-                config.stock_list_to_trade.insert("NQU5".into(), "CME".into());
-                config.stock_data.insert("NQU5".into(), StockConfig { amount: 350.0 });
-            }
-            if has_nq && !has_mnq {
-                config.stock_list_to_trade.insert("MNQU5".into(), "CME".into());
-                config.stock_data.insert("MNQU5".into(), StockConfig { amount: 350.0 });
-            }
+            log::info!("Config had no symbols; defaulting to all symbols from config.json: {:?}", DEFAULT_SYMBOLS.iter().map(|(s, _)| *s).collect::<Vec<_>>());
         }
     }
 
@@ -297,7 +309,11 @@ impl ConfigState {
     }
 
     /// Load full ConfigState (trading + settings) from config.json. Single source only.
-    pub fn load_config() -> Option<ConfigState> {
+    /// When running as built exe, pass `resource_config_path` from `app.path().resource_dir().map(|d| d.join("config.json"))`
+    /// so the bundled config.json is found (otherwise exe falls back to defaults MNQU5/NQU5).
+    pub fn load_config_with_resource_path(
+        resource_config_path: Option<std::path::PathBuf>,
+    ) -> Option<ConfigState> {
         let try_load = |contents: &str| -> Option<ConfigState> {
             let file: ConfigFile = serde_json::from_str(contents).ok()?;
             let settings = Self::settings_from_config_file(&file);
@@ -306,7 +322,19 @@ impl ConfigState {
             Some(ConfigState { trading, settings })
         };
 
-        // 1) Project config.json first
+        // 0) Bundled resource path first (for built exe - config.json is in resources/)
+        if let Some(ref path) = resource_config_path {
+            if path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(path) {
+                    if let Some(state) = try_load(&contents) {
+                        log::info!("Loaded config from bundled resource {:?} ({} symbols)", path, state.trading.stock_list_to_trade.len());
+                        return Some(state);
+                    }
+                }
+            }
+        }
+
+        // 1) Project config.json
         for path in Self::project_config_paths() {
             if !path.exists() {
                 continue;
@@ -340,7 +368,18 @@ impl ConfigState {
             }
         }
 
+        // 4) Embedded config (standalone exe — no resources folder needed)
+        if let Some(state) = try_load(EMBEDDED_CONFIG) {
+            log::info!("Loaded config from embedded binary ({} symbols) — standalone exe, no resources folder", state.trading.stock_list_to_trade.len());
+            return Some(state);
+        }
+
         None
+    }
+
+    /// Load config (convenience; no resource path - use load_config_with_resource_path for exe).
+    pub fn load_config() -> Option<ConfigState> {
+        Self::load_config_with_resource_path(None)
     }
 
     /// Legacy: Load only TradingConfig (for compatibility). Prefer load_config().
