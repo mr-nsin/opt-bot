@@ -1,64 +1,61 @@
 {
-  "ACCOUNT_ID": "DU5690365",
-  "ACTIVE_VOLUME": 5,
-  "ATR_CHECKS": 0.047,
-  "ATR_VALUE": 0.99,
-  "AVG_VOLUMNS_CANDLES": 30,
-  "BODY": 2.0,
-  "CALL_DELTA_CHECK": 0.35,
-  "CLIENTID": 0,
-  "IP": "127.0.0.1",
-  "MAX_CONTRACT_AMOUNT": 350.0,
-  "MIDPOINT_OFFSET": 0.01,
-  "ORDER_EXPIRY_TIMER": 15,
-  "ORDER_TRANSMIT": true,
-  "PORT": 7497,
-  "PUT_DELTA_CHECK": -0.35,
-  "QUANTITY": 2,
-  "SHARE_VOLUME": 1,
+  "profit_increment": 0.03,
+  "expiryToTrade": "next",
   "SPY_QQQ_EXPIRY": "0DTE",
   "USE_DIFF_EXPIRY_INDEX": "yes",
-  "USE_TIMER_IN_ORDER": "ON",
-  "VOLUME_CHECK": 100,
+  "IP": "127.0.0.1",
+  "PORT": 7497,
+  "CLIENTID": 0,
+  "ACCOUNT_ID": "DU5690365",
+  "marketStartTime": "19:00:00",
+  "scriptStartTime": "0935",
+  "scriptEndTime": "1545",
   "VWAP_ON_OFF": "ON",
+  "ORDER_TRANSMIT": true,
+  "USE_TIMER_IN_ORDER": "ON",
+  "ORDER_EXPIRY_TIMER": 15,
+  "CALL_DELTA_CHECK": 0.35,
+  "PUT_DELTA_CHECK": -0.35,
+  "VOLUME_CHECK": 100,
+  "ATR_CHECKS": 0.047,
+  "ACTIVE_VOLUME": 5,
+  "MAX_CONTRACT_AMOUNT": 350,
+  "ATR_VALUE": 0.99,
+  "SHARE_VOLUME": 1,
+  "BODY": 2,
+  "MIDPOINT_OFFSET": 0.01,
+  "QUANTITY": 2,
+  "fetchValue": "1 D",
   "candleTime": "5 mins",
   "distance_between_trade": 120,
-  "expiryToTrade": "next",
-  "fetchValue": "1 D",
-  "loss_amount_day": -200.0,
-  "marketStartTime": "19:00:00",
-  "perDayTrades": 3,
-  "profit_amount_day": 200.0,
-  "profit_increment": 0.03,
-  "scriptEndTime": "1545",
-  "scriptStartTime": "0935",
+  "AVG_VOLUMNS_CANDLES": 30,
   "stockData": {
     "AAPL": {
-      "amount": 350.0
+      "amount": 350
     },
     "AMD": {
-      "amount": 350.0
+      "amount": 350
     },
     "AMZN": {
-      "amount": 350.0
+      "amount": 350
     },
     "BABA": {
-      "amount": 350.0
+      "amount": 350
     },
     "MSFT": {
-      "amount": 350.0
+      "amount": 350
     },
     "NVDA": {
-      "amount": 350.0
+      "amount": 350
     },
     "QQQ": {
-      "amount": 350.0
+      "amount": 350
     },
     "SPY": {
-      "amount": 350.0
+      "amount": 350
     },
     "TSLA": {
-      "amount": 350.0
+      "amount": 350
     }
   },
   "stockListToTrade": {
@@ -72,14 +69,7 @@
     "SPY": "NASDAQ",
     "TSLA": "NASDAQ"
   },
-  "ui": {
-    "auto_start_trading": false,
-    "font_size": 16,
-    "log_level": "info",
-    "show_charts": true,
-    "show_notifications": true,
-    "theme": "dark",
-    "trading_mode": "demo",
-    "update_interval": 1000
-  }
+  "perDayTrades": 3,
+  "loss_amount_day": -200,
+  "profit_amount_day": 200
 }
