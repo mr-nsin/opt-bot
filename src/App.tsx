@@ -1,16 +1,18 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { LicenseGate } from "@/components/license/LicenseGate";
 import { Toaster } from "@/components/common/Toaster";
+import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useTradingEvents } from "@/hooks/useTradingEvents";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { CommandPalette } from "@/components/common/CommandPalette";
-import { config, logs as logsApi } from "@/lib/tauri-commands";
+import { config, logs as logsApi, app as appApi } from "@/lib/tauri-commands";
+import { listen } from "@tauri-apps/api/event";
 
 const DashboardPage = lazy(() =>
   import("@/components/dashboard/DashboardPage").then((m) => ({ default: m.DashboardPage }))
@@ -105,6 +107,25 @@ function AppContent() {
     initialize();
   }, [setTradingConfig, setSettings, setLogs]);
 
+  // ---- Close confirmation when trading is active ----
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+
+  useEffect(() => {
+    const unlisten = listen("close-requested", () => {
+      setShowCloseConfirm(true);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  const handleConfirmClose = useCallback(() => {
+    setShowCloseConfirm(false);
+    appApi.confirmClose().catch(() => {});
+  }, []);
+
+  const handleCancelClose = useCallback(() => {
+    setShowCloseConfirm(false);
+  }, []);
+
   // Apply font size setting to the document root (clamp so UI never looks too small or large)
   useEffect(() => {
     const size = Math.max(12, Math.min(24, settings.font_size));
@@ -113,6 +134,16 @@ function AppContent() {
 
   return (
     <>
+      <ConfirmDialog
+        open={showCloseConfirm}
+        title="Trading Engine Running"
+        message="The trading engine is still active. Closing the app will stop all trading and kill the engine. Are you sure you want to exit?"
+        confirmLabel="Stop & Exit"
+        cancelLabel="Keep Running"
+        variant="destructive"
+        onConfirm={handleConfirmClose}
+        onCancel={handleCancelClose}
+      />
       <Suspense
         fallback={
           <div className="flex h-screen w-full items-center justify-center bg-background">

@@ -43,6 +43,11 @@ export const positions = {
   closeAll: () => invoke<string>("close_all_positions"),
 };
 
+/** App lifecycle */
+export const app = {
+  confirmClose: () => invoke<void>("confirm_close"),
+};
+
 /** License: validate, getStatus, activate(key, email), deactivate, getHardwareId, getLicenseInfo */
 export const license = {
   validate: () => invoke<unknown>("validate_license"),

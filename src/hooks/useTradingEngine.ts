@@ -37,24 +37,27 @@ export function useTradingEngine() {
     try {
       const result = await trading.stop();
       setStatus("Idle");
+      setSidecarRunning(false);
+      setConnectedToTws(false);
       return result;
     } catch (err) {
       setStatus({ Error: String(err) });
       throw err;
     }
-  }, [setStatus]);
+  }, [setStatus, setSidecarRunning, setConnectedToTws]);
 
   const emergencyStop = useCallback(async () => {
     try {
       const result = await trading.emergencyStop();
       setStatus("Idle");
       setSidecarRunning(false);
+      setConnectedToTws(false);
       return result;
     } catch (err) {
       setStatus({ Error: String(err) });
       throw err;
     }
-  }, [setStatus, setSidecarRunning]);
+  }, [setStatus, setSidecarRunning, setConnectedToTws]);
 
   const refreshStatus = useCallback(async () => {
     try {

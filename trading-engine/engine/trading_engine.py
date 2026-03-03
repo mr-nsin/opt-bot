@@ -105,20 +105,72 @@ class TradingEngine:
             emit_engine_status("Idle", connected=False)
             return {"status": "error", "reason": msg}
 
+    def _close_all_orders_and_positions(self):
+        """Cancel all open orders and close all positions (like standalone's market-end cleanup)."""
+        try:
+            import BOT
+            if self._client and self._client.isConnected():
+                emit_log("Cancelling all open orders...", "INFO", "system")
+                BOT.cancel_all_orders()
+                emit_log("Closing all open positions at market price...", "INFO", "system")
+                BOT.getAndBuyAfterMarketEnd()
+                emit_log("All orders cancelled and positions closed", "INFO", "system")
+            else:
+                emit_log("TWS not connected — cannot close orders/positions", "WARN", "system")
+        except Exception as e:
+            emit_log(f"Error closing orders/positions: {e}", "ERROR", "system")
+
     def stop(self) -> dict:
-        """Gracefully stop the trading engine."""
+        """Gracefully stop the trading engine and fully clean up so restart works."""
         if not self.running:
             return {"status": "not_running"}
 
         emit_log("Stopping trading engine...", "INFO", "system")
         self.running = False
 
-        # Disconnect TWS
-        if self._client and hasattr(self._client, 'disconnect'):
+        # Signal BOT globals to stop trading loops
+        try:
+            import BOT
+            BOT.STOP_TRADING = True
+        except Exception:
+            pass
+
+        # Cancel orders and close positions before disconnecting
+        self._close_all_orders_and_positions()
+
+        # Wait for engine thread to exit (it checks self.running each iteration)
+        if self._engine_thread and self._engine_thread.is_alive():
             try:
-                self._client.disconnect()
+                self._engine_thread.join(timeout=5)
+            except Exception:
+                pass
+        self._engine_thread = None
+
+        # Stop event processor threads (BOT strategy threads)
+        for t in self._event_processor_threads:
+            try:
+                if t.is_alive():
+                    t.join(timeout=2)
+            except Exception:
+                pass
+        self._event_processor_threads = []
+
+        # Disconnect TWS and destroy client so next start gets a fresh connection
+        if self._client:
+            try:
+                if hasattr(self._client, 'disconnect'):
+                    self._client.disconnect()
             except Exception as e:
                 emit_log(f"Error disconnecting TWS: {e}", "WARN", "system")
+            time.sleep(0.5)
+            self._client = None
+
+        # Reset all state so start() can reinitialize cleanly
+        self.connected = False
+        self._data_feed_started = False
+        self._order_mgr = None
+        self._db = None
+        self._event_queue = None
 
         emit_engine_status("Idle", connected=False)
         emit_log("Trading engine stopped", "INFO", "system")
@@ -126,18 +178,38 @@ class TradingEngine:
         return {"status": "stopped"}
 
     def emergency_stop(self) -> dict:
-        """Emergency stop: immediately halt all trading."""
+        """Emergency stop: close all orders/positions, then immediately halt."""
         emit_log("EMERGENCY STOP triggered!", "ERROR", "system")
         self.running = False
 
-        # Force disconnect
+        # Signal BOT globals to stop trading loops
+        try:
+            import BOT
+            BOT.STOP_TRADING = True
+            BOT.CLOSE_ALL_ORDERS = True
+        except Exception:
+            pass
+
+        # Close all orders and positions before disconnecting
+        self._close_all_orders_and_positions()
+
+        # Force disconnect and destroy client
         if self._client:
             try:
                 self._client.disconnect()
             except:
                 pass
+            self._client = None
+
+        self.connected = False
+        self._data_feed_started = False
+        self._event_processor_threads = []
+        self._order_mgr = None
+        self._db = None
+        self._event_queue = None
 
         emit_engine_status("Idle", connected=False)
+        emit_log("Emergency stop complete — all orders cancelled, positions closed", "ERROR", "system")
         return {"status": "emergency_stopped"}
 
     def get_status(self) -> dict:
@@ -491,14 +563,20 @@ class TradingEngine:
             BOT.PUT_DELTA_CHECK = float(getattr(self.config, "put_delta_check", -0.35))
             BOT.VOLUME_CHECK = int(getattr(self.config, "volume_check", 100))
             # Required by BOT.checkAlgoAndTrade -> timeCheckAndCloseProgram (PnL limits)
-            BOT.profit_amount_day = float(getattr(self.config, "profit_amount_day", 200.0))
-            BOT.loss_amount_day = float(getattr(self.config, "loss_amount_day", 200.0))
+            # loss_amount_day MUST be negative (comparison is pnlData <= loss_amount_day)
+            raw_profit = float(getattr(self.config, "profit_amount_day", 200.0))
+            raw_loss = float(getattr(self.config, "loss_amount_day", 200.0))
+            BOT.profit_amount_day = abs(raw_profit)
+            BOT.loss_amount_day = -abs(raw_loss)
             BOT.signal_dict = {
                 s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
                 for s in stock_list
             }
-            # Leave empty so first trades are not blocked by cooldown; cooldown applies after actual trades
+            # Pre-populate trade_time_dict like standalone main_call (enforces cooldown from startup)
             BOT.trade_time_dict = {}
+            for sym in stock_list:
+                BOT.trade_time_dict[f"{sym}_CALL"] = datetime.now()
+                BOT.trade_time_dict[f"{sym}_PUT"] = datetime.now()
 
             # --- Required for checkAlgoAndTrade, checkConditionsAndTrade, takeTrade, placeOrder (same as main_call) ---
             # Without these, BOT hits NameError or wrong behavior when processing signals/trades.
@@ -552,7 +630,6 @@ class TradingEngine:
                 time.sleep(2.0)
                 emit_log("Initializing data feed (historical + options)...", "INFO", "system")
                 BOT.init_data_feed()
-                # Log what underlyings (STK/FUT) were received from TWS so user sees data is working (like BOT.py)
                 self._log_tws_underlyings_received()
                 BOT.dataStrike = BOT.fetch_all_strike_expiries()
                 emit_log("Synchronizing orders...", "INFO", "system")
@@ -567,12 +644,28 @@ class TradingEngine:
                         pass
                 return
             finally:
-                # When frozen, leave CWD as config_dir so BOT can write expiryStrike.json etc.
                 if not frozen:
                     try:
                         os.chdir(orig_cwd)
                     except Exception:
                         pass
+
+            # --- P0b: Adjust PnL limits by existing realized P&L (same as standalone main_call) ---
+            try:
+                account_id = BOT.SUB_ACCOUNT_ID
+                pnl_data, realized_start_pnl = self._client.get_pnl(account_id)
+                emit_log(f"Starting realized P&L: ${realized_start_pnl:.2f}, current day P&L: ${pnl_data:.2f}", "INFO", "system")
+                if realized_start_pnl < 0:
+                    starting_loss = realized_start_pnl
+                    BOT.profit_amount_day = BOT.profit_amount_day - starting_loss
+                    BOT.loss_amount_day = BOT.loss_amount_day + starting_loss
+                elif realized_start_pnl > 0:
+                    starting_profit = realized_start_pnl
+                    BOT.profit_amount_day = BOT.profit_amount_day + starting_profit
+                    BOT.loss_amount_day = BOT.loss_amount_day - starting_profit
+                emit_log(f"Adjusted PnL limits: profit_target=${BOT.profit_amount_day:.2f}, loss_limit=${BOT.loss_amount_day:.2f}", "INFO", "system")
+            except Exception as e:
+                emit_log(f"Could not adjust PnL by starting realized: {e}", "WARN", "system")
 
             # Start event processor threads (consume ticks and run strategies)
             processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
@@ -583,9 +676,34 @@ class TradingEngine:
                 self._event_processor_threads.append(t)
             emit_log(f"Started {processor_count} strategy event processors", "INFO", "system")
 
+            # --- P1a: Start pnl_watchdog_thread (same as standalone main_call) ---
+            BOT.STOP_TRADING = False
+            BOT.DAY_LOCKED = False
+            BOT.CLOSE_ALL_ORDERS = False
+            try:
+                pnl_t = threading.Thread(
+                    target=BOT.pnl_watchdog_thread,
+                    args=(BOT.SUB_ACCOUNT_ID, BOT.profit_amount_day, BOT.loss_amount_day),
+                    daemon=True,
+                )
+                pnl_t.start()
+                self._event_processor_threads.append(pnl_t)
+                emit_log("PnL watchdog thread started", "INFO", "system")
+            except Exception as e:
+                emit_log(f"Failed to start pnl_watchdog_thread: {e}", "WARN", "system")
+
+            # --- P1b: Start monitor_positions_loop (same as standalone) ---
+            try:
+                pos_t = threading.Thread(target=BOT.monitor_positions_loop, daemon=True)
+                pos_t.start()
+                self._event_processor_threads.append(pos_t)
+                emit_log("Position monitor thread started", "INFO", "system")
+            except Exception as e:
+                emit_log(f"Failed to start monitor_positions_loop: {e}", "WARN", "system")
+
             self._client.initialization_done = True
             self._data_feed_started = True
-            self._last_signal_heartbeat_time = time.time()  # Reset heartbeat timer
+            self._last_signal_heartbeat_time = time.time()
             emit_log("Data feed and strategies started", "INFO", "system")
             emit_log(
                 f"IBKR data + signal scanner started: monitoring {', '.join(stock_list)}. "

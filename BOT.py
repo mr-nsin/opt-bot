@@ -67,6 +67,7 @@ DAILY_LIMIT_HIT = False
 DAY_LOCKED = False
 CLOSE_ALL_ORDERS = False
 START_DAY_PNL = None
+_signal_emit_times = {}  # throttle UI signal popups: {symbol_direction: last_emit_epoch}
 
 
 # Trade cooldown tracking (entry or exit)
@@ -866,9 +867,17 @@ def getStockNearStrikes(stock: str, strikesListDict: dict,tick: Tick):
 
     strikesListNew = [float(each) for each in strikesList]
     
-    logger.info("UNDERLYING PRICE IS = {}".format(tick.last))
-    #logger.info("\n\nSTRIKES LIST NEW IS  = {}".format(strikesListNew))
-    lowList, highList = get10StrikesNearUnderlying(strikesListNew, tick.last)
+    underlying_price = tick.last
+    logger.info("UNDERLYING PRICE IS = {}".format(underlying_price))
+    if underlying_price is None or underlying_price <= 0:
+        logger.warning(f"Invalid underlying price ({underlying_price}) for {stock} — cannot compute strikes")
+        _emit_log(f"{stock}: No valid underlying price yet (last={underlying_price}) — waiting for TWS data", "WARN", "signal")
+        stock10Strikesmapper.update({"lowList": [], "highList": []})
+        return stock10Strikesmapper
+
+    lowList, highList = get10StrikesNearUnderlying(strikesListNew, underlying_price)
+    lowList = [s for s in lowList if s > 0]
+    highList = [s for s in highList if s > 0]
 
     # stock10Strikesmapper.update({"lowList": highList, "highList": lowList})
     stock10Strikesmapper.update({"lowList": lowList, "highList": highList})
@@ -2047,13 +2056,19 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     sig_direction = dataEngulf[1]  # CALL or PUT
                     sig_strength = dataEngulf[3]    # strongBuy, heavyBuy, etc.
                     _emit_log(f"Signal detected: {tick.contract.symbol} → {sig_direction} ({sig_strength})", "INFO", "signal")
-                    _emit_signal(
-                        tick.contract.symbol,
-                        sig_direction,
-                        0.0,
-                        0.0,
-                        sig_strength or "signal",
-                    )
+                    # Throttle UI signal popups: same symbol+direction at most once per 60s
+                    _sig_key = f"{tick.contract.symbol}_{sig_direction}"
+                    _now = time.time()
+                    _last_emit = _signal_emit_times.get(_sig_key, 0)
+                    if _now - _last_emit >= 60:
+                        _signal_emit_times[_sig_key] = _now
+                        _emit_signal(
+                            tick.contract.symbol,
+                            sig_direction,
+                            0.0,
+                            0.0,
+                            sig_strength or "signal",
+                        )
                     result = checkConditionsAndTrade((dataEngulf, dataStrike), tick)
                     logger.info(f"checkConditionsAndTrade: {result}")
                     if result == "orderPlaced":

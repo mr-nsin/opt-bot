@@ -7,9 +7,19 @@ pub mod utils;
 
 use state::app_state::AppState;
 use state::config_state::ConfigState;
+use state::trading_state::TradingStatus;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
+
+#[tauri::command]
+async fn confirm_close(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Err(e) = sidecar::manager::kill_sidecar().await {
+        log::warn!("Failed to kill trading engine on confirmed close: {}", e);
+    }
+    app_handle.exit(0);
+    Ok(())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -52,7 +62,36 @@ pub fn run() {
             commands::logs::get_logs,
             commands::logs::clear_logs,
             commands::logs::get_log_stats,
+            // Close confirmation
+            confirm_close,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app_handle = window.app_handle().clone();
+                let state_arc = app_handle.state::<Arc<Mutex<AppState>>>().inner().clone();
+
+                // Check if trading engine is active (non-blocking try_lock)
+                let is_trading = state_arc
+                    .try_lock()
+                    .map(|app| {
+                        matches!(app.trading.status, TradingStatus::Running | TradingStatus::Starting)
+                            || app.sidecar_running
+                    })
+                    .unwrap_or(false);
+
+                if is_trading {
+                    // Prevent the window from closing immediately
+                    api.prevent_close();
+                    // Tell the frontend to show a confirmation dialog
+                    let _ = app_handle.emit("close-requested", ());
+                } else {
+                    // Not trading: kill sidecar (if any) and let the window close
+                    tauri::async_runtime::block_on(async {
+                        let _ = sidecar::manager::kill_sidecar().await;
+                    });
+                }
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -101,11 +140,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                // Kill trading engine sidecar when app is closed (X button, quit, etc.)
-                if let Err(e) = tauri::async_runtime::block_on(sidecar::manager::kill_sidecar()) {
-                    log::warn!("Failed to kill trading engine on exit: {}", e);
+            match &event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    // Final safety net: kill trading engine on any exit path
+                    tauri::async_runtime::block_on(async {
+                        let _ = sidecar::manager::kill_sidecar().await;
+                    });
                 }
+                _ => {}
             }
         });
 }

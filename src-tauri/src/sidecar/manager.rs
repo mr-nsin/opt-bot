@@ -23,6 +23,50 @@ static SIDECAR_CHILD: once_cell::sync::Lazy<
     Arc<Mutex<Option<tauri_plugin_shell::process::CommandChild>>>,
 > = once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 
+/// Track the sidecar PID so we can force-kill the process tree on Windows
+static SIDECAR_PID: once_cell::sync::Lazy<Arc<Mutex<Option<u32>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
+
+/// Assign the trading-engine child to a Windows Job Object with kill-on-close.
+/// When the main process exits (X button, Task Manager, crash), the OS closes
+/// all job handles and automatically terminates the child.
+/// Only the trading-engine is in the job — WebView2 is unaffected.
+#[cfg(windows)]
+fn attach_child_to_kill_job(pid: u32) {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
+
+    let handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
+    if handle.is_null() {
+        log::warn!("OpenProcess({pid}) returned null handle");
+        return;
+    }
+
+    match win32job::Job::create() {
+        Ok(job) => {
+            match job.query_extended_limit_info() {
+                Ok(mut info) => {
+                    info.limit_kill_on_job_close();
+                    if let Err(e) = job.set_extended_limit_info(&mut info) {
+                        log::warn!("Job set limits failed: {e}");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Job query limits failed: {e}");
+                    return;
+                }
+            }
+            if let Err(e) = job.assign_process(handle as isize) {
+                log::warn!("Job assign_process({pid}) failed: {e}");
+                return;
+            }
+            std::mem::forget(job);
+            log::info!("Trading-engine (pid {pid}) attached to kill-on-close job object");
+        }
+        Err(e) => log::warn!("Job create failed: {e}"),
+    }
+}
+
 /// Initialize the sidecar manager (called at app startup)
 pub async fn init(_handle: &AppHandle) -> Result<(), String> {
     log::info!("Sidecar manager initialized");
@@ -94,8 +138,17 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
         }
     };
 
+    let pid = child.pid();
+
+    // Attach to a Windows Job Object so the child is auto-killed if the main process dies
+    #[cfg(windows)]
+    attach_child_to_kill_job(pid);
+
     *child_lock = Some(child);
     drop(child_lock);
+
+    // Store PID for force-kill fallback
+    *SIDECAR_PID.lock().await = Some(pid);
 
     // Spawn event listener task
     let app_handle = handle.clone();
@@ -157,9 +210,11 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
                     })
                     .await;
 
-                    // Clean up child handle
+                    // Clean up child handle and PID
                     let mut child_lock = SIDECAR_CHILD.lock().await;
                     *child_lock = None;
+                    drop(child_lock);
+                    *SIDECAR_PID.lock().await = None;
                 }
                 _ => {}
             }
@@ -186,15 +241,28 @@ pub async fn send_request(request: &SidecarRequest) -> Result<(), String> {
     }
 }
 
-/// Kill the sidecar process
+/// Kill the sidecar process and its entire process tree
 pub async fn kill_sidecar() -> Result<(), String> {
-    let mut child_lock = SIDECAR_CHILD.lock().await;
+    let pid = SIDECAR_PID.lock().await.take();
 
+    let mut child_lock = SIDECAR_CHILD.lock().await;
     if let Some(child) = child_lock.take() {
-        child
-            .kill()
-            .map_err(|e| format!("Failed to kill sidecar: {}", e))?;
-        log::info!("Sidecar killed");
+        let _ = child.kill();
+        log::info!("Sidecar child.kill() called");
+    }
+    drop(child_lock);
+
+    // On Windows, also use taskkill /F /T to kill the entire process tree.
+    // PyInstaller --onefile spawns a child process that child.kill() may not reach.
+    #[cfg(windows)]
+    if let Some(p) = pid {
+        log::info!("Force-killing sidecar process tree (pid {p}) via taskkill");
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &p.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
     }
 
     Ok(())

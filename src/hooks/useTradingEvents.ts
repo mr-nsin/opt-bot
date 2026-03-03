@@ -280,6 +280,16 @@ export function useTradingEvents() {
 
   // ---- Sidecar process terminated ----
   useTauriEvent("sidecar-terminated", () => {
+    // Flush any pending logs before resetting
+    if (logFlushScheduled.current != null) {
+      clearTimeout(logFlushScheduled.current);
+      logFlushScheduled.current = null;
+    }
+    flushLogs();
+
+    // Discard any further buffered logs that arrive after termination
+    logPending.current = [];
+
     setSidecarRunning(false);
     setStatus("Idle");
     setConnectedToTws(false);
