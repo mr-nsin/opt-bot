@@ -50,7 +50,7 @@ export const StatusBar = memo(function StatusBar() {
   }, [isRunning]);
 
   const errorCount = logs.filter((l) => l.level === "ERROR").length;
-  const feedSymbols = (dataStatus as Record<string, unknown>)?.subscribed_symbols;
+  const feedSymbols = (dataStatus as Record<string, unknown>)?.symbols;
   const feedCount = Array.isArray(feedSymbols) ? feedSymbols.length : 0;
 
   const [nyClock, setNyClock] = useState("");

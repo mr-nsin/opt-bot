@@ -16,6 +16,7 @@ import {
 export const AnalyticsPage = memo(function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState("overview");
   const totalTrades = useTradingStore((s) => s.totalTrades);
+  const isRunning = useTradingStore((s) => s.status) === "Running";
 
   return (
     <div className="space-y-3">
@@ -35,7 +36,7 @@ export const AnalyticsPage = memo(function AnalyticsPage() {
         )}
       </div>
 
-      {totalTrades === 0 && (
+      {totalTrades === 0 && !isRunning && (
         <Alert variant="info">
           <AlertDescription>
             Start trading to see analytics. Metrics update in real-time as trades are executed.

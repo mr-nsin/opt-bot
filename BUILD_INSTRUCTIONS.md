@@ -106,6 +106,19 @@ The PyInstaller build embeds these into the trading-engine exe:
 - **Frontend build**: Uses `vite build` (TypeScript check `tsc` is skipped due to existing type errors in the codebase; fix those and add `tsc &&` before `vite build` for strict builds)
 - **prebuild**: Automatically runs `python trading-engine/build.py` before each `npm run build`, so the trading-engine sidecar is always rebuilt when you run `npm run tauri:build`
 
+## Log File Location
+
+When running the **packaged exe**, trading engine logs are written to:
+
+| Platform | Path |
+|----------|------|
+| **Windows** | `%APPDATA%\QuantDrift\logs\bot_YYYY-MM-DD.log` |
+| **Dev (not frozen)** | `./logs/bot_YYYY-MM-DD.log` (relative to working directory) |
+
+Example: `C:\Users\<you>\AppData\Roaming\QuantDrift\logs\bot_2026-03-03.log`
+
+Logs rotate at 50 MB and retain 2 files. The in-app Logs tab shows the same content in real time via the sidecar protocol.
+
 ## Troubleshooting
 
 ### "trading-engine not found"

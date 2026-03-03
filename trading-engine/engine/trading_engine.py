@@ -1096,11 +1096,12 @@ class TradingEngine:
             )
 
             # Log one-line summary: IBKR data received so user can see if something is going
+            # trading_symbols = config symbols (e.g. 9); tick_subs = total cache including options (e.g. 15)
             feed = "yes" if self._data_feed_started else "no"
             stk_opt = f" ({stk_count} STK, {fut_count} FUT, {opt_count} OPT)" if (stk_count or opt_count or fut_count) else ""
             summary = (
-                f"IBKR data: TWS={self.connected}, feed={feed}, symbols={len(symbols)}, "
-                f"queue={queue_size}, tick_subs={tick_count}{stk_opt}, bar_series={bar_count}"
+                f"IBKR data: TWS={self.connected}, feed={feed}, trading_symbols={len(symbols)}, "
+                f"tick_subs={tick_count}{stk_opt}, bar_series={bar_count}"
             )
             if symbols:
                 price_parts = [f"{sym}={symbol_last.get(sym) if symbol_last.get(sym) is not None else '—'}" for sym in symbols[:12]]

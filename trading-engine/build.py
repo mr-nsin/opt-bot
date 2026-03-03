@@ -34,6 +34,15 @@ def get_target_triple():
 
 def build():
     """Build the trading engine as a PyInstaller executable."""
+    # Ensure loguru and other deps are installed so PyInstaller can bundle them
+    req_path = os.path.join(SCRIPT_DIR, "requirements.txt")
+    if os.path.isfile(req_path):
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r", req_path],
+            cwd=ROOT_DIR,
+            check=True,
+        )
+
     target = get_target_triple()
     output_name = f"trading-engine-{target}"
     output_dir = os.path.join(ROOT_DIR, "src-tauri", "binaries")
@@ -110,6 +119,7 @@ def build():
     # Collect full packages so behavior matches Mac (all submodules available)
     cmd.extend(["--collect-submodules", "logging"])
     cmd.extend(["--collect-submodules", "ibapi"])
+    cmd.extend(["--collect-submodules", "loguru"])
 
     for data in data_additions:
         cmd.extend(["--add-data", data])

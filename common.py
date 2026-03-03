@@ -164,8 +164,10 @@ def create_order_obj(order_id: int, symbol: str, contract: Contract, orderType: 
             )
 
 def _loguru_patch(record):
-    """Inject thread_id into loguru record for format string."""
-    record["extra"]["thread_id"] = threading.get_native_id()
+    """Inject thread_id into loguru record (optional; format no longer requires it to avoid KeyError)."""
+    extra = record.get("extra") or {}
+    extra["thread_id"] = threading.get_native_id()
+    record["extra"] = extra
     return record
 
 
@@ -173,12 +175,19 @@ def setup_logger(name='log', console_handler=True):
     """
     Configure loguru for file + optional console. Returns the loguru logger.
     Kept for compatibility with code that imports setup_logger.
+    Logs path: when frozen (exe), use %APPDATA%\\QuantDrift\\logs on Windows for user-accessible logs.
     """
     logger.remove()
-    logs_path = 'logs'
+    if getattr(sys, "frozen", False):
+        # Running from packaged exe: use app data dir so user can find logs
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        logs_path = os.path.join(base, "QuantDrift", "logs")
+    else:
+        logs_path = "logs"
     os.makedirs(logs_path, exist_ok=True)
     today = datetime.date.today().strftime("%Y-%m-%d")
-    log_format = "{time:YYYY-MM-DD HH:mm:ss} - {level} - {extra[thread_id]} - {message}"
+    # Format without thread_id to avoid KeyError when record comes from stdlib logging bridge
+    log_format = "{time:YYYY-MM-DD HH:mm:ss} - {level} - {message}"
     logger.patch(_loguru_patch)
     logger.add(
         os.path.join(logs_path, f'{name}_{today}.log'),
