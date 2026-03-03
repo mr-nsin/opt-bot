@@ -49,6 +49,8 @@ function SidebarInner() {
   const connectedToTws = useTradingStore((s) => s.connectedToTws);
   const status = useTradingStore((s) => s.status);
   const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   const winningTrades = useTradingStore((s) => s.winningTrades);
   const losingTrades = useTradingStore((s) => s.losingTrades);
   const dailyPnl = useTradingStore((s) => s.dailyPnl);
@@ -65,7 +67,7 @@ function SidebarInner() {
     [logs]
   );
 
-  const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(0) : "—";
+  const winRate = closedTrades > 0 ? ((winningTrades / closedTrades) * 100).toFixed(0) : "—";
 
   return (
     <aside className="w-[260px] sidebar-pro flex flex-col border-r border-sidebar-border/20 shrink-0">
@@ -168,22 +170,26 @@ function SidebarInner() {
               {dailyPnl.total >= 0 ? "+" : ""}${dailyPnl.total.toFixed(2)}
             </span>
           </div>
-          <div className="grid grid-cols-4 gap-1 text-center">
+          <div className="grid grid-cols-5 gap-1 text-center">
             <div className="py-1 rounded bg-sidebar-muted/20">
-              <p className="text-[13px] font-bold text-sidebar-foreground tabular-nums">{totalTrades}</p>
-              <p className="text-xs text-sidebar-foreground/70 font-medium">Total</p>
+              <p className="text-[13px] font-bold text-sidebar-foreground tabular-nums">{openTrades}</p>
+              <p className="text-[10px] text-sidebar-foreground/70 font-medium">Open</p>
+            </div>
+            <div className="py-1 rounded bg-sidebar-muted/20">
+              <p className="text-[13px] font-bold text-sidebar-foreground tabular-nums">{closedTrades}</p>
+              <p className="text-[10px] text-sidebar-foreground/70 font-medium">Closed</p>
             </div>
             <div className="py-1 rounded bg-sidebar-muted/20">
               <p className="text-sm font-bold text-emerald-400 tabular-nums">{winningTrades}</p>
-              <p className="text-xs text-sidebar-foreground/70 font-medium">Win</p>
+              <p className="text-[10px] text-sidebar-foreground/70 font-medium">Win</p>
             </div>
             <div className="py-1 rounded bg-sidebar-muted/20">
               <p className="text-sm font-bold text-red-400 tabular-nums">{losingTrades}</p>
-              <p className="text-xs text-sidebar-foreground/70 font-medium">Loss</p>
+              <p className="text-[10px] text-sidebar-foreground/70 font-medium">Loss</p>
             </div>
             <div className="py-1 rounded bg-sidebar-muted/20">
               <p className="text-sm font-bold text-sidebar-foreground/90 tabular-nums">{winRate}%</p>
-              <p className="text-xs text-sidebar-foreground/70 font-medium">Rate</p>
+              <p className="text-[10px] text-sidebar-foreground/70 font-medium">Rate</p>
             </div>
           </div>
         </div>

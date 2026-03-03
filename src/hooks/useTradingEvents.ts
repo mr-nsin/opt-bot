@@ -21,6 +21,7 @@ export function useTradingEvents() {
     setConnectedToTws,
     setDailyPnl,
     setTradeStats,
+    setOpenClosedTrades,
     setLastSignal,
     addSignalToSession,
     addTrade,
@@ -205,11 +206,10 @@ export function useTradingEvents() {
     });
 
     const state = useTradingStore.getState();
-    setTradeStats(
-      state.totalTrades + 1,
-      state.winningTrades,
-      state.losingTrades
-    );
+    const newTotal = state.totalTrades + 1;
+    const closed = state.winningTrades + state.losingTrades;
+    setTradeStats(newTotal, state.winningTrades, state.losingTrades);
+    setOpenClosedTrades(newTotal - closed, closed);
 
     if (settings.show_notifications) {
       addToast({
@@ -236,19 +236,12 @@ export function useTradingEvents() {
       data.exit_price != null ? Number(data.exit_price) : undefined
     );
 
-    if (pnl > 0) {
-      setTradeStats(
-        state.totalTrades,
-        state.winningTrades + 1,
-        state.losingTrades
-      );
-    } else if (pnl < 0) {
-      setTradeStats(
-        state.totalTrades,
-        state.winningTrades,
-        state.losingTrades + 1
-      );
-    }
+    const newWins = pnl > 0 ? state.winningTrades + 1 : state.winningTrades;
+    const newLosses = pnl < 0 ? state.losingTrades + 1 : state.losingTrades;
+    const closed = newWins + newLosses;
+    const open = state.totalTrades - closed;
+    setTradeStats(state.totalTrades, newWins, newLosses);
+    setOpenClosedTrades(Math.max(0, open), closed);
 
     if (settings.show_notifications) {
       addToast({

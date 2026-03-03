@@ -15,6 +15,7 @@ export function useTradingEngine() {
     setConnectedToTws,
     setDailyPnl,
     setTradeStats,
+    setOpenClosedTrades,
     clearSignalsInSession,
   } = useTradingStore();
   const { tradingConfig } = useConfigStore();
@@ -67,12 +68,13 @@ export function useTradingEngine() {
       setStatus(data.status);
       setSidecarRunning(data.sidecar_running);
       setConnectedToTws(data.connected_to_tws);
-      setDailyPnl(data.daily_pnl);
+      setDailyPnl(typeof data.daily_pnl === "object" ? data.daily_pnl : { realized: 0, unrealized: 0, total: data.daily_pnl });
       setTradeStats(data.total_trades, data.winning_trades, data.losing_trades);
+      setOpenClosedTrades(data.open_trades ?? 0, data.closed_trades ?? 0);
     } catch (err) {
       console.error("Failed to refresh status:", err);
     }
-  }, [setStatus, setSidecarRunning, setConnectedToTws, setDailyPnl, setTradeStats]);
+  }, [setStatus, setSidecarRunning, setConnectedToTws, setDailyPnl, setTradeStats, setOpenClosedTrades]);
 
   return {
     status,

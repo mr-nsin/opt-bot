@@ -38,7 +38,7 @@ def getExpiry(EXPIRY):
         tradingExpiry = next_trade_date.strftime("%Y%m%d")
     else:
         tradingExpiry = EXPIRY
-    logger.info(f"expiry To Trade is = {tradingExpiry}")
+    logger.info(f"expiry To Trade [config={EXPIRY}] = {tradingExpiry}")
 
     return tradingExpiry
 

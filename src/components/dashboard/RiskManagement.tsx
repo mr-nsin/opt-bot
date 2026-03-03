@@ -7,7 +7,7 @@ import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 
 export function RiskManagement({ disabled }: { disabled?: boolean }) {
   const { tradingConfig, updateTradingConfig } = useConfigStore();
-  const { dailyPnl, totalTrades } = useTradingStore();
+  const { dailyPnl, totalTrades, openTrades, closedTrades } = useTradingStore();
   if (!tradingConfig) return null;
 
   const profitPct = Math.min(100, Math.abs((dailyPnl.total / tradingConfig.profit_amount_day) * 100));
@@ -58,9 +58,9 @@ export function RiskManagement({ disabled }: { disabled?: boolean }) {
           </div>
           <div>
             <div className="flex items-center justify-between text-sm mb-1">
-              <span className="text-muted-foreground font-medium">Trades</span>
+              <span className="text-muted-foreground font-medium">Trades (Open / Closed)</span>
               <span className="font-mono font-bold tabular-nums text-sm">
-                {totalTrades}/{tradingConfig.per_day_trades}
+                {openTrades} open / {closedTrades} closed — {totalTrades}/{tradingConfig.per_day_trades} limit
               </span>
             </div>
             <Progress value={tradePct} indicatorClassName="bg-primary" />

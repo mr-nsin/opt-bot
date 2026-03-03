@@ -6,13 +6,15 @@ import { winRate } from "@/lib/utils";
 
 export const PerformanceMetrics = memo(function PerformanceMetrics() {
   const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   const winningTrades = useTradingStore((s) => s.winningTrades);
   const losingTrades = useTradingStore((s) => s.losingTrades);
   const dailyPnl = useTradingStore((s) => s.dailyPnl);
   const todayTrades = useTradingStore((s) => s.todayTrades);
 
-  const wr = winRate(winningTrades, totalTrades);
-  const wrPercent = totalTrades === 0 ? 0 : (winningTrades / totalTrades) * 100;
+  const wr = closedTrades > 0 ? winRate(winningTrades, closedTrades) : "0%";
+  const wrPercent = closedTrades > 0 ? (winningTrades / closedTrades) * 100 : 0;
 
   const stats = useMemo(() => {
     const wins = todayTrades.filter((t) => (t.pnl ?? 0) > 0);
@@ -23,11 +25,11 @@ export const PerformanceMetrics = memo(function PerformanceMetrics() {
     const bestTrade = todayTrades.reduce((best, t) => Math.max(best, t.pnl ?? 0), 0);
     const worstTrade = todayTrades.reduce((worst, t) => Math.min(worst, t.pnl ?? 0), 0);
     // Expectancy = (WinRate * AvgWin) - (LossRate * |AvgLoss|)
-    const winRatio = totalTrades === 0 ? 0 : winningTrades / totalTrades;
+    const winRatio = closedTrades > 0 ? winningTrades / closedTrades : 0;
     const expectancy = winRatio * avgWin + (1 - winRatio) * avgLoss;
 
     return { avgWin, avgLoss, profitFactor, bestTrade, worstTrade, expectancy };
-  }, [todayTrades, totalTrades, winningTrades]);
+  }, [todayTrades, totalTrades, winningTrades, closedTrades]);
 
   const noData = totalTrades === 0;
 
@@ -36,10 +38,11 @@ export const PerformanceMetrics = memo(function PerformanceMetrics() {
       {/* Primary metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-1.5">
         <StatCard
-          title="Total Trades"
+          title="Trades"
           value={totalTrades}
           icon={Target}
-          info="Total trades executed in this session"
+          subtitle={`${openTrades} open / ${closedTrades} closed`}
+          info="Open positions and closed trades in this session"
         />
         <StatCard
           title="Win Rate"

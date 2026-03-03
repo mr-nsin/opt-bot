@@ -16,6 +16,8 @@ import {
 export const AnalyticsPage = memo(function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState("overview");
   const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   const isRunning = useTradingStore((s) => s.status) === "Running";
 
   return (
@@ -31,7 +33,7 @@ export const AnalyticsPage = memo(function AnalyticsPage() {
         </div>
         {totalTrades > 0 && (
           <div className="text-sm text-muted-foreground font-mono tabular-nums">
-            {totalTrades} trade{totalTrades !== 1 ? "s" : ""} today
+            {openTrades} open / {closedTrades} closed ({totalTrades} total)
           </div>
         )}
       </div>

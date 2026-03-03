@@ -9,6 +9,8 @@ interface TradingState {
   connectedToTws: boolean;
   dailyPnl: DailyPnL;
   totalTrades: number;
+  openTrades: number;
+  closedTrades: number;
   winningTrades: number;
   losingTrades: number;
   lastSignal: SignalEvent | null;
@@ -30,6 +32,7 @@ interface TradingState {
   setConnectedToTws: (connected: boolean) => void;
   setDailyPnl: (pnl: DailyPnL) => void;
   setTradeStats: (total: number, wins: number, losses: number) => void;
+  setOpenClosedTrades: (open: number, closed: number) => void;
   setLastSignal: (signal: SignalEvent | null) => void;
   addSignalToSession: (signal: SignalEvent) => void;
   clearSignalsInSession: () => void;
@@ -49,6 +52,8 @@ const initialState = {
   connectedToTws: false,
   dailyPnl: { realized: 0, unrealized: 0, total: 0 },
   totalTrades: 0,
+  openTrades: 0,
+  closedTrades: 0,
   winningTrades: 0,
   losingTrades: 0,
   lastSignal: null,
@@ -69,6 +74,8 @@ export const useTradingStore = create<TradingState>((set) => ({
   setDailyPnl: (pnl) => set({ dailyPnl: pnl }),
   setTradeStats: (total, wins, losses) =>
     set({ totalTrades: total, winningTrades: wins, losingTrades: losses }),
+  setOpenClosedTrades: (open, closed) =>
+    set({ openTrades: open, closedTrades: closed }),
   setLastSignal: (signal) => set({ lastSignal: signal }),
   addSignalToSession: (signal) =>
     set((state) => ({

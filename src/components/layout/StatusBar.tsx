@@ -19,7 +19,8 @@ export const StatusBar = memo(function StatusBar() {
   const status = useTradingStore((s) => s.status);
   const isSignalScanning = useTradingStore((s) => s.isSignalScanning);
   const dataStatus = useTradingStore((s) => s.dataStatus);
-  const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   const dailyPnl = useTradingStore((s) => s.dailyPnl);
   const logs = useLogStore((s) => s.logs);
 
@@ -115,9 +116,9 @@ export const StatusBar = memo(function StatusBar() {
       {/* Center */}
       {isRunning && (
         <div className="flex items-center gap-3 text-muted-foreground/50">
-          <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1">
             <Zap className="h-2.5 w-2.5" />
-            <span className="font-mono tabular-nums">{totalTrades} trades</span>
+            <span className="font-mono tabular-nums">{openTrades} open / {closedTrades} closed</span>
           </span>
           <span className="text-border/30">·</span>
           <span

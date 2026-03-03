@@ -11,6 +11,8 @@ type SortDir = "asc" | "desc";
 export const TradeBlotter = memo(function TradeBlotter() {
   const todayTrades = useTradingStore((s) => s.todayTrades);
   const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   const winningTrades = useTradingStore((s) => s.winningTrades);
   const losingTrades = useTradingStore((s) => s.losingTrades);
 
@@ -47,7 +49,7 @@ export const TradeBlotter = memo(function TradeBlotter() {
     });
   }, [todayTrades, sortField, sortDir]);
 
-  const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(1) : "0.0";
+  const winRate = closedTrades > 0 ? ((winningTrades / closedTrades) * 100).toFixed(1) : "0.0";
 
   return (
     <Card>
@@ -59,7 +61,7 @@ export const TradeBlotter = memo(function TradeBlotter() {
         <div className="flex items-center gap-2">
           {totalTrades > 0 && (
             <span className="text-xs text-muted-foreground font-mono tabular-nums">
-              {totalTrades} trades · {winRate}% win · W{winningTrades}/L{losingTrades}
+              {openTrades} open / {closedTrades} closed · {winRate}% win · W{winningTrades}/L{losingTrades}
             </span>
           )}
           <Badge variant={todayTrades.length > 0 ? "success" : "secondary"} className="text-xs h-5 px-2">

@@ -13,7 +13,7 @@ import time
 import json
 import threading
 from queue import Queue
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
 # Add parent directories to path for importing existing modules
@@ -588,11 +588,11 @@ class TradingEngine:
                 s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
                 for s in stock_list
             }
-            # Pre-populate trade_time_dict like standalone main_call (enforces cooldown from startup)
             BOT.trade_time_dict = {}
+            past_time = datetime.now() - timedelta(seconds=int(getattr(self.config, "distance_between_trade", 610)) + 60)
             for sym in stock_list:
-                BOT.trade_time_dict[f"{sym}_CALL"] = datetime.now()
-                BOT.trade_time_dict[f"{sym}_PUT"] = datetime.now()
+                BOT.trade_time_dict[f"{sym}_CALL"] = past_time
+                BOT.trade_time_dict[f"{sym}_PUT"] = past_time
 
             # --- Required for checkAlgoAndTrade, checkConditionsAndTrade, takeTrade, placeOrder (same as main_call) ---
             # Without these, BOT hits NameError or wrong behavior when processing signals/trades.
@@ -852,6 +852,14 @@ class TradingEngine:
                     except Exception:
                         emit_log("Signal scanner active", "INFO", "signal")
 
+                # Every 30s: check end-of-day time and close all positions if past EOD
+                if self._data_feed_started and self.connected:
+                    if not hasattr(self, "_last_eod_check_time"):
+                        self._last_eod_check_time = 0.0
+                    if now - self._last_eod_check_time >= 30.0:
+                        self._last_eod_check_time = now
+                        self._check_eod_time()
+
                 time.sleep(0.05)  # 50ms loop
 
             except Exception as e:
@@ -867,6 +875,22 @@ class TradingEngine:
             emit_log(f"Processing event: {event_type}", "DEBUG", "trading")
         except Exception as e:
             emit_log(f"Event processing error: {e}", "ERROR", "trading")
+
+    def _check_eod_time(self):
+        """Periodically check if market end time has passed and close all positions."""
+        try:
+            import BOT
+            if getattr(BOT, "STOP_TRADING", False) or getattr(BOT, "DAY_LOCKED", False):
+                return
+            result = BOT.timeCheckAndCloseProgram(
+                BOT.SUB_ACCOUNT_ID,
+                BOT.profit_amount_day,
+                BOT.loss_amount_day,
+            )
+            if result:
+                emit_log("EOD time/PnL limit reached — positions closed, trading locked", "WARN", "system")
+        except Exception as e:
+            emit_log(f"EOD time check error: {e}", "WARN", "system")
 
     def _emit_pnl_update(self):
         """Send P&L update to the frontend. TWS pnl_cache is a flat dict: daily, unrealized, realized."""

@@ -102,8 +102,8 @@ pub async fn emergency_stop(
     let request = SidecarRequest::new(methods::EMERGENCY_STOP, None);
     let _ = manager::send_request(&request).await;
 
-    // Give the engine a moment to close orders/positions before we kill it
-    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    // Give the engine time to close all positions (place MKT orders for each)
+    tokio::time::sleep(std::time::Duration::from_millis(15000)).await;
 
     // Force kill sidecar process tree
     if let Err(e) = manager::kill_sidecar().await {
@@ -129,12 +129,17 @@ pub async fn get_trading_status(
 ) -> Result<serde_json::Value, String> {
     let app = state.lock().await;
 
+    let open_trades = app.trading.positions.len() as i32;
+    let closed_trades = app.trading.winning_trades + app.trading.losing_trades;
+
     Ok(serde_json::json!({
         "status": app.trading.status,
         "sidecar_running": app.sidecar_running,
         "connected_to_tws": app.connected_to_tws,
         "daily_pnl": app.trading.daily_pnl,
         "total_trades": app.trading.total_trades,
+        "open_trades": open_trades,
+        "closed_trades": closed_trades,
         "winning_trades": app.trading.winning_trades,
         "losing_trades": app.trading.losing_trades,
     }))

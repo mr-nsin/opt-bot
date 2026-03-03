@@ -27,8 +27,10 @@ export const trading = {
       status: string;
       sidecar_running: boolean;
       connected_to_tws: boolean;
-      daily_pnl: number;
+      daily_pnl: number | { realized: number; unrealized: number; total: number };
       total_trades: number;
+      open_trades: number;
+      closed_trades: number;
       winning_trades: number;
       losing_trades: number;
     }>("get_trading_status"),

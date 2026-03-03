@@ -325,16 +325,17 @@ class TwsApiClient(EWrapper, EClient):
         #     return
 
         if ticker_id is None:
-            # contract is not subscribed
             ticker_id = self.nextTickerId()
             self.ticker_id_contract_cache[ticker] = ticker_id
             if contract.secType == "OPT":
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract, option_symbol=ticker)
             else:
-                # STK/FUT: display symbol for logs (FUT: use original e.g. NQU5)
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract)
         else:
-            if snapshot == False:
+            if not snapshot:
+                logger.info(f"Contract {ticker} already subscribed (ticker_id={ticker_id}), skipping re-subscribe")
+                return
+            else:
                 temp_ticker_id = ticker_id
                 ticker_id = self.nextTickerId()
                 self.ticker_id_contract_cache[ticker] = ticker_id
@@ -552,11 +553,17 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     # def error(self, reqId: TickerId, errorCode: int, errorString: str):
     def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson = ""):
-        # super().error(reqId, errorCode, errorString, advancedOrderRejectJson)
-        logger.error(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
+        info_codes = {2104, 2106, 2107, 2108, 2119, 2158}
+        warning_codes = {2100, 2103, 2105, 2137, 10167, 10185}
+        if errorCode in info_codes:
+            logger.info(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
+        elif errorCode in warning_codes:
+            logger.warning(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
+        else:
+            logger.error(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
         if errorCode == 200:
             symbol = self.ticker_id_contract_cache.get(reqId, None)
-            if symbol != None:
+            if symbol is not None:
                 logger.error(f"Code: {errorCode}, Symbol: {symbol}")
 
     @iswrapper

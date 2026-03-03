@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useConfigStore } from "@/stores/configStore";
-import { CANDLE_TIMEFRAMES, EXPIRY_OPTIONS } from "@/lib/constants";
+import { CANDLE_TIMEFRAMES, STOCK_EXPIRY_OPTIONS, SPY_QQQ_EXPIRY_OPTIONS } from "@/lib/constants";
 
 export function TradeParameters({ disabled }: { disabled?: boolean }) {
   const { tradingConfig, updateTradingConfig } = useConfigStore();
@@ -17,11 +17,17 @@ export function TradeParameters({ disabled }: { disabled?: boolean }) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
           <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">Expiry</label>
-            <select value={tradingConfig.spy_qqq_expiry} onChange={(e) => !disabled && updateTradingConfig({ spy_qqq_expiry: e.target.value })} className={sel} disabled={disabled}>
-              {EXPIRY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <label className="text-xs font-medium text-muted-foreground">Stock Expiry (AMZN, AAPL…)</label>
+            <select value={tradingConfig.expiry_to_trade ?? "next"} onChange={(e) => !disabled && updateTradingConfig({ expiry_to_trade: e.target.value })} className={sel} disabled={disabled}>
+              {STOCK_EXPIRY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">SPY/QQQ Expiry</label>
+            <select value={tradingConfig.spy_qqq_expiry ?? "0DTE"} onChange={(e) => !disabled && updateTradingConfig({ spy_qqq_expiry: e.target.value })} className={sel} disabled={disabled}>
+              {SPY_QQQ_EXPIRY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           <div className="space-y-1">

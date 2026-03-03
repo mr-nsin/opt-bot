@@ -14,13 +14,15 @@ import { winRate } from "@/lib/utils";
 export const LiveStats = memo(function LiveStats() {
   const dailyPnl = useTradingStore((s) => s.dailyPnl);
   const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   const winningTrades = useTradingStore((s) => s.winningTrades);
   const losingTrades = useTradingStore((s) => s.losingTrades);
   const status = useTradingStore((s) => s.status);
   const connectedToTws = useTradingStore((s) => s.connectedToTws);
 
-  const wr = winRate(winningTrades, totalTrades);
-  const wrPercent = totalTrades === 0 ? 0 : (winningTrades / totalTrades) * 100;
+  const wr = closedTrades > 0 ? winRate(winningTrades, closedTrades) : "0%";
+  const wrPercent = closedTrades > 0 ? (winningTrades / closedTrades) * 100 : 0;
   const isRunning = status === "Running";
   const isIdle = status === "Idle";
   const isStarting = status === "Starting";
@@ -61,9 +63,9 @@ export const LiveStats = memo(function LiveStats() {
         title="Trades"
         value={totalTrades}
         icon={Target}
-        subtitle={`${winningTrades}W / ${losingTrades}L`}
+        subtitle={`${openTrades} open / ${closedTrades} closed`}
         loading={isStarting}
-        info="Total trades today"
+        info="Open positions and closed trades today"
       />
       <StatCard
         title="Win Rate"

@@ -67,6 +67,8 @@ CLOSE_ALL_ORDERS = False
 START_DAY_PNL = None
 _signal_emit_times = {}  # throttle UI signal popups: {symbol_direction: last_emit_epoch}
 
+import threading
+_globals_lock = threading.Lock()
 
 # Trade cooldown tracking (entry or exit)
 recent_trade_times = {}  # key = f"{symbol}_{right}" → datetime
@@ -100,8 +102,15 @@ LICENSE_FILE = "license.json"
 LICENSE_KEY = "TraderNova_987_90_1"
 
 def hard_exit():
-    logger.error("HARD EXIT: Daily limit hit, terminating process")
-    os.kill(os.getpid(), signal.SIGTERM)
+    global STOP_TRADING, DAY_LOCKED, CLOSE_ALL_ORDERS
+    logger.error("HARD EXIT: Daily limit hit — locking trading for the day")
+    STOP_TRADING = True
+    DAY_LOCKED = True
+    CLOSE_ALL_ORDERS = True
+    try:
+        _emit_log("Daily P&L limit hit — trading locked for the day", "ERROR", "system")
+    except Exception:
+        pass
     
 def init_day_pnl(account_id):
     global START_DAY_PNL
@@ -225,8 +234,8 @@ def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch) -> bool:
     bool: True if the time since the last trade exceeds the minimum distance between trades, False otherwise.
     """
     key = "{}_{}".format(stockName, rightMatch)
-    if key in trade_time_dict.keys():
-        last_trade_time = trade_time_dict["{}_{}".format(stockName, rightMatch)]
+    last_trade_time = trade_time_dict.get(key)
+    if last_trade_time is not None:
         time_since_last_trade = datetime.now() - last_trade_time
         logger.info(f"{stockName}: time_since_last_trade: {int(time_since_last_trade.total_seconds())}")
         return int(time_since_last_trade.total_seconds()) < TRADE_COOLDOWN_SECONDS
@@ -277,7 +286,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                 options_tick: Tick = None,
                 stock_tick:Tick = None, closing_order: bool = False, is_sqare_off=False):
                     
-    if DAY_LOCKED and CLOSE_ALL_ORDERS:
+    if DAY_LOCKED and CLOSE_ALL_ORDERS and not (closing_order or is_sqare_off):
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
 
@@ -287,12 +296,13 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 
     logger.info("Order Data 1 ")
     
-    open_order = order_mgr.get_entry_order(symbol=symbol, right=right)
-    if open_order != None and open_order.active == True and open_order.right==right:
-        logger.info(f"Order already present for Stock TTT = {symbol} Get Right is = {right} and open_order right is = {open_order.right}")
-        logger.info(f"Open Order data is = {open_order}")
-        return "OrderAlreadyPresent"
-    
+    if not (closing_order or is_sqare_off):
+        open_order = order_mgr.get_entry_order(symbol=symbol, right=right)
+        norm_right = right[0].upper() if right else right
+        if open_order is not None and open_order.active and (open_order.right or "")[0:1].upper() == norm_right:
+            logger.info(f"Order already present for Stock TTT = {symbol} Get Right is = {right} and open_order right is = {open_order.right}")
+            logger.info(f"Open Order data is = {open_order}")
+            return "OrderAlreadyPresent"
 
     logger.info("Enter order")
     logger.info("\n\nOrder Details\n\n")
@@ -704,6 +714,9 @@ def checkVWAPValue(stock, Right, candlesData):
 
     sumCummlative = sum(curtVWAPCum)
     sumVolume = sum(curtVWAPVol)
+    if sumVolume == 0:
+        logger.warning(f"VWAP: total volume is 0 for {stock}, returning False")
+        return False
     intradayVWAP = sumCummlative / sumVolume
 
     logger.info(
@@ -767,6 +780,9 @@ def checkVWAPValue_OLD(stock, Right, candlesData):
 
     sumCummlative = sum(curtVWAPCum)
     sumVolume = sum(curtVWAPVol)
+    if sumVolume == 0:
+        logger.warning(f"VWAP_OLD: total volume is 0 for {stock}, returning False")
+        return False
     intradayVWAP = sumCummlative / sumVolume
 
     logger.info(("Current Time is = {} \
@@ -815,14 +831,20 @@ def getATRValue(stock, candlesData, days=21):
     # df = pd.read_csv(data, sep=",")
     try:
         atrValue = getATR(df)
-    except:
-        logger.info("Got except in getting ATR so running ATR code again in loop in except block")
-        while True:
-            atrValue = getATR(df)
-            if len(atrValue) > 0:
-                break
-            else:
-                continue
+    except Exception as atr_ex:
+        logger.warning(f"ATR exception: {atr_ex}; retrying up to 5 times")
+        atrValue = pd.Series(dtype=float)
+        for _atr_retry in range(5):
+            try:
+                atrValue = getATR(df)
+                if len(atrValue) > 0:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.2)
+        if len(atrValue) == 0:
+            logger.error("ATR retry exhausted — returning empty ATR")
+            return (0, 0)
 
     logger.info(
         f"ATR value is = {atrValue} and len of list is = {len(atrValue)}\n\n"
@@ -863,13 +885,22 @@ def getStockNearStrikes(stock: str, strikesListDict: dict,tick: Tick):
         stock10Strikesmapper.update({"lowList": [], "highList": []})
         return stock10Strikesmapper
 
-    strikesListNew = [float(each) for each in strikesList]
+    strikesListNew = [float(each) for each in strikesList if float(each) > 0]
     
     underlying_price = tick.last
     logger.info("UNDERLYING PRICE IS = {}".format(underlying_price))
     if underlying_price is None or underlying_price <= 0:
         logger.warning(f"Invalid underlying price ({underlying_price}) for {stock} — cannot compute strikes")
         _emit_log(f"{stock}: No valid underlying price yet (last={underlying_price}) — waiting for TWS data", "WARN", "signal")
+        stock10Strikesmapper.update({"lowList": [], "highList": []})
+        return stock10Strikesmapper
+
+    pct_range = 0.25
+    lower_bound = underlying_price * (1 - pct_range)
+    upper_bound = underlying_price * (1 + pct_range)
+    strikesListNew = [s for s in strikesListNew if lower_bound <= s <= upper_bound]
+    if not strikesListNew:
+        logger.warning(f"No strikes within ±{int(pct_range*100)}% of {stock} underlying ${underlying_price:.2f}")
         stock10Strikesmapper.update({"lowList": [], "highList": []})
         return stock10Strikesmapper
 
@@ -971,35 +1002,12 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
 
         return toTrade, atrVal, ema_S
     elif onlyAtrCheck == "yes":
-        isPreviousNeutralCandles = False
         atrVal = getATRValue(Stock, getCandlesData)
-        last2Candles = getCandlesData[::-1][1:3]
-        logger.info("Last 2 candles data is = {}".format(last2Candles))
-
-        candle_0 = last2Candles[0][1:]
-        candle_1 = last2Candles[1][1:]
-
-        candle_1_close = float(candle_1[3])
-        candle_1_open = float(candle_1[0])
-        if (round(candle_1_open, 3) - round(candle_1_close, 3)) == 0:
-            logger.info("Previous Open = {} ad previous close is = {}".format(round(candle_1_open, 3), round(candle_1_close, 3)))
-            isPreviousNeutralCandles = True
-        
-        # FOR SCLAP
-        if candleTime == "3 mins":
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        elif candleTime == "1 min":
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        elif candleTime == "5 mins":
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        else:
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-
+        ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
         return toTrade, atrVal, ema_S
     else:
-        logger.info("\n\n\n\n\n\nWrong Data Given. So exiting Execution. Please Exit Orders Manually if Any placed by Program")
-        sys.exit(0)
-        sys.exit(0)
+        logger.error("checkAlgoAndTrade: invalid onlyAtrCheck value — returning no-trade")
+        return (False, 0.0, ([0], [0], [0]))
 
 def updateStockMapper(stockName, value):
     logger.info(f"\n updateStockMapper for stock = {stockName}\n")
@@ -1087,9 +1095,9 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                         continue
                     else:
                         tradeKey = '{}_{}'.format(stockName, rightMatch)
-                        #logger.info("trade_time_dict = {}".format(trade_time_dict))
-                        if len(trade_time_dict.keys()) != 0:
-                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {trade_time_dict[tradeKey]}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
+                        last_trade = trade_time_dict.get(tradeKey)
+                        if last_trade is not None:
+                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {last_trade}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
 
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1191,9 +1199,9 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                         continue
                     else:
                         tradeKey = '{}_{}'.format(stockName, rightMatch)
-                        #logger.info("trade_time_dict = {}".format(trade_time_dict))
-                        if len(trade_time_dict.keys()) != 0:
-                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {trade_time_dict[tradeKey]}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
+                        last_trade = trade_time_dict.get(tradeKey)
+                        if last_trade is not None:
+                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {last_trade}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
                     
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1379,25 +1387,16 @@ def getAndBuyAfterMarketEnd():
 
             if totalQty > 0:
                 action = "SELL"
-                
-                options_tick = client.get_options_data(
-                    symbol=ePos.symbol,
-                    expiry=ePos.expiry,
-                    right=ePos.right,
-                    strike=ePos.strike
-                )
-                
-
                 allSquareOffOrderId = placeOrder(symbol=ePos.symbol,
-                                                    expiry=ePos.expiry, 
-                                                    strike=ePos.strike,
-                                                    right=ePos.right, 
-                                                    action=action, 
-                                                    totalQuantity=totalQty,
-                                                    orderType="MKT",
-                                                    options_tick=options_tick,
-                                                    closing_order=True,
-                                                    is_sqare_off=True)
+                                                expiry=ePos.expiry,
+                                                strike=ePos.strike,
+                                                right=ePos.right,
+                                                action=action,
+                                                totalQuantity=totalQty,
+                                                orderType="MKT",
+                                                options_tick=None,
+                                                closing_order=True,
+                                                is_sqare_off=True)
                 logger.info(f"Square off order placed: {allSquareOffOrderId}")
     except Exception as ex:
         logger.error(f"Error in getAndBuyAfterMarketEnd: {ex}", exc_info=True)
@@ -1427,16 +1426,23 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     
     trade_key = "{}_{}".format(stock_symbol, right)
 
-    if options_tick.last == -1:
-        return "priceConditonNotMatched"
-
     bidPrice = options_tick.bid
     askPrice = options_tick.ask
     lastPrice = options_tick.last
     activeVol = options_tick.volume
-    
-    midPrice = (bidPrice + askPrice)/2
-    spreadGap = askPrice - bidPrice
+
+    if lastPrice == -1:
+        if bidPrice > 0 and askPrice > 0:
+            lastPrice = round((bidPrice + askPrice) / 2, 2)
+            logger.info(f"options_tick.last=-1, using mid-price ${lastPrice:.2f} (bid=${bidPrice:.2f}, ask=${askPrice:.2f})")
+        else:
+            return "priceConditonNotMatched"
+
+    if bidPrice <= 0 and askPrice <= 0:
+        logger.warning(f"{stock_symbol} {right}: No valid bid/ask (bid={bidPrice}, ask={askPrice}) — skipping")
+        return "priceConditonNotMatched"
+    midPrice = (bidPrice + askPrice) / 2 if (bidPrice > 0 and askPrice > 0) else lastPrice
+    spreadGap = (askPrice - bidPrice) if (bidPrice > 0 and askPrice > 0) else 0.0
     
     if spreadGap >=0.12:
         _emit_log(f"{stock_symbol} {right}: Spread too wide ${spreadGap:.2f} ≥ $0.12 — skipping", "INFO", "order")
@@ -1476,16 +1482,10 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         TimeDecayDiffVal = -1
         
     # Log the calculation parameters
-    logger.info(f"""
-    ═══════════════════════════════════════════════════════
-    PROFIT/LOSS CALCULATION for {stock_symbol}
-    ═══════════════════════════════════════════════════════
-    Entry Price: ${tradePrice:.2f}
-    ATR Value: ${atrVale:.4f}
-    Market Time: {marketTime}
-    Time to Expiry: {TimeDecayDiffVal} days
-    Is SPY/QQQ: {"spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower()}
-    """)
+    logger.info(
+        f"PL_CALC {stock_symbol}: Entry=${tradePrice:.2f} ATR=${atrVale:.4f} "
+        f"Time={marketTime} DTE={TimeDecayDiffVal} SPY/QQQ={'spy' in stock_symbol.lower() or 'qqq' in stock_symbol.lower()}"
+    )
 
     if atrVale <= 0.01:
         profitPrice = round(tradePrice + 0.02, 2)
@@ -1609,6 +1609,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                  timeDiffMultiplyVal = 0.49
             elif TimeDecayDiffVal < 2 and TimeDecayDiffVal >0:
                 timeDiffMultiplyVal = 0.4
+            auxPrice = round(tradePrice - float(atrVale * timeDiffMultiplyVal), 2)
         elif atrVale >= 1.05:
             if TimeDecayDiffVal >=4:
                 timeDiffMultiplyVal = 0.4
@@ -1623,41 +1624,42 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                 if tradePrice <= 0.1:
                     return "0dtepricebelow10cent"
                 elif tradePrice <= 0.2:
-                    profitPrice = round(tradePrice - float(tradePrice * 0.2), 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 0.2), 2)
                     auxPrice = round(tradePrice - float(tradePrice * 0.2), 2)
                 elif tradePrice <= 0.3 and tradePrice > 0.2:
-                    profitPrice = round(tradePrice - float(tradePrice * 22)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 22)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 25)/100, 2)
                 elif tradePrice > 0.3 and tradePrice <= 0.75:
-                    profitPrice = round(tradePrice - float(tradePrice * 19)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 19)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 21)/100, 2)
                 elif tradePrice > 0.75 and tradePrice <= 1.5:
-                    profitPrice = round(tradePrice - float(tradePrice * 14)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 14)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 16)/100, 2)
                 elif tradePrice > 1.5 and tradePrice <= 3.5:
-                    profitPrice = round(tradePrice - float(tradePrice * 10)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 10)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 12)/100, 2)
             elif marketTime > "1130" and marketTime <= "1300":
                 if tradePrice <= 0.1:
                     return "0dtepricebelow10cent"
                 elif tradePrice <= 0.2:
-                    profitPrice = round(tradePrice - float(tradePrice * 0.2), 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 0.2), 2)
                     auxPrice = round(tradePrice - float(tradePrice * 0.2), 2)
                 elif tradePrice <= 0.3 and tradePrice > 0.2:
-                    profitPrice = round(tradePrice - float(tradePrice * 17)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 17)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 23)/100, 2)
                 elif tradePrice > 0.3 and tradePrice <= 0.75:
-                    profitPrice = round(tradePrice - float(tradePrice * 14)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 14)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 19)/100, 2)
                 elif tradePrice > 0.75 and tradePrice <= 1.5:
-                    profitPrice = round(tradePrice - float(tradePrice * 10)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 10)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 14)/100, 2)
                 elif tradePrice > 1.5 and tradePrice <= 3.5:
-                    profitPrice = round(tradePrice - float(tradePrice * 7)/100, 2)
+                    profitPrice = round(tradePrice + float(tradePrice * 7)/100, 2)
                     auxPrice = round(tradePrice - float(tradePrice * 10)/100, 2)
             elif marketTime >= "1445":
-                return "0dte2ndhalfnotrade"""
-                
+                return "0dte2ndhalfnotrade"
+        """
+
         if tradePrice<=0.2 and TimeDecayDiffVal == 0 and marketTimeInt >= 1301 and marketTimeInt <= 1401:
             profitPrice = round(tradePrice + 0.05, 2)
             auxPrice = round(tradePrice - (tradePrice*0.04), 2)
@@ -1828,17 +1830,11 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
     loss_pct = ((tradePrice - auxPrice) / tradePrice * 100) if tradePrice > 0 else 0
     
-    logger.info(f"""
-    ═══════════════════════════════════════════════════════
-    FINAL PROFIT/LOSS TARGETS for {stock_symbol}
-    ═══════════════════════════════════════════════════════
-    Entry Price:     ${tradePrice:.2f}
-    Take Profit:     ${profitPrice:.2f}  (+{profit_pct:.1f}%)
-    Stop Loss:       ${auxPrice:.2f}     (-{loss_pct:.1f}%)
-    Profit Increment: ${PROFIT_INCREMENT:.2f}
-    Risk/Reward:     1:{(profitPrice-tradePrice)/(tradePrice-auxPrice):.2f}
-    ═══════════════════════════════════════════════════════
-    """)
+    rr = ((profitPrice - tradePrice) / (tradePrice - auxPrice)) if (tradePrice - auxPrice) > 0 else 0
+    logger.info(
+        f"TARGETS {stock_symbol}: Entry=${tradePrice:.2f} | TP=${profitPrice:.2f} (+{profit_pct:.1f}%) "
+        f"| SL=${auxPrice:.2f} (-{loss_pct:.1f}%) | Increment=${PROFIT_INCREMENT:.2f} | R:R=1:{rr:.2f}"
+    )
 
     logger.info(f"\n\nCurrent Options Price is = {lastPrice} And Current Active Volume = {activeVol}")
 
@@ -1957,6 +1953,9 @@ def init_data_feed():
         # Build strikes_map only for stocks (options chain); futures have no options in this flow
         stock_only_list = [c.symbol for c in stock_contracts if getattr(c, "secType", "") == "STK"]
         strikes_map = get_strikes_map(stock_list=stock_only_list) if stock_only_list else {}
+        for sym, data in strikes_map.items():
+            count = len(data.get("Strike", []))
+            logger.info(f"STRIKES_LOADED: {sym} -> {count} strikes from TWS")
         with open("expiryStrike.json", "w",  encoding="utf-8") as fp:
             json.dump(strikes_map, fp)
 
@@ -1970,7 +1969,7 @@ def init_data_feed():
                 continue
             strikes = strikes_map[stock_contract.symbol]["Strike"]
             logger.info(f"{stock_contract.symbol} UNDERLYING PRICE IS = {market_data.last}")
-            ls, hs = get10StrikesNearUnderlying(strikeList=strikes, undPrc=market_data.last, range_limit=4)
+            ls, hs = get10StrikesNearUnderlying(strikeList=list(strikes), undPrc=market_data.last, range_limit=4)
             selected_strikes = ls + hs
 
             for strike in selected_strikes:
@@ -2088,16 +2087,11 @@ def event_processor(event_queue: Queue, count: int) -> None:
             # Mark the event as processed
             event_queue.task_done()
         except Empty:
-            # If TWS is disconnected
             if client is not None and not client.isConnected():
-                logger.error("TWS is disconnected")
-                _emit_log("TWS disconnected — attempting reconnect", "WARN", "system")
-                logger.info("trying Reconnect")
-                client.try_reconnect()
-                #if not client.isConnected():
-                #return "TWS API connection error"
+                logger.error("TWS is disconnected — engine loop handles reconnect")
+                _emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
                 time.sleep(5.0)
-                if client.connection_closed == True:
+                if getattr(client, "connection_closed", False):
                     keep_running = False
         except Exception as ex:
             # Log the error
@@ -2437,8 +2431,8 @@ def main_call(data):
         loss_amount_day = loss_amount_day + starting_loss
     elif realized_start_PNL > 0:
         starting_profit = realized_start_PNL
-        profit_amount_day = profit_amount_day + starting_loss
-        loss_amount_day = loss_amount_day - starting_loss
+        profit_amount_day = profit_amount_day - starting_profit
+        loss_amount_day = loss_amount_day + starting_profit
         #logger.info(f"First time log Pnl Value is {pnlData}")
 
     logger.info(f"First time log Pnl Value is {realized_start_PNL}")
