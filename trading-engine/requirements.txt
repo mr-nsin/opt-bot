@@ -4,4 +4,5 @@ numpy>=2.0
 yfinance>=0.2
 pandas_ta>=0.3
 pytz>=2024.1
+loguru>=0.7.0
 pyinstaller>=6.0

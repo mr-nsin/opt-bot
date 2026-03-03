@@ -39,7 +39,8 @@ export const trading = {
 /** Positions: getAll, close(symbol), closeAll */
 export const positions = {
   getAll: () => invoke<unknown[]>("get_positions"),
-  close: (symbol: string) => invoke<string>("close_position", { symbol }),
+  close: (symbol: string, strike?: number, right?: string) =>
+    invoke<string>("close_position", { symbol, strike, right }),
   closeAll: () => invoke<string>("close_all_positions"),
 };
 

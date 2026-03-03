@@ -15,12 +15,14 @@ export function useTradingEngine() {
     setConnectedToTws,
     setDailyPnl,
     setTradeStats,
+    clearSignalsInSession,
   } = useTradingStore();
   const { tradingConfig } = useConfigStore();
 
   const startTrading = useCallback(async () => {
     if (!tradingConfig) throw new Error("Configuration not loaded");
     setStatus("Starting");
+    clearSignalsInSession();
     try {
       const result = await trading.start(tradingConfig);
       setStatus("Running");
@@ -30,7 +32,7 @@ export function useTradingEngine() {
       setStatus({ Error: String(err) });
       throw err;
     }
-  }, [tradingConfig, setStatus, setSidecarRunning]);
+  }, [tradingConfig, setStatus, setSidecarRunning, clearSignalsInSession]);
 
   const stopTrading = useCallback(async () => {
     setStatus("Stopping");

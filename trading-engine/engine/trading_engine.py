@@ -105,8 +105,21 @@ class TradingEngine:
             emit_engine_status("Idle", connected=False)
             return {"status": "error", "reason": msg}
 
+    def _cancel_orders_only(self):
+        """Cancel all open orders. Does NOT close positions (used by Stop Trading)."""
+        try:
+            import BOT
+            if self._client and self._client.isConnected():
+                emit_log("Cancelling all open orders...", "INFO", "system")
+                BOT.cancel_all_orders()
+                emit_log("All orders cancelled (positions left open)", "INFO", "system")
+            else:
+                emit_log("TWS not connected — cannot cancel orders", "WARN", "system")
+        except Exception as e:
+            emit_log(f"Error cancelling orders: {e}", "ERROR", "system")
+
     def _close_all_orders_and_positions(self):
-        """Cancel all open orders and close all positions (like standalone's market-end cleanup)."""
+        """Cancel all open orders and close all positions (used by Emergency Stop)."""
         try:
             import BOT
             if self._client and self._client.isConnected():
@@ -135,8 +148,8 @@ class TradingEngine:
         except Exception:
             pass
 
-        # Cancel orders and close positions before disconnecting
-        self._close_all_orders_and_positions()
+        # Cancel orders only (do NOT close positions — user may close manually)
+        self._cancel_orders_only()
 
         # Wait for engine thread to exit (it checks self.running each iteration)
         if self._engine_thread and self._engine_thread.is_alive():
@@ -244,8 +257,7 @@ class TradingEngine:
                 expiry = getattr(pos, 'expiry', '')
 
                 if self._order_mgr:
-                    opt_key = f"{symbol}_{right}"
-                    entry_order = self._order_mgr.entry_orders_cache.get(symbol)
+                    entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right)
                     if entry_order:
                         tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
                         if tick and hasattr(tick, 'last') and tick.last > 0:
@@ -379,11 +391,15 @@ class TradingEngine:
             emit_engine_status("Idle", connected=False)
 
     def close_position(self, params: dict) -> dict:
-        """Close a specific position by symbol."""
+        """Close a specific position by symbol (and optionally strike/right for options)."""
         symbol = params.get("symbol", "")
-        emit_log(f"Close position requested for {symbol}", "INFO", "orders")
+        strike = params.get("strike")
+        right = params.get("right")
+        if strike is not None:
+            strike = float(strike)
+        emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right}" if strike or right else ""), "INFO", "orders")
         if self._order_mgr and hasattr(self._order_mgr, 'close_position_by_symbol'):
-            self._order_mgr.close_position_by_symbol(symbol)
+            self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right)
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
@@ -514,9 +530,9 @@ class TradingEngine:
             else:
                 config_dir = PARENT_DIR if os.path.isdir(PARENT_DIR) else orig_cwd
                 config_path = os.path.join(config_dir, "config.json")
-                if not os.path.isfile(config_path):
-                    with open(config_path, "w", encoding="utf-8") as f:
-                        json.dump(self.config.to_bot_config_dict(), f, indent=2)
+                # Always overwrite so BOT reads current config at import (user may have changed settings in UI)
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(self.config.to_bot_config_dict(), f, indent=2)
                 try:
                     os.chdir(config_dir)
                 except Exception:
@@ -667,39 +683,43 @@ class TradingEngine:
             except Exception as e:
                 emit_log(f"Could not adjust PnL by starting realized: {e}", "WARN", "system")
 
-            # Start event processor threads (consume ticks and run strategies)
-            processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
-            self._event_processor_threads = []
-            for i in range(processor_count):
-                t = threading.Thread(target=BOT.event_processor, args=(self._event_queue, i), daemon=True)
-                t.start()
-                self._event_processor_threads.append(t)
-            emit_log(f"Started {processor_count} strategy event processors", "INFO", "system")
+            # Start event processor threads only if we don't already have running ones (reconnect case)
+            alive = [t for t in self._event_processor_threads if t and t.is_alive()]
+            if not alive:
+                processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
+                self._event_processor_threads = []
+                for i in range(processor_count):
+                    t = threading.Thread(target=BOT.event_processor, args=(self._event_queue, i), daemon=True)
+                    t.start()
+                    self._event_processor_threads.append(t)
+                emit_log(f"Started {processor_count} strategy event processors", "INFO", "system")
 
-            # --- P1a: Start pnl_watchdog_thread (same as standalone main_call) ---
-            BOT.STOP_TRADING = False
-            BOT.DAY_LOCKED = False
-            BOT.CLOSE_ALL_ORDERS = False
-            try:
-                pnl_t = threading.Thread(
-                    target=BOT.pnl_watchdog_thread,
-                    args=(BOT.SUB_ACCOUNT_ID, BOT.profit_amount_day, BOT.loss_amount_day),
-                    daemon=True,
-                )
-                pnl_t.start()
-                self._event_processor_threads.append(pnl_t)
-                emit_log("PnL watchdog thread started", "INFO", "system")
-            except Exception as e:
-                emit_log(f"Failed to start pnl_watchdog_thread: {e}", "WARN", "system")
+                # --- P1a: Start pnl_watchdog_thread (same as standalone main_call) ---
+                BOT.STOP_TRADING = False
+                BOT.DAY_LOCKED = False
+                BOT.CLOSE_ALL_ORDERS = False
+                try:
+                    pnl_t = threading.Thread(
+                        target=BOT.pnl_watchdog_thread,
+                        args=(BOT.SUB_ACCOUNT_ID, BOT.profit_amount_day, BOT.loss_amount_day),
+                        daemon=True,
+                    )
+                    pnl_t.start()
+                    self._event_processor_threads.append(pnl_t)
+                    emit_log("PnL watchdog thread started", "INFO", "system")
+                except Exception as e:
+                    emit_log(f"Failed to start pnl_watchdog_thread: {e}", "WARN", "system")
 
-            # --- P1b: Start monitor_positions_loop (same as standalone) ---
-            try:
-                pos_t = threading.Thread(target=BOT.monitor_positions_loop, daemon=True)
-                pos_t.start()
-                self._event_processor_threads.append(pos_t)
-                emit_log("Position monitor thread started", "INFO", "system")
-            except Exception as e:
-                emit_log(f"Failed to start monitor_positions_loop: {e}", "WARN", "system")
+                # --- P1b: Start monitor_positions_loop (same as standalone) ---
+                try:
+                    pos_t = threading.Thread(target=BOT.monitor_positions_loop, daemon=True)
+                    pos_t.start()
+                    self._event_processor_threads.append(pos_t)
+                    emit_log("Position monitor thread started", "INFO", "system")
+                except Exception as e:
+                    emit_log(f"Failed to start monitor_positions_loop: {e}", "WARN", "system")
+            else:
+                emit_log(f"Reconnect: {len(alive)} processor threads still running, not starting new ones", "INFO", "system")
 
             self._client.initialization_done = True
             self._data_feed_started = True
@@ -782,14 +802,10 @@ class TradingEngine:
                 if self.connected and not self._data_feed_started:
                     self._start_data_feed_and_strategies()
 
-                # Process events from the TWS event queue only when BOT processors are not running
-                # (when _data_feed_started, BOT event_processor threads consume the queue)
-                if not self._data_feed_started and self._event_queue and not self._event_queue.empty():
-                    try:
-                        event = self._event_queue.get(timeout=0.1)
-                        self._process_event(event)
-                    except Exception:
-                        pass
+                # Do NOT consume the event queue when _data_feed_started is False.
+                # Ticks that arrive during init_data_feed (20+ seconds) must accumulate so that
+                # when BOT event_processor threads start, they process them. Draining here would
+                # discard ticks and lose signals (see SIGNAL_FLOW_BOT_VS_ENGINE.md).
 
                 # Periodic P&L update
                 if self._client and self.connected:

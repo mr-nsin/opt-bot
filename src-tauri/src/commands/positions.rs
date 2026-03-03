@@ -14,17 +14,23 @@ pub async fn get_positions(
 #[tauri::command]
 pub async fn close_position(
     symbol: String,
+    strike: Option<f64>,
+    right: Option<String>,
     _state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
     if !manager::is_running().await {
         return Err("Trading engine is not running".into());
     }
 
-    let request = SidecarRequest::new(
-        methods::CLOSE_POSITION,
-        Some(serde_json::json!({ "symbol": symbol })),
-    );
+    let mut params = serde_json::json!({ "symbol": symbol });
+    if let Some(s) = strike {
+        params["strike"] = serde_json::json!(s);
+    }
+    if let Some(r) = right {
+        params["right"] = serde_json::json!(r);
+    }
 
+    let request = SidecarRequest::new(methods::CLOSE_POSITION, Some(params));
     manager::send_request(&request).await?;
     Ok(format!("Close position request sent for {}", symbol))
 }

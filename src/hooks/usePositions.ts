@@ -57,8 +57,8 @@ export function usePositions() {
   }, [setPositions, setLoading]);
 
   const closePosition = useCallback(
-    async (symbol: string) => {
-      await positionsApi.close(symbol);
+    async (symbol: string, strike?: number, right?: string) => {
+      await positionsApi.close(symbol, strike, right);
     },
     []
   );

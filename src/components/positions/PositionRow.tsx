@@ -96,7 +96,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
             size="sm"
             onClick={(e) => {
               e.stopPropagation();
-              closePosition(position.symbol);
+              closePosition(position.symbol, position.strike, position.right);
             }}
             className="text-red-500 hover:text-red-600 hover:bg-red-500/10 h-5 px-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
           >

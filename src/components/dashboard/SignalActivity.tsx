@@ -11,34 +11,50 @@ interface SignalEntry {
   strength?: string;
   timestamp?: string;
   indicator?: string;
+  price?: number;
+  strike?: number;
+  expiry?: string;
+  isTrade?: boolean;
 }
 
-/** Displays the latest detected signals with a timeline view. */
+function resolveDirection(s: { direction?: string; signal_type?: string; right?: string }): string {
+  const d = (s.direction ?? s.signal_type ?? "").toString().toUpperCase();
+  if (d && d !== "UNKNOWN") return d;
+  if (s.right === "C" || s.right === "CALL") return "CALL";
+  if (s.right === "P" || s.right === "PUT") return "PUT";
+  return "—";
+}
+
+/** Displays signals detected in session with a grid view. */
 export const SignalActivity = memo(function SignalActivity() {
-  const lastSignal = useTradingStore((s) => s.lastSignal);
+  const signalsInSession = useTradingStore((s) => s.signalsInSession);
   const todayTrades = useTradingStore((s) => s.todayTrades);
 
-  // Build signal entries from trades + last signal
-  const signals: SignalEntry[] = [];
-  if (lastSignal?.symbol) {
-    signals.push({
-      symbol: lastSignal.symbol as string,
-      direction: (lastSignal.direction as string) ?? "UNKNOWN",
-      strength: lastSignal.strength as string | undefined,
-      timestamp: lastSignal.timestamp as string | undefined,
-      indicator: lastSignal.indicator as string | undefined,
-    });
-  }
+  // Build grid: session signals first, then executed trades
+  const signals: SignalEntry[] = signalsInSession.map((s) => ({
+    symbol: (s.symbol ?? "") as string,
+    direction: resolveDirection(s),
+    strength: (s.strength ?? s.reason) as string | undefined,
+    timestamp: s.timestamp as string | undefined,
+    indicator: s.indicator as string | undefined,
+    price: typeof s.price === "number" ? s.price : undefined,
+    strike: typeof s.strike === "number" ? s.strike : undefined,
+    expiry: s.expiry as string | undefined,
+    isTrade: false,
+  }));
 
-  // Add recent trades as executed signals
-  todayTrades.slice(0, 5).forEach((trade) => {
+  todayTrades.slice(0, 10).forEach((trade) => {
     if (trade.symbol) {
       signals.push({
         symbol: trade.symbol,
-        direction: (trade.direction as string) ?? (trade.right === "C" ? "CALL" : trade.right === "P" ? "PUT" : "—"),
+        direction: resolveDirection(trade),
         strength: "executed",
         timestamp: trade.timestamp as string | undefined,
         indicator: "trade",
+        price: trade.entry_price ?? trade.exit_price,
+        strike: typeof trade.strike === "number" ? trade.strike : undefined,
+        expiry: trade.expiry as string | undefined,
+        isTrade: true,
       });
     }
   });
@@ -67,6 +83,12 @@ export const SignalActivity = memo(function SignalActivity() {
           </div>
         ) : (
           <div className="space-y-0">
+            {/* Grid header */}
+            <div className="grid grid-cols-[auto_1fr_auto_auto] gap-2 py-1.5 px-1.5 text-xs text-muted-foreground/60 font-medium border-b border-border/20 mb-1">
+              <span className="w-6" />
+              <span>Symbol · Direction · Strike · Price · Expiry</span>
+              <span className="tabular-nums">Date/Time</span>
+            </div>
             {signals.map((sig, i) => (
               <div
                 key={`${sig.symbol}-${i}`}
@@ -94,7 +116,7 @@ export const SignalActivity = memo(function SignalActivity() {
 
                 {/* Signal info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-mono font-bold text-xs">
                       {sig.symbol}
                     </span>
@@ -104,6 +126,21 @@ export const SignalActivity = memo(function SignalActivity() {
                     >
                       {sig.direction.toUpperCase()}
                     </Badge>
+                    {sig.strike != null && sig.strike > 0 && (
+                      <span className="text-xs text-muted-foreground font-mono">
+                        ${Number(sig.strike).toFixed(1)}
+                      </span>
+                    )}
+                    {sig.price != null && sig.price > 0 && (
+                      <span className="text-xs text-muted-foreground font-mono">
+                        @ ${Number(sig.price).toFixed(2)}
+                      </span>
+                    )}
+                    {sig.expiry && (
+                      <span className="text-xs text-muted-foreground/80 font-mono">
+                        exp:{sig.expiry}
+                      </span>
+                    )}
                     {sig.strength && sig.strength !== "executed" && (
                       <Badge variant="outline" className="text-xs px-1.5 py-0 h-4">
                         {sig.strength}
@@ -124,8 +161,10 @@ export const SignalActivity = memo(function SignalActivity() {
 
                 {/* Timestamp */}
                 {sig.timestamp && (
-                  <span className="text-xs text-muted-foreground/50 font-mono tabular-nums shrink-0">
-                    {new Date(sig.timestamp).toLocaleTimeString("en-US", {
+                  <span className="text-xs text-muted-foreground/50 font-mono tabular-nums shrink-0" title={sig.timestamp}>
+                    {new Date(sig.timestamp).toLocaleString("en-US", {
+                      month: "short",
+                      day: "numeric",
                       hour: "2-digit",
                       minute: "2-digit",
                       second: "2-digit",

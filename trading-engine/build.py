@@ -41,15 +41,14 @@ def build():
     os.makedirs(output_dir, exist_ok=True)
 
     # Hidden imports: everything required at start/trading - all dependencies embedded into exe
-    # - logging: logger.py, common.py use RotatingFileHandler
+    # - loguru: common.py uses loguru for logging
     # - ibapi: BOT, common, tws_api_client, order_manager use client/wrapper/contract/order/execution/ticktype/utils
     # - data: BOT uses Indicators (yfinance, pandas, numpy), tws_api_client uses pandas
     # - multiprocessing: BOT uses Process, Pool
     # - shutil: trading_engine copies expiryStrike.json when frozen
     hidden_imports = [
+        "loguru",
         "logging",
-        "logging.handlers",
-        "logging.config",
         "ibapi",
         "ibapi.client",
         "ibapi.wrapper",

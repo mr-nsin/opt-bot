@@ -15,8 +15,8 @@ import os
 import signal
 import time
 
-# Ensure logging.handlers is bundled (used by logger.py / common.py via RotatingFileHandler)
-import logging.handlers  # noqa: F401
+# Ensure loguru is bundled (used by common.py for logging)
+import loguru  # noqa: F401
 
 # When frozen (PyInstaller onefile), add-data files (BOT.py, common.py, etc.) are in sys._MEIPASS.
 # Use that as ROOT_DIR so "import BOT" / "from common import ..." work like on Mac.

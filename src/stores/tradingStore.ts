@@ -12,6 +12,8 @@ interface TradingState {
   winningTrades: number;
   losingTrades: number;
   lastSignal: SignalEvent | null;
+  /** Signals detected in current session (for grid display) */
+  signalsInSession: SignalEvent[];
   todayTrades: TradeRecord[];
   /** Last data feed status (updated every ~10s when engine is running) */
   dataStatus: DataStatus | null;
@@ -29,6 +31,8 @@ interface TradingState {
   setDailyPnl: (pnl: DailyPnL) => void;
   setTradeStats: (total: number, wins: number, losses: number) => void;
   setLastSignal: (signal: SignalEvent | null) => void;
+  addSignalToSession: (signal: SignalEvent) => void;
+  clearSignalsInSession: () => void;
   addTrade: (trade: TradeRecord) => void;
   /** Update the first matching open trade with PnL when position is closed */
   updateTradePnl: (match: { symbol?: string; right?: string; strike?: number }, pnl: number, exitPrice?: number) => void;
@@ -48,6 +52,7 @@ const initialState = {
   winningTrades: 0,
   losingTrades: 0,
   lastSignal: null,
+  signalsInSession: [] as SignalEvent[],
   todayTrades: [] as TradeRecord[],
   dataStatus: null as DataStatus | null,
   accountMetrics: null as AccountMetrics | null,
@@ -65,6 +70,11 @@ export const useTradingStore = create<TradingState>((set) => ({
   setTradeStats: (total, wins, losses) =>
     set({ totalTrades: total, winningTrades: wins, losingTrades: losses }),
   setLastSignal: (signal) => set({ lastSignal: signal }),
+  addSignalToSession: (signal) =>
+    set((state) => ({
+      signalsInSession: [signal, ...state.signalsInSession].slice(0, 100),
+    })),
+  clearSignalsInSession: () => set({ signalsInSession: [] }),
   addTrade: (trade) =>
     set((state) => ({ todayTrades: [trade, ...state.todayTrades].slice(0, 100) })),
   updateTradePnl: (match, pnl, exitPrice) =>
@@ -88,5 +98,9 @@ export const useTradingStore = create<TradingState>((set) => ({
       isSignalScanning: scanning,
       lastSignalScanTime: timestamp ?? new Date().toISOString(),
     }),
-  reset: () => set(initialState),
+  reset: () =>
+    set({
+      ...initialState,
+      signalsInSession: [] as SignalEvent[],
+    }),
 }));

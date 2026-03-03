@@ -13,7 +13,7 @@ from ibapi.execution import Execution, ExecutionFilter
 from ibapi.order import Order
 from ibapi.wrapper import EWrapper, OrderState, Order, Contract, TickType, BarData, SetOfString, SetOfFloat
 
-from common import Tick, logger, Position, Trade, setup_logger, PNL
+from common import Tick, logger, Position, Trade, PNL
 import pandas as pd
 from queue import Queue
 

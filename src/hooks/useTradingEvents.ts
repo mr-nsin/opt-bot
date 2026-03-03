@@ -22,6 +22,7 @@ export function useTradingEvents() {
     setDailyPnl,
     setTradeStats,
     setLastSignal,
+    addSignalToSession,
     addTrade,
     updateTradePnl,
     setDataStatus,
@@ -260,19 +261,27 @@ export function useTradingEvents() {
 
   // ---- Signal detected ----
   useTauriEvent("trading:signal_detected", (data: any) => {
-    setLastSignal({
+    const signalType = data.signal_type || "CALL";
+    const price = data.price ?? data.strike ?? 0;
+    const signal = {
       symbol: data.symbol || "",
-      signal_type: data.signal_type || "CALL",
+      signal_type: signalType,
+      direction: signalType,
       strike: data.strike || 0,
-      price: data.price || 0,
+      price,
+      expiry: data.expiry || "",
       timestamp: data.timestamp || new Date().toISOString(),
       reason: data.reason || "",
-    });
+      strength: data.reason || "",
+      indicator: "SuperTrend",
+    };
+    setLastSignal(signal);
+    addSignalToSession(signal);
 
     if (settings.show_notifications) {
       addToast({
         title: "Signal Detected",
-        message: `${data.signal_type || "CALL"} on ${data.symbol || ""} @ ${data.strike || 0}`,
+        message: `${signalType} on ${data.symbol || ""} @ $${Number(price).toFixed(2)}`,
         type: "info",
       });
     }

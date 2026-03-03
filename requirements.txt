@@ -11,5 +11,8 @@ yfinance>=0.2
 pandas_ta>=0.4.67b0
 pytz>=2024.1
 
+# Logging (sidecar and BOT)
+loguru>=0.7.0
+
 # Build trading-engine sidecar executable
 pyinstaller>=6.0

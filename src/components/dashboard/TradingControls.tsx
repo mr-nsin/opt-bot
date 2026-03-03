@@ -184,7 +184,7 @@ export function TradingControls() {
       <ConfirmDialog
         open={showEmergencyConfirm}
         title="Emergency Stop"
-        message="This will immediately kill the trading engine and close all connections. Any open orders may remain active on the broker side. Are you sure?"
+        message="This will immediately cancel all orders, close all positions at market price, and disconnect the trading engine. Are you sure?"
         confirmLabel="Emergency Stop"
         variant="destructive"
         onConfirm={handleEmergencyStop}

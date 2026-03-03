@@ -1,6 +1,6 @@
 import datetime
 from typing import List, Optional
-from common import MarketOrder, OptionOrder, Tick, Trade, create_order_obj, logger, Contract
+from common import MarketOrder, OptionOrder, Tick, Trade, create_order_obj, logger, Contract, Position
 from data_access import DAL
 from tws_api_client import TwsApiClient
 
@@ -59,23 +59,39 @@ class OrderManager:
         """
         self.api_client = client
 
-    def close_position_by_symbol(self, symbol: str) -> None:
+    def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None) -> None:
         """
-        Close an open position by symbol (used by Tauri/sidecar when user clicks Close).
+        Close an open position by symbol (and optionally strike/right for options).
         Looks up the entry order and optional tick, then calls close_position(order, option_tick).
         """
         if not self.api_client or not self.api_client.isConnected():
             logger.warning("Cannot close position: TWS not connected")
             return
-        with self.order_lock:
-            order = self.entry_orders_cache.get(symbol) or self.exit_orders_cache.get(symbol)
+        order = self._find_entry_order(symbol, strike, right)
         if not order:
-            logger.warning(f"No managed position found for symbol {symbol}")
+            logger.warning(f"No managed position found for symbol {symbol}" + (f" strike={strike} right={right}" if strike or right else ""))
             return
         option_tick = self.order_id_tick_lookup.get(order.id)
         if option_tick is None:
             option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
         self.close_position(order=order, option_tick=option_tick)
+
+    def _find_entry_order(self, symbol: str, strike: float = None, right: str = None) -> Optional[OptionOrder]:
+        """Find entry order matching symbol (and strike/right if provided)."""
+        def _nr(r):
+            return "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r or "")
+        with self.order_lock:
+            for o in self.entry_orders_cache.values():
+                if not o or not getattr(o, "active", True):
+                    continue
+                if str(o.symbol or "") != str(symbol):
+                    continue
+                if strike is not None and float(o.strike or 0) != float(strike):
+                    continue
+                if right is not None and right != "" and _nr(o.right) != _nr(right):
+                    continue
+                return o
+        return None
 
     def close_all_positions(self) -> None:
         """
@@ -85,21 +101,20 @@ class OrderManager:
             logger.warning("Cannot close all positions: TWS not connected")
             return
         with self.order_lock:
-            symbols = list(self.entry_orders_cache.keys())
-        for symbol in symbols:
+            orders = [o for o in self.entry_orders_cache.values() if o and getattr(o, "active", True)]
+        for order in orders:
             try:
-                self.close_position_by_symbol(symbol)
+                self.close_position_by_symbol(order.symbol, strike=order.strike, right=order.right)
             except Exception as ex:
-                logger.error(f"Error closing position {symbol}: {ex}", exc_info=True)
+                logger.error(f"Error closing position {order.option_symbol}: {ex}", exc_info=True)
 
     def del_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         with self.order_lock:
             if self.orders_cache.get(order.id, None):
                 self.orders_cache.pop(order.id)
-
-            if self.entry_orders_cache.get(order.symbol, None):
-                self.entry_orders_cache.pop(order.symbol)
-
+            key = getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
+            if self.entry_orders_cache.get(key, None):
+                self.entry_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
         
@@ -107,50 +122,40 @@ class OrderManager:
     def add_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
         Adds an entry order to the orders_cache and entry_orders_cache.
-
-        Args:
-            order (OptionOrder): The entry order to be added.
+        Keyed by option_symbol to support multiple positions per underlying.
         """
         with self.order_lock:
             self.orders_cache[order.id] = order
-            self.entry_orders_cache[order.symbol] = order
+            key = getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
+            self.entry_orders_cache[key] = order
             self.order_id_tick_lookup[order.id] = option_tick
 
     def del_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
         with self.order_lock:
             if self.orders_cache.get(order.id, None):
                 self.orders_cache.pop(order.id)
-
-            if self.exit_orders_cache.get(order.symbol, None):
-                self.exit_orders_cache.pop(order.symbol)
- 
+            key = getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
+            if self.exit_orders_cache.get(key, None):
+                self.exit_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
 
     def add_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
         Adds an exit order to the orders_cache and exit_orders_cache.
-
-        Args:
-            order (OptionOrder): The exit order to be added.
+        Keyed by option_symbol for consistency with entry_orders_cache.
         """
         with self.order_lock:
             self.orders_cache[order.id] = order
-            self.exit_orders_cache[order.symbol] = order
+            key = getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
+            self.exit_orders_cache[key] = order
             self.order_id_tick_lookup[order.id] = option_tick
 
-    def get_entry_order(self, symbol: str) -> Optional[OptionOrder]:
+    def get_entry_order(self, symbol: str, right: str = None) -> Optional[OptionOrder]:
         """
-        Returns the entry order associated with the given symbol from entry_orders_cache.
-
-        Args:
-            symbol (str): The symbol for which the entry order is to be retrieved.
-
-        Returns:
-            The entry order associated with the symbol, or None if the symbol is not found.
+        Returns the first matching entry order for symbol (and right if provided).
         """
-        with self.order_lock:
-            return self.entry_orders_cache.get(symbol, None)
+        return self._find_entry_order(symbol, right=right)
 
 
     def process_trade(self, trade: Trade) -> None:
@@ -403,6 +408,42 @@ class OrderManager:
             self.del_exit_order(order=exit_order, options_tick=option_tick)
             option_tick.busy = False
             logger.error(f"Placing Exit order failed: {ex}", exc_info=True)
+
+    def check_exit_conditions(self, pos: Position) -> None:
+        """
+        Check TP/SL for a TWS position. Finds the matching managed entry order and its tick,
+        then delegates to check_and_close_position. Matches standalone monitor_positions_loop behavior.
+        """
+        if not pos or pos.position == 0:
+            return
+        option_tick = None
+        with self.order_lock:
+            for order in self.entry_orders_cache.values():
+                if not order or order.exit_order or not getattr(order, "active", True):
+                    continue
+                if str(order.symbol or "") != str(pos.symbol or ""):
+                    continue
+                if float(order.strike or 0) != float(pos.strike or 0):
+                    continue
+                right = (order.right or "").upper()
+                pos_right = (pos.right or "").upper()
+                pos_r = "C" if pos_right in ("C", "CALL") else "P"
+                if (right in ("C", "CALL") and pos_r != "C") or (right in ("P", "PUT") and pos_r != "P"):
+                    continue
+                expiry = (order.expiration or "").replace("-", "")
+                pos_exp = (pos.expiry or "").replace("-", "")
+                if expiry and pos_exp and expiry != pos_exp:
+                    continue
+                option_tick = self.order_id_tick_lookup.get(order.id)
+                if option_tick is not None:
+                    if getattr(option_tick, "active_order", None) != order:
+                        option_tick.active_order = order
+                    break
+        if option_tick is not None:
+            try:
+                self.check_and_close_position(tick=option_tick)
+            except Exception as ex:
+                logger.error(f"check_exit_conditions error for {pos.symbol}: {ex}", exc_info=True)
 
     def check_and_close_position(self, tick: Tick) -> None:
         """

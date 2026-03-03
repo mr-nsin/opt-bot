@@ -1,10 +1,10 @@
-import threading
-import logging
-from logging.handlers import RotatingFileHandler
 import datetime
 import os
+import sys
+import threading
 from dataclasses import dataclass
 from ibapi.wrapper import Contract, Order, OrderState
+from loguru import logger
 
 
 def getExpiry(EXPIRY):
@@ -163,54 +163,33 @@ def create_order_obj(order_id: int, symbol: str, contract: Contract, orderType: 
             stoploss_price=auxPrice,
             )
 
-def thread_id_filter(record):
-    """Inject thread_id to log records"""
-    record.thread_id = threading.get_native_id()
+def _loguru_patch(record):
+    """Inject thread_id into loguru record for format string."""
+    record["extra"]["thread_id"] = threading.get_native_id()
     return record
+
 
 def setup_logger(name='log', console_handler=True):
     """
-    Create and configure a logger for logging messages to a file and optionally to the console.
-
-    Parameters:
-        name (str): The name of the logger. Defaults to 'log'.
-        console_handler (bool): Whether to add a console handler for logging messages to the console. Defaults to True.
-
-    Returns:
-        logger (logging.Logger): The configured logger object.
-
+    Configure loguru for file + optional console. Returns the loguru logger.
+    Kept for compatibility with code that imports setup_logger.
     """
-    # Create a logger object with the given name
-    logger = logging.getLogger(name=name)
-    # Set the logging level to INFO
-    logger.setLevel(logging.INFO)
-    # Create a directory for storing log files if it doesn't exist
+    logger.remove()
     logs_path = 'logs'
-    if not os.path.exists(logs_path):    
-        os.mkdir(logs_path)
-
-    # Get the current date in the format 'YYYY-MM-DD'
+    os.makedirs(logs_path, exist_ok=True)
     today = datetime.date.today().strftime("%Y-%m-%d")
-
-    # Create a file handler with the log file name based on the logger name and current date
-    handler_path = os.path.join(logs_path, f'{name}_{today}.log')
-    # handler = logging.FileHandler(handler_path)
-    handler = RotatingFileHandler(filename=handler_path, maxBytes=50*1024*1024, backupCount=2, encoding=None, delay=0)
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(thread_id)s - %(message)s')
-    set_handler_formatting(handler, formatter, logger)
-    # If console_handler is True, add a console handler for logging messages to the console
-    if console_handler == True:
-        consoleHandler = logging.StreamHandler()
-        set_handler_formatting(consoleHandler, formatter, logger)
-    # Return the logger object
+    log_format = "{time:YYYY-MM-DD HH:mm:ss} - {level} - {extra[thread_id]} - {message}"
+    logger.patch(_loguru_patch)
+    logger.add(
+        os.path.join(logs_path, f'{name}_{today}.log'),
+        rotation="50 MB",
+        retention=2,
+        level="INFO",
+        format=log_format,
+    )
+    if console_handler:
+        logger.add(sys.stderr, format=log_format, level="INFO")
     return logger
 
 
-# TODO Rename this here and in `setup_logger`
-def set_handler_formatting(arg0, formatter, logger):
-    arg0.setFormatter(formatter)
-    arg0.addFilter(thread_id_filter)
-    logger.addHandler(arg0)
-
-logger = setup_logger('bot')
+setup_logger(name='bot', console_handler=True)

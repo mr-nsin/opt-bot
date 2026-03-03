@@ -25,8 +25,6 @@ from ibapi.contract import Contract, ComboLeg
 from ibapi.ticktype import TickTypeEnum
 from ibapi.order import *
 from bisect import bisect_left
-from logger import Loggers
-
 # from datetime import date
 import datetime
 import pytz
@@ -289,7 +287,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 
     logger.info("Order Data 1 ")
     
-    open_order = order_mgr.get_entry_order(symbol=symbol)
+    open_order = order_mgr.get_entry_order(symbol=symbol, right=right)
     if open_order != None and open_order.active == True and open_order.right==right:
         logger.info(f"Order already present for Stock TTT = {symbol} Get Right is = {right} and open_order right is = {open_order.right}")
         logger.info(f"Open Order data is = {open_order}")
@@ -1054,7 +1052,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
             logger.info(f"Position is not present with same Right for Stock = {stockName}")
 
     stockMapperDict = 0
-    order = order_mgr.get_entry_order(stockName)
+    order = order_mgr.get_entry_order(stockName, right=rightMatch[0] if rightMatch else None)
     if order != None and order.active == True:
         logger.info(f"Order Already Present for Stock = {stockName}, status: {order.order_status}")
         _emit_log(f"{stockName}: Pending {order.order_status} order exists — skipping", "INFO", "signal")
@@ -2062,11 +2060,14 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     _last_emit = _signal_emit_times.get(_sig_key, 0)
                     if _now - _last_emit >= 60:
                         _signal_emit_times[_sig_key] = _now
+                        underlying_price = getattr(tick, "last", None) or getattr(tick, "close", -1)
+                        if underlying_price is None or underlying_price <= 0:
+                            underlying_price = 0.0
                         _emit_signal(
                             tick.contract.symbol,
                             sig_direction,
                             0.0,
-                            0.0,
+                            float(underlying_price),
                             sig_strength or "signal",
                         )
                     result = checkConditionsAndTrade((dataEngulf, dataStrike), tick)
