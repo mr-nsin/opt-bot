@@ -7,9 +7,13 @@
   "PORT": 7497,
   "CLIENTID": 0,
   "ACCOUNT_ID": "DU5690365",
-  "marketStartTime": "19:00:00",
+  "marketStartTime": "09:30:00",
   "scriptStartTime": "0935",
   "scriptEndTime": "1545",
+  "market_hours": {
+    "start": "09:35",
+    "end": "15:45"
+  },
   "VWAP_ON_OFF": "ON",
   "ORDER_TRANSMIT": true,
   "USE_TIMER_IN_ORDER": "ON",

@@ -441,6 +441,10 @@ impl ConfigState {
         m.insert("marketStartTime".into(), Value::String(t.market_start_time.clone()));
         m.insert("scriptStartTime".into(), Value::String(t.script_start_time.clone()));
         m.insert("scriptEndTime".into(), Value::String(t.script_end_time.clone()));
+        let mut mh = Map::new();
+        mh.insert("start".into(), Value::String(t.script_start_time.clone()));
+        mh.insert("end".into(), Value::String(t.script_end_time.clone()));
+        m.insert("market_hours".into(), Value::Object(mh));
         m.insert("VWAP_ON_OFF".into(), Value::String(t.vwap_on_off.clone()));
         m.insert("ORDER_TRANSMIT".into(), Value::Bool(t.order_transmit));
         m.insert("USE_TIMER_IN_ORDER".into(), Value::String(t.use_timer_in_order.clone()));

@@ -92,6 +92,26 @@ class PNL:
         return asdict(self)
 
 
+def _get_market_start(data: Dict) -> str:
+    """Read market start from config: market_hours.start > scriptStartTime > default 0935."""
+    mh = data.get("market_hours") or {}
+    return (
+        mh.get("start")
+        or data.get("script_start_time")
+        or data.get("scriptStartTime", "0935")
+    )
+
+
+def _get_market_end(data: Dict) -> str:
+    """Read market end from config: market_hours.end > scriptEndTime > default 1545."""
+    mh = data.get("market_hours") or {}
+    return (
+        mh.get("end")
+        or data.get("script_end_time")
+        or data.get("scriptEndTime", "1545")
+    )
+
+
 @dataclass
 class TradingConfig:
     """Mirrors the config.json structure"""
@@ -143,9 +163,9 @@ class TradingConfig:
             port=data.get("port", data.get("PORT", 7497)),
             client_id=data.get("client_id", data.get("CLIENTID", 0)),
             account_id=data.get("account_id", data.get("ACCOUNT_ID", "")),
-            market_start_time=data.get("market_start_time", data.get("marketStartTime", "19:00:00")),
-            script_start_time=data.get("script_start_time", data.get("scriptStartTime", "0935")),
-            script_end_time=data.get("script_end_time", data.get("scriptEndTime", "1545")),
+            market_start_time=data.get("market_start_time", data.get("marketStartTime", "09:30:00")),
+            script_start_time=_get_market_start(data),
+            script_end_time=_get_market_end(data),
             vwap_on_off=data.get("vwap_on_off", data.get("VWAP_ON_OFF", "ON")),
             order_transmit=data.get("order_transmit", data.get("ORDER_TRANSMIT", True)),
             use_timer_in_order=data.get("use_timer_in_order", data.get("USE_TIMER_IN_ORDER", "ON")),
@@ -190,6 +210,7 @@ class TradingConfig:
             "marketStartTime": self.market_start_time,
             "scriptStartTime": self.script_start_time,
             "scriptEndTime": self.script_end_time,
+            "market_hours": {"start": self.script_start_time, "end": self.script_end_time},
             "VWAP_ON_OFF": self.vwap_on_off,
             "ORDER_TRANSMIT": self.order_transmit,
             "USE_TIMER_IN_ORDER": self.use_timer_in_order,

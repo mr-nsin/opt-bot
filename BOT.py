@@ -415,7 +415,10 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
 
-    if options_tick.locked == True:
+    if options_tick is None:
+        logger.error("placeAndVerifyOrder: options_tick is required")
+        return "error"
+    if options_tick.locked:
         return "optionsTickLocked"
 
     options_tick.locked = True
@@ -1328,6 +1331,7 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
     Returns:
         bool: True if the program should be closed, False otherwise.
     """
+    global DAY_LOCKED, STOP_TRADING, CLOSE_ALL_ORDERS
     logger.info(f"Checking timeCheckAndCloseProgram")
     tradeMarketTime = False
     pnlData, realizedPNL = client.get_pnl(SUB_ACCOUNT_ID)
@@ -1343,6 +1347,9 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
             tradeMarketTime = True
             _emit_log(f"Market hours ended ({marketTime} > {end_time_val}) — closing all positions", "WARN", "risk")
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price")
+            DAY_LOCKED = True
+            STOP_TRADING = True
+            CLOSE_ALL_ORDERS = True
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
         elif pnlData >= profit_amount_day or pnlData <= loss_amount_day:
@@ -1351,6 +1358,9 @@ def timeCheckAndCloseProgram(SUB_ACCOUNT_ID, profit_amount_day, loss_amount_day)
             logger.info("Cancel All Placed Order/s And Square Off all existing Bought Quantities if any at MKT Price as Daily Profit/StopLoss Target HIT.")
             side = "profit" if pnlData >= profit_amount_day else "loss"
             _emit_log(f"DAY LIMIT HIT ({side}): P&L ${pnlData:.2f} — cancelling orders & closing positions", "ERROR", "risk")
+            DAY_LOCKED = True
+            STOP_TRADING = True
+            CLOSE_ALL_ORDERS = True
             cancel_all_orders()
             getAndBuyAfterMarketEnd()
         else:
@@ -2045,6 +2055,20 @@ def event_processor(event_queue: Queue, count: int) -> None:
             if tick.contract.secType == "OPT" and tick.active_order is not None:
                 order_mgr.check_and_close_position(tick=tick)
             elif tick.contract.secType == "STK":
+                # Gate: skip signal scan when market is closed (from config.json market_hours or scriptStartTime/scriptEndTime)
+                _start = str(globals().get("startTime", "0935")).replace(":", "").replace("-", "")[:4]
+                _end = str(globals().get("endTime", "1545")).replace(":", "").replace("-", "")[:4]
+                _now_hm = datetime.now().astimezone(NY_TZ).strftime("%H-%M").replace("-", "")
+                try:
+                    now_int = int(_now_hm)
+                    start_int = int(_start)
+                    end_int = int(_end)
+                    if not (start_int <= now_int <= end_int):
+                        _emit_log(f"Signal scan skipped: market closed ({_now_hm} outside {_start}-{_end})", "DEBUG", "signal")
+                        event_queue.task_done()
+                        continue
+                except (ValueError, TypeError):
+                    pass  # fallback: allow scan if time parsing fails
                 # Get the result of the call/put engulf check
                 _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick received → SuperTrend + Engulfing)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
@@ -2222,27 +2246,39 @@ def synchronize_positions():
         elif right == "P":
             right = "PUT"
         
-        # constructs the option symbol from the position information
-        option_symbol = f"{pos.symbol}{pos.expiry}{right}{pos.strike}"
-        
+        # Normalize expiry for matching (TWS: 20260306, order may have 2026-03-06)
+        def _norm_exp(s):
+            return (s or "").replace("-", "").replace(" ", "").strip()
+        def _norm_right(r):
+            r = (r or "").upper()
+            return "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else r
+        pos_exp = _norm_exp(pos.expiry)
+        pos_r = _norm_right(pos.right)
+
         # finds the matching filled BUY order for the position
-        order : OptionOrder = next((o for o in filled_sell_orders if o.option_symbol == option_symbol), None,)
+        order : OptionOrder = next(
+            (o for o in filled_sell_orders
+             if _norm_exp(o.expiration) == pos_exp
+             and str(o.symbol or "") == str(pos.symbol or "")
+             and abs(float(o.strike or 0) - float(pos.strike or 0)) < 0.01
+             and _norm_right(o.right) == pos_r),
+            None,
+        )
         
         # if no matching order is found, logs an error message and continues to the next position
         if order is None:
-            logger.error(f"{option_symbol} position matching order not found")
+            logger.warning(f"{pos.symbol}{pos_exp}{pos_r}{pos.strike} position: no matching filled BUY order in DB — cannot monitor TP/SL")
             continue
-        
-        # gets the options contract for the order
-        contract = client.get_options_contract(symbol=order.symbol, expiry=order.expiration, right=order.right, strike=order.strike)
+
+        # Use normalized expiry for contract (TWS format YYYYMMDD)
+        exp_for_contract = pos_exp or _norm_exp(order.expiration)
+        contract = client.get_options_contract(symbol=order.symbol, expiry=exp_for_contract, right=order.right, strike=order.strike)
         
         # subscribes to the contract to receive real-time market data
         client.subscribe(contract=contract)
-        
-        # gets the options tick data for the order
-        tick = client.get_options_data(symbol=order.symbol, expiry=order.expiration, right=order.right, strike=order.strike)
-        
-        # sets the order to active and assigns it the corresponding contract and tick data
+
+        tick = client.get_options_data(symbol=order.symbol, expiry=exp_for_contract, right=order.right, strike=order.strike)
+
         order.active = True
         order.contract = contract
         tick.active_order = order
@@ -2251,7 +2287,7 @@ def synchronize_positions():
         order_mgr.add_entry_order(order=order, option_tick=tick)
         
         # logs a message to indicate that the position has been successfully synchronized
-        logger.info(f"Position synchronized: {order.option_symbol} {order}")
+        logger.info(f"Position synchronized: {order.option_symbol} — TP/SL monitoring active")
 
 def synchronize_orders():
     """
@@ -2317,14 +2353,40 @@ def account_pnl_monitor(account_id, ACCOUNT_TP, ACCOUNT_SL):
 # ===== ADD THIS BELOW OrderManager / helper functions =====
 
 def monitor_positions_loop():
+    """Monitor open positions for TP/SL; checks run in parallel for better throughput."""
     logger.info("Position monitor thread started")
+    _emit_log("Position monitor thread started — checking TP/SL on open positions", "INFO", "position")
+    last_heartbeat = time.time()
+    HEARTBEAT_INTERVAL = 30.0  # Log every 30s to confirm thread is alive
+
     while not STOP_TRADING:
         try:
-            open_positions = client.get_all_positions()
-            for pos in open_positions:
-                order_mgr.check_exit_conditions(pos)
+            if client is None:
+                time.sleep(1.0)
+                continue
+            open_positions = list(client.get_all_positions())
+            pos_count = len([p for p in open_positions if p and getattr(p, "position", 0) != 0])
+
+            if pos_count > 0:
+                if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL:
+                    logger.info(f"Position monitor: {pos_count} open position(s) — checking TP/SL")
+                    _emit_log(f"Monitor: {pos_count} position(s) under TP/SL check", "DEBUG", "position")
+                    last_heartbeat = time.time()
+
+                # Check positions in parallel (up to 16 workers for 10–20 positions)
+                max_workers = min(16, max(1, pos_count))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(order_mgr.check_exit_conditions, pos): pos for pos in open_positions if pos and getattr(pos, "position", 0) != 0}
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as ex:
+                            pos = futures[future]
+                            logger.error(f"Position check error for {getattr(pos, 'symbol', '?')}: {ex}", exc_info=True)
         except Exception as e:
-            logger.error(f"Position monitor error: {e}")
+            logger.error(f"Position monitor error: {e}", exc_info=True)
+            _emit_log(f"Position monitor error: {e}", "ERROR", "position")
+
         time.sleep(0.1)
 
 
@@ -2368,9 +2430,11 @@ def main_call(data):
     EXPIRY = data["expiryToTrade"]
     useAmount = data["stockData"]
     
-    MARKET_START_TIME = data["marketStartTime"]
-    startTime = data["scriptStartTime"]
-    endTime = data["scriptEndTime"]
+    MARKET_START_TIME = data.get("marketStartTime", "09:30:00")
+    # Prefer market_hours from config.json; fallback to scriptStartTime/scriptEndTime
+    mh = data.get("market_hours") or {}
+    startTime = mh.get("start") or data.get("scriptStartTime", "0935")
+    endTime = mh.get("end") or data.get("scriptEndTime", "1545")
     
     VWAP_ON_OFF = "On"
     TRANSMIT = data["ORDER_TRANSMIT"]

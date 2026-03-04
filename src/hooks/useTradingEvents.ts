@@ -115,29 +115,35 @@ export function useTradingEvents() {
     }
   });
 
-  // ---- Log messages from the sidecar (batched to avoid UI hang when many entries) ----
+  // ---- Log messages from the sidecar (supports batched entries array or single entry) ----
   useTauriEvent("trading:log_message", (data: any) => {
-    const ts = data.timestamp || new Date().toISOString();
-    const category = data.category || "trading";
-    const message = data.message || "";
+    const items = Array.isArray(data.entries)
+      ? data.entries
+      : [{ timestamp: data.timestamp, level: data.level, category: data.category, message: data.message }];
 
-    logPending.current.push({
-      timestamp: ts,
-      level: data.level || "INFO",
-      category,
-      message,
-    });
+    for (const item of items) {
+      const ts = item.timestamp || new Date().toISOString();
+      const category = item.category || "trading";
+      const message = item.message || "";
+
+      logPending.current.push({
+        timestamp: ts,
+        level: item.level || "INFO",
+        category,
+        message,
+      });
+
+      if (
+        category === "signal" &&
+        message.toLowerCase().includes("signal scanner active")
+      ) {
+        setSignalScanning(true, ts);
+      }
+    }
     if (logFlushScheduled.current == null) {
       logFlushScheduled.current = setTimeout(() => {
         flushLogs();
       }, LOG_BATCH_MS);
-    }
-
-    if (
-      category === "signal" &&
-      message.toLowerCase().includes("signal scanner active")
-    ) {
-      setSignalScanning(true, ts);
     }
   });
 
@@ -232,6 +238,7 @@ export function useTradingEvents() {
         symbol: data.symbol != null ? String(data.symbol) : undefined,
         right: data.right != null ? String(data.right) : undefined,
         strike: data.strike != null ? Number(data.strike) : undefined,
+        expiry: data.expiry != null ? String(data.expiry) : undefined,
       },
       Number(pnl),
       data.exit_price != null ? Number(data.exit_price) : undefined
@@ -253,7 +260,7 @@ export function useTradingEvents() {
     }
   });
 
-  // ---- Signal detected ----
+  // ---- Signal detected (no toast — only orders show notifications) ----
   useTauriEvent("trading:signal_detected", (data: any) => {
     const signalType = data.signal_type || "CALL";
     const price = data.price ?? data.strike ?? 0;
@@ -271,14 +278,7 @@ export function useTradingEvents() {
     };
     setLastSignal(signal);
     addSignalToSession(signal);
-
-    if (settings.show_notifications) {
-      addToast({
-        title: "Signal Detected",
-        message: `${signalType} on ${data.symbol || ""} @ $${Number(price).toFixed(2)}`,
-        type: "info",
-      });
-    }
+    // Notifications only for orders (trade_executed, trade_closed), not signals
   });
 
   // ---- Sidecar process terminated ----
