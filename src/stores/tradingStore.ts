@@ -44,6 +44,8 @@ interface TradingState {
   /** Mark the engine as actively signal-scanning (called when heartbeat log is received) */
   setSignalScanning: (scanning: boolean, timestamp?: string) => void;
   reset: () => void;
+  /** Mark all open trades as closed (emergency stop; PnL unknown) */
+  markOpenTradesClosedOnEmergency: () => void;
 }
 
 const initialState = {
@@ -110,4 +112,19 @@ export const useTradingStore = create<TradingState>((set) => ({
       ...initialState,
       signalsInSession: [] as SignalEvent[],
     }),
+  markOpenTradesClosedOnEmergency: () =>
+    set((state) => ({
+      todayTrades: state.todayTrades.map((t) =>
+        t.status === "open" || t.status === undefined
+          ? { ...t, status: "closed" as const, pnl: undefined, exit_price: undefined }
+          : t
+      ),
+      openTrades: 0,
+      closedTrades: state.totalTrades,
+      dailyPnl: {
+        ...state.dailyPnl,
+        unrealized: 0,
+        total: state.dailyPnl.realized,
+      },
+    })),
 }));

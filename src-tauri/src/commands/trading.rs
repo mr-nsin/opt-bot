@@ -88,7 +88,7 @@ pub async fn stop_trading(
     drop(app);
 
     // Notify frontend so event listeners clean up (stop log display, reset indicators)
-    let _ = app_handle.emit("sidecar-terminated", Option::<i32>::None);
+    let _ = app_handle.emit("sidecar-terminated", serde_json::json!({ "reason": "stop_trading" }));
 
     Ok("Trading stopped".into())
 }
@@ -110,15 +110,18 @@ pub async fn emergency_stop(
         log::warn!("Failed to kill sidecar on emergency stop: {}", e);
     }
 
-    // Update state
+    // Update state: clear positions (closed on TWS), zero unrealized PnL
     let mut app = state.lock().await;
     app.trading.status = TradingStatus::Idle;
     app.sidecar_running = false;
     app.connected_to_tws = false;
+    app.trading.positions.clear();
+    app.trading.daily_pnl.unrealized = 0.0;
+    app.trading.daily_pnl.total = app.trading.daily_pnl.realized;
     drop(app);
 
-    // Notify frontend so event listeners clean up (stop log display, reset indicators)
-    let _ = app_handle.emit("sidecar-terminated", Option::<i32>::None);
+    // Notify frontend so event listeners clean up and clear UI (positions, trades, PnL)
+    let _ = app_handle.emit("sidecar-terminated", serde_json::json!({ "reason": "emergency_stop" }));
 
     Ok("Emergency stop executed".into())
 }

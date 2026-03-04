@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useTauriEvent } from "./useTauri";
 import { useTradingStore } from "@/stores/tradingStore";
+import { usePositionStore } from "@/stores/positionStore";
 import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useNotificationStore } from "@/stores/notificationStore";
@@ -281,7 +282,7 @@ export function useTradingEvents() {
   });
 
   // ---- Sidecar process terminated ----
-  useTauriEvent("sidecar-terminated", () => {
+  useTauriEvent("sidecar-terminated", (payload: { reason?: string } | number | null) => {
     // Flush any pending logs before resetting
     if (logFlushScheduled.current != null) {
       clearTimeout(logFlushScheduled.current);
@@ -296,6 +297,13 @@ export function useTradingEvents() {
     setStatus("Idle");
     setConnectedToTws(false);
     setSignalScanning(false);
+
+    // Emergency stop: clear positions, mark open trades closed, reset unrealized PnL
+    const reason = payload && typeof payload === "object" && "reason" in payload ? payload.reason : undefined;
+    if (reason === "emergency_stop") {
+      usePositionStore.getState().clearAll();
+      useTradingStore.getState().markOpenTradesClosedOnEmergency();
+    }
 
     if (settings.show_notifications) {
       addToast({

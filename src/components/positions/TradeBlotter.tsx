@@ -98,7 +98,8 @@ export const TradeBlotter = memo(function TradeBlotter() {
               </thead>
               <tbody>
                 {sorted.map((t, i) => {
-                  const pnl = (t.pnl as number) ?? 0;
+                  const pnl = t.pnl as number | undefined;
+                  const pnlKnown = pnl !== undefined && pnl !== null;
                   const status = (t.status as string) ?? "open";
                   const isClosed = status === "closed";
                   return (
@@ -132,23 +133,31 @@ export const TradeBlotter = memo(function TradeBlotter() {
                         ${Number(t.entry_price ?? 0).toFixed(2)}
                       </td>
                       <td className="font-mono tabular-nums text-xs">
-                        {isClosed ? `$${Number(t.exit_price ?? 0).toFixed(2)}` : "—"}
+                        {isClosed
+                          ? t.exit_price != null
+                            ? `$${Number(t.exit_price).toFixed(2)}`
+                            : "—"
+                          : "—"}
                       </td>
                       <td>
                         {isClosed ? (
-                          <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
-                            {formatCurrency(pnl)}
-                          </span>
+                          pnlKnown ? (
+                            <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
+                              {formatCurrency(pnl)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/50">—</span>
+                          )
                         ) : (
                           <span className="text-xs text-muted-foreground/50">—</span>
                         )}
                       </td>
                       <td>
                         <Badge
-                          variant={isClosed ? (pnl >= 0 ? "success" : "danger") : "secondary"}
+                          variant={isClosed ? (pnlKnown ? (pnl >= 0 ? "success" : "danger") : "secondary") : "secondary"}
                           className="text-xs px-1.5 py-0"
                         >
-                          {isClosed ? (pnl >= 0 ? "WIN" : "LOSS") : "OPEN"}
+                          {isClosed ? (pnlKnown ? (pnl >= 0 ? "WIN" : "LOSS") : "CLOSED") : "OPEN"}
                         </Badge>
                       </td>
                     </tr>
