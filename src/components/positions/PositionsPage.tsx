@@ -33,7 +33,7 @@ export const PositionsPage = memo(function PositionsPage() {
 
   useEffect(() => {
     refreshPositions();
-    const i = setInterval(refreshPositions, 5000);
+    const i = setInterval(refreshPositions, 2000);
     return () => clearInterval(i);
   }, [refreshPositions]);
 

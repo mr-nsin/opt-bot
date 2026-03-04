@@ -55,7 +55,7 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 5.0
+        self._positions_interval_sec: float = 2.0
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
 
@@ -249,7 +249,7 @@ class TradingEngine:
                 avg_cost = getattr(pos, 'avg_cost', 0)
                 avg_price = avg_cost / 100.0 if avg_cost > 1 else avg_cost
 
-                # Try to get live price from tick cache or order manager
+                # Try to get live price from order manager tick lookup, then client tick cache
                 current_price = 0.0
                 symbol = getattr(pos, 'symbol', str(key))
                 strike = getattr(pos, 'strike', 0)
@@ -264,6 +264,19 @@ class TradingEngine:
                             current_price = tick.last
                         elif tick and hasattr(tick, 'bid') and tick.bid > 0:
                             current_price = tick.bid
+
+                # Fallback: client tick_cache (get_options_data) when order lookup has no tick
+                if current_price <= 0 and hasattr(self._client, 'get_options_data'):
+                    try:
+                        r = str(right or "").upper()
+                        r = "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r[0] if r else "C")
+                        tick = self._client.get_options_data(symbol, str(expiry), r, float(strike))
+                        if tick and hasattr(tick, 'last') and tick.last > 0:
+                            current_price = tick.last
+                        elif tick and hasattr(tick, 'bid') and tick.bid > 0:
+                            current_price = tick.bid
+                    except Exception:
+                        pass
 
                 pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
                 pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
@@ -648,6 +661,8 @@ class TradingEngine:
                 BOT.init_data_feed()
                 self._log_tws_underlyings_received()
                 BOT.dataStrike = BOT.fetch_all_strike_expiries()
+                emit_log("Synchronizing positions (TWS positions → managed orders)...", "INFO", "system")
+                BOT.synchronize_positions()
                 emit_log("Synchronizing orders...", "INFO", "system")
                 BOT.synchronize_orders()
             except Exception as e:

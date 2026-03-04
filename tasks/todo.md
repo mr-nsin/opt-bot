@@ -113,6 +113,21 @@ When the emergency stop button is clicked:
 - [x] **Trading store**: Add `markOpenTradesClosedOnEmergency()` for sidecar-terminated
 - [ ] **Verification**: Click emergency stop with open positions → Positions page empty, Trades show closed, P&L unrealized = 0
 
+## P&L / Positions Live Update (separate fix)
+
+**Issue**: Position P&L and current price not updating continuously in Positions/Trades views.
+
+**Root cause**:
+1. Engine emits `position_update` every 5s; frontend polls `get_positions` every 5s
+2. `get_positions` gets `current_price` from `order_id_tick_lookup` only; if tick missing (no matching entry order), PnL stays 0
+
+**Fixes applied**:
+- [x] Reduce engine `_positions_interval_sec` from 5 to 2 seconds
+- [x] Add fallback: use `client.get_options_data()` (tick_cache) when `order_id_tick_lookup` has no tick
+- [x] Reduce frontend poll interval from 5s to 2s in PositionsPage
+
+**Note**: If P&L still shows 0, the option may not be subscribed for ticks (illiquid, or subscription gap). Consider reqPnLSingle for per-position PnL from TWS as future enhancement.
+
 ## Files to Modify
 
 | File | Change |
