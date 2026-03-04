@@ -99,17 +99,52 @@ def emit_order_update(order_id: int, status: str, symbol: str, **kwargs):
 # Log levels that are sent to the UI; DEBUG is omitted to keep UI logs informational only
 _UI_LOG_LEVELS = frozenset({"INFO", "WARN", "ERROR"})
 
+# Batched log emission: buffer logs and flush every 150ms (~80% less IPC)
+_LOG_BUFFER: list = []
+_LOG_BUFFER_LOCK = threading.Lock()
+_LOG_FLUSH_INTERVAL_SEC = 0.15
+_log_flush_timer: threading.Timer | None = None
+
+
+def _flush_log_buffer():
+    """Flush buffered logs as a single batched event."""
+    global _log_flush_timer
+    with _LOG_BUFFER_LOCK:
+        if not _LOG_BUFFER:
+            _log_flush_timer = None
+            return
+        entries = list(_LOG_BUFFER)
+        _LOG_BUFFER.clear()
+        _log_flush_timer = None
+    if entries:
+        send_event("log_message", {"entries": entries})
+
+
+def _schedule_log_flush():
+    """Schedule a flush if not already scheduled."""
+    global _log_flush_timer
+    with _LOG_BUFFER_LOCK:
+        if _log_flush_timer is not None:
+            return
+        _log_flush_timer = threading.Timer(_LOG_FLUSH_INTERVAL_SEC, _flush_log_buffer)
+        _log_flush_timer.daemon = True
+        _log_flush_timer.start()
+
 
 def emit_log(message: str, level: str = "INFO", category: str = "trading"):
-    """Emit a log message to the host. Only INFO, WARN, ERROR are sent to the UI; DEBUG is skipped."""
+    """Emit a log message to the host. Only INFO, WARN, ERROR are sent to the UI; DEBUG is skipped.
+    Logs are batched and flushed every 150ms to reduce IPC volume."""
     if level not in _UI_LOG_LEVELS:
         return
-    send_event("log_message", {
+    entry = {
         "timestamp": datetime.now().isoformat(),
         "level": level,
         "category": category,
         "message": message,
-    })
+    }
+    with _LOG_BUFFER_LOCK:
+        _LOG_BUFFER.append(entry)
+    _schedule_log_flush()
 
 
 def emit_engine_status(status: str, connected: bool = False, **kwargs):

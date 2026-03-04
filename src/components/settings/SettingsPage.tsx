@@ -25,10 +25,14 @@ import {
   Keyboard,
   Monitor,
   FlaskConical,
+  Cpu,
+  Copy,
+  RefreshCw,
 } from "lucide-react";
 import { LicenseStatus } from "@/components/license/LicenseStatus";
 import { LicenseInput } from "@/components/license/LicenseInput";
 import { formatHotkey } from "@/hooks/useHotkeys";
+import { cn } from "@/lib/utils";
 
 /** Keyboard shortcuts reference */
 const SHORTCUTS = [
@@ -44,12 +48,15 @@ const SHORTCUTS = [
 export function SettingsPage() {
   const { settings, updateSettings, tradingConfig } = useConfigStore();
   const { isDark, toggleTheme } = useTheme();
-  const { licenseStatus, isLicensed, activateLicense } = useLicense();
+  const { licenseStatus, isLicensed, activateLicense, checkLicense } = useLicense();
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [settingsFile, setSettingsFile] = useState<Record<string, unknown> | null>(null);
   const [licenseInfo, setLicenseInfo] = useState<{ email: string; license_key: string } | null>(null);
   const [activeTab, setActiveTab] = useState("general");
+  const [hardwareId, setHardwareId] = useState<string | null>(null);
+  const [hwIdCopied, setHwIdCopied] = useState(false);
+  const [refreshingLicense, setRefreshingLicense] = useState(false);
 
   useEffect(() => {
     configApi.getSettingsFile().then(setSettingsFile).catch(() => setSettingsFile(null));
@@ -62,6 +69,32 @@ export function SettingsPage() {
       setLicenseInfo(null);
     }
   }, [isLicensed]);
+
+  // Fetch hardware ID and refresh validity when License tab is active (show HW ID even when licensed)
+  useEffect(() => {
+    if (activeTab === "license") {
+      licenseApi.getHardwareId().then(setHardwareId).catch(() => setHardwareId(null));
+      // Re-validate silently when tab opened so updated expiry from vendor (Google Drive) is reflected
+      checkLicense({ silent: true });
+    }
+  }, [activeTab, checkLicense]);
+
+  const copyHardwareId = () => {
+    if (hardwareId) {
+      navigator.clipboard.writeText(hardwareId);
+      setHwIdCopied(true);
+      setTimeout(() => setHwIdCopied(false), 2000);
+    }
+  };
+
+  const handleRefreshValidity = async () => {
+    setRefreshingLicense(true);
+    try {
+      await checkLicense(); // Full check with loading state
+    } finally {
+      setRefreshingLicense(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!tradingConfig) return;
@@ -269,12 +302,46 @@ export function SettingsPage() {
               <CardDescription className="text-2xs">Software license management</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {licenseStatus ? <LicenseStatus status={licenseStatus} /> : null}
+              <div className="flex items-center justify-between gap-2">
+                {licenseStatus ? <LicenseStatus status={licenseStatus} /> : null}
+                {isLicensed && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRefreshValidity}
+                    disabled={refreshingLicense}
+                    className="h-8 text-xs shrink-0"
+                  >
+                    <RefreshCw className={cn("h-3 w-3 mr-1.5", refreshingLicense && "animate-spin")} />
+                    {refreshingLicense ? "Checking…" : "Refresh validity"}
+                  </Button>
+                )}
+              </div>
               {isLicensed && licenseInfo && (
                 <div className="rounded-lg bg-muted/30 p-3 space-y-2 text-sm">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Registered License</p>
                   <p><span className="text-muted-foreground">Email:</span> <span className="font-mono">{licenseInfo.email}</span></p>
                   <p><span className="text-muted-foreground">License:</span> <code className="font-mono text-xs tracking-wider">{licenseInfo.license_key}</code></p>
+                </div>
+              )}
+              {hardwareId && (
+                <div className="rounded-lg border border-border/50 p-3 space-y-2">
+                  <p className="text-2xs text-muted-foreground flex items-center gap-1.5">
+                    <Cpu className="h-3 w-3" /> Hardware ID (for support — send to vendor when renewing)
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs font-mono bg-muted/50 rounded px-2 py-1.5 truncate" title={hardwareId}>
+                      {hardwareId}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={copyHardwareId}
+                      className="shrink-0 p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+                      title="Copy"
+                    >
+                      {hwIdCopied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                  </div>
                 </div>
               )}
               {!isLicensed && <><Separator /><LicenseInput onActivate={activateLicense} /></>}

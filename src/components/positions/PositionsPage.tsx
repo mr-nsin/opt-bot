@@ -79,7 +79,7 @@ export const PositionsPage = memo(function PositionsPage() {
   }, [positions]);
 
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2.5 min-w-0 w-full">
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
@@ -159,8 +159,8 @@ export const PositionsPage = memo(function PositionsPage() {
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full table-pro">
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full table-pro min-w-max">
                 <thead>
                   <tr>
                     <th className="w-6" />

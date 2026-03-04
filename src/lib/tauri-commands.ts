@@ -9,10 +9,11 @@ export const config = {
   getSettingsFile: () => invoke<unknown>("get_settings_file"),
 };
 
-/** Logs: get (level?, category?, limit?), clear, getStats */
+/** Logs: get (level?, category?, limit?), getLogsDir, clear, getStats */
 export const logs = {
   get: (level?: string | null, category?: string | null, limit?: number) =>
     invoke<unknown[]>("get_logs", { level: level ?? null, category: category ?? null, limit: limit ?? null }),
+  getLogsDir: () => invoke<string>("get_logs_dir"),
   clear: () => invoke<string>("clear_logs"),
   getStats: () => invoke<unknown>("get_log_stats"),
 };
@@ -33,6 +34,20 @@ export const trading = {
       closed_trades: number;
       winning_trades: number;
       losing_trades: number;
+      trades_today?: Array<{
+        id?: number;
+        symbol?: string;
+        right?: string;
+        strike?: number;
+        expiry?: string;
+        side?: string;
+        quantity?: number;
+        entry_price?: number;
+        exit_price?: number;
+        pnl?: number;
+        status?: string;
+        timestamp?: string;
+      }>;
     }>("get_trading_status"),
   getAccountMetrics: () => invoke<Record<string, number> | null>("get_account_metrics"),
   simulateDemo: () => invoke<string>("simulate_demo"),

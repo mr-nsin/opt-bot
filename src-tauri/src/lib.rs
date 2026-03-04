@@ -60,6 +60,7 @@ pub fn run() {
             commands::positions::close_all_positions,
             // Log commands
             commands::logs::get_logs,
+            commands::logs::get_logs_dir,
             commands::logs::clear_logs,
             commands::logs::get_log_stats,
             // Close confirmation

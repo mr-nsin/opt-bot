@@ -38,12 +38,12 @@ export const PnLSparkline = memo(function PnLSparkline() {
   const historyRef = useRef<PnlPoint[]>([]);
   const lastRecordedRef = useRef<number>(0);
 
-  // Record a new point every ~5 seconds when running
+  // Record a new point every ~2 seconds when running
   useEffect(() => {
     if (!isRunning) return;
 
     const now = Date.now();
-    if (now - lastRecordedRef.current < 5000) return;
+    if (now - lastRecordedRef.current < 2000) return;
 
     lastRecordedRef.current = now;
     const timeStr = new Date().toLocaleTimeString("en-US", {

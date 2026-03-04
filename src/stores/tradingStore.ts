@@ -38,7 +38,7 @@ interface TradingState {
   clearSignalsInSession: () => void;
   addTrade: (trade: TradeRecord) => void;
   /** Update the first matching open trade with PnL when position is closed */
-  updateTradePnl: (match: { symbol?: string; right?: string; strike?: number }, pnl: number, exitPrice?: number) => void;
+  updateTradePnl: (match: { symbol?: string; right?: string; strike?: number; expiry?: string }, pnl: number, exitPrice?: number) => void;
   setDataStatus: (data: DataStatus | null) => void;
   setAccountMetrics: (metrics: AccountMetrics | null) => void;
   /** Mark the engine as actively signal-scanning (called when heartbeat log is received) */
@@ -46,6 +46,8 @@ interface TradingState {
   reset: () => void;
   /** Mark all open trades as closed (emergency stop; PnL unknown) */
   markOpenTradesClosedOnEmergency: () => void;
+  /** Hydrate todayTrades from backend (e.g. on page load when engine already running) */
+  setTodayTrades: (trades: TradeRecord[]) => void;
 }
 
 const initialState = {
@@ -88,12 +90,14 @@ export const useTradingStore = create<TradingState>((set) => ({
     set((state) => ({ todayTrades: [trade, ...state.todayTrades].slice(0, 100) })),
   updateTradePnl: (match, pnl, exitPrice) =>
     set((state) => {
+      const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
       const idx = state.todayTrades.findIndex(
         (t) =>
           (t.status === "open" || t.status === undefined) &&
           (match.symbol == null || t.symbol === match.symbol) &&
           (match.right == null || nr(t.right) === nr(match.right)) &&
-          (match.strike == null || Number(t.strike) === match.strike)
+          (match.strike == null || Number(t.strike) === match.strike) &&
+          (match.expiry == null || match.expiry === "" || normExp(t.expiry) === normExp(match.expiry))
       );
       if (idx < 0) return state;
       const next = [...state.todayTrades];
@@ -127,4 +131,6 @@ export const useTradingStore = create<TradingState>((set) => ({
         total: state.dailyPnl.realized,
       },
     })),
+  setTodayTrades: (trades) =>
+    set({ todayTrades: Array.isArray(trades) ? trades.slice(0, 100) : [] }),
 }));

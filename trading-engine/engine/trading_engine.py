@@ -50,7 +50,7 @@ class TradingEngine:
         self._data_feed_started: bool = False
         self._event_processor_threads: list = []
         self._last_data_status_time: float = 0
-        self._data_status_interval_sec: float = 10.0
+        self._data_status_interval_sec: float = 5.0
         self._last_account_metrics_time: float = 0
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
@@ -58,6 +58,8 @@ class TradingEngine:
         self._positions_interval_sec: float = 2.0
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
+        self._last_pnl_emit_time: float = 0
+        self._pnl_throttle_sec: float = 1.0  # Emit PnL at most once per second (~95% less IPC)
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -908,27 +910,30 @@ class TradingEngine:
             emit_log(f"EOD time check error: {e}", "WARN", "system")
 
     def _emit_pnl_update(self):
-        """Send P&L update to the frontend. TWS pnl_cache is a flat dict: daily, unrealized, realized."""
+        """Send P&L update to the frontend. TWS pnl_cache is a flat dict: daily, unrealized, realized.
+        Throttled to 1s to reduce IPC volume (~95% fewer emissions)."""
         try:
             if not hasattr(self._client, "pnl_cache") or not self._client.pnl_cache:
                 return
+            now = time.time()
+            if now - self._last_pnl_emit_time < self._pnl_throttle_sec:
+                return
             cache = self._client.pnl_cache
+            daily = unrealized = realized = 0.0
             # Support both flat dict (current TWS) and per-account objects
             if isinstance(cache.get("daily"), (int, float)) or "daily" in cache:
-                emit_pnl(
-                    daily_pnl=float(cache.get("daily") or 0),
-                    unrealized=float(cache.get("unrealized") or 0),
-                    realized=float(cache.get("realized") or 0),
-                )
+                daily = float(cache.get("daily") or 0)
+                unrealized = float(cache.get("unrealized") or 0)
+                realized = float(cache.get("realized") or 0)
             else:
                 for _account, pnl_data in cache.items():
                     if hasattr(pnl_data, "dailyPnL"):
-                        emit_pnl(
-                            daily_pnl=getattr(pnl_data, "dailyPnL", 0) or 0,
-                            unrealized=getattr(pnl_data, "unrealizedPnL", 0) or 0,
-                            realized=getattr(pnl_data, "realizedPnL", 0) or 0,
-                        )
+                        daily = getattr(pnl_data, "dailyPnL", 0) or 0
+                        unrealized = getattr(pnl_data, "unrealizedPnL", 0) or 0
+                        realized = getattr(pnl_data, "realizedPnL", 0) or 0
                     break
+            emit_pnl(daily_pnl=daily, unrealized=unrealized, realized=realized)
+            self._last_pnl_emit_time = now
         except Exception:
             pass  # Silently skip P&L errors
 

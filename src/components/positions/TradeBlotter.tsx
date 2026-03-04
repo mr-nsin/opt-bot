@@ -79,8 +79,8 @@ export const TradeBlotter = memo(function TradeBlotter() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full table-pro">
+          <div className="overflow-x-auto min-w-0">
+            <table className="w-full table-pro min-w-max">
               <thead>
                 <tr>
                   <SortTh field="time" label="Time" sort={sortField} dir={sortDir} onClick={toggleSort} />

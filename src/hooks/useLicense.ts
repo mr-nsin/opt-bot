@@ -7,9 +7,11 @@ export function useLicense() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const checkLicense = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const checkLicense = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
+      setLoading(true);
+      setError(null);
+    }
     const timeoutMs = 5000;
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("License check timed out")), timeoutMs)
@@ -18,15 +20,16 @@ export function useLicense() {
       const status = await Promise.race([license.validate(), timeoutPromise]);
       setLicenseStatus(status);
     } catch (err) {
-      // Try getting status instead (might be expired or not found)
-      try {
-        const status = await license.getStatus();
-        setLicenseStatus(status as LicenseStatus);
-      } catch {
-        setLicenseStatus({ valid: false, tier: "", days_remaining: 0, expires_at: "", features: { live_trading: false, max_symbols: 0, max_daily_trades: 0, strategies: [] }, hardware_bound: false, error: String(err) });
+      if (!opts?.silent) {
+        try {
+          const status = await license.getStatus();
+          setLicenseStatus(status as LicenseStatus);
+        } catch {
+          setLicenseStatus({ valid: false, tier: "", days_remaining: 0, expires_at: "", features: { live_trading: false, max_symbols: 0, max_daily_trades: 0, strategies: [] }, hardware_bound: false, error: String(err) });
+        }
       }
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, []);
 
@@ -59,14 +62,18 @@ export function useLicense() {
     checkLicense();
   }, [checkLicense]);
 
-  // Re-validate periodically against registry (revocation / expiry)
+  // Re-validate periodically against registry (Google Drive); when validity is updated there, UI will reflect it
   useEffect(() => {
-    const intervalMs = 4 * 60 * 60 * 1000; // 4 hours
-    const id = setInterval(() => {
+    const runValidate = () => {
       license.validate().then(setLicenseStatus).catch(() => {});
-    }, intervalMs);
+    };
+    // Check more frequently when near expiry (<=7 days) so vendor extension is picked up sooner
+    const daysLeft = licenseStatus?.days_remaining ?? 999;
+    const intervalMs =
+      daysLeft <= 7 ? 30 * 60 * 1000 : 4 * 60 * 60 * 1000; // 30 min if expiring soon, else 4 hours
+    const id = setInterval(runValidate, intervalMs);
     return () => clearInterval(id);
-  }, []);
+  }, [licenseStatus?.days_remaining]);
 
   return {
     licenseStatus,

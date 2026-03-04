@@ -1,3 +1,4 @@
+use crate::utils::paths;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -30,7 +31,7 @@ pub async fn get_logs(
     limit: Option<usize>,
 ) -> Result<Vec<LogEntry>, String> {
     let buffer = LOG_BUFFER.lock().await;
-    let limit = limit.unwrap_or(200);
+    let limit = limit.unwrap_or(60);
 
     // Collect last `limit` entries that pass filter, in chronological order (oldest first) so UI shows latest at bottom
     let mut filtered: Vec<LogEntry> = buffer
@@ -59,6 +60,14 @@ pub async fn clear_logs() -> Result<String, String> {
     let mut buffer = LOG_BUFFER.lock().await;
     buffer.clear();
     Ok("Logs cleared".into())
+}
+
+#[tauri::command]
+pub async fn get_logs_dir() -> Result<String, String> {
+    let path = paths::logs_dir();
+    path.to_str()
+        .map(String::from)
+        .ok_or_else(|| "Unable to resolve logs path".to_string())
 }
 
 #[tauri::command]

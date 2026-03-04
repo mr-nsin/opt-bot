@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { LogEntry } from "@/lib/types";
 
-const LOG_CAP = 100;
+const LOG_CAP = 60;
 
 interface LogState {
   logs: LogEntry[];

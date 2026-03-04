@@ -128,6 +128,8 @@ When the emergency stop button is clicked:
 
 **Note**: If P&L still shows 0, the option may not be subscribed for ticks (illiquid, or subscription gap). Consider reqPnLSingle for per-position PnL from TWS as future enhancement.
 
+**Full analysis**: See `tasks/live-updates-analysis.md` for data-flow tracing, metric update intervals, and all fixes.
+
 ## Files to Modify
 
 | File | Change |
@@ -206,3 +208,125 @@ When the emergency stop button is clicked:
 - [x] _find_entry_order: Use 0.01 strike tolerance (was exact float match)
 - [x] placeAndVerifyOrder: Guard against options_tick is None
 - [x] del_entry_order: Clean up _log_status_last when order removed
+
+---
+
+# Communication Optimization Plan — Faster Data Flow
+
+## Goal
+
+Reduce IPC volume and redundant updates to make Python↔Rust↔Frontend data flow faster and lighter.
+
+## Current Bottlenecks
+
+| Bottleneck | Location | Impact |
+|------------|----------|--------|
+| PnL emitted every 50ms | trading_engine.py | ~20 JSON lines/sec, 20 emit cycles in Rust, 20 store updates in React (throttled to 1s display) |
+| One event per log line | protocol/emitter.py | High volume when verbose; each = stdout write + Rust parse + emit |
+| Redundant emits | manager.rs | Emits even when payload unchanged |
+| Heavy data_status | trading_engine.py | Iterates full tick_cache under lock every 10s |
+
+## Implementation Checklist
+
+### P1 — Throttle PnL emit (Python)
+
+**File**: `trading-engine/engine/trading_engine.py`
+
+- [x] Add `_last_pnl_emit_time: float = 0` and `_pnl_throttle_sec: float = 1.0`
+- [x] In `_emit_pnl_update()`: only call `emit_pnl(...)` when `time.time() - self._last_pnl_emit_time >= self._pnl_throttle_sec`
+- [x] Update `_last_pnl_emit_time` when emitting
+- [x] **Effect**: ~95% reduction in PnL IPC (20/s → 1/s); frontend already displays at 1s
+
+### P2 — Batch log emissions (Python)
+
+**File**: `trading-engine/protocol/emitter.py`
+
+- [x] Add log buffer: `_LOG_BUFFER`, `_LOG_BUFFER_LOCK`, `_log_flush_timer`
+- [x] In `emit_log()`: append to buffer instead of immediate `send_event("log_message", ...)`
+- [x] Flush timer (150ms); on flush, emit single `log_message` with `entries: [...]`
+- [x] **Effect**: ~80% reduction in log IPC; Rust/frontend handle batched entries
+
+**File**: `src-tauri/src/sidecar/manager.rs`
+
+- [x] Parse `data.entries` (array) and push each to `push_log`; support single-entry format for backward compat
+
+**File**: `src/hooks/useTradingEvents.ts`
+
+- [x] Handle both batched `data.entries` array and single-entry format
+
+### P3 — Skip redundant emits (Rust)
+
+**File**: `src-tauri/src/sidecar/manager.rs`
+
+- [x] In `handle_sidecar_message` for `pnl_update`: compare new daily/unrealized/realized with `app.trading.daily_pnl`; skip emit if all equal
+- [x] For `account_metrics`: shallow-compare with last; skip emit if unchanged; avoid double emit from generic forward
+- [x] **Effect**: Fewer Tauri event deliveries when data is stale
+
+### P4 — Lightweight data_status (Python) [Optional]
+
+**File**: `trading-engine/engine/trading_engine.py`
+
+- [ ] In `_emit_data_status()`: avoid iterating full tick_cache under lock
+- [ ] Emit counts only: `tick_subscriptions: len(tick_cache)`, `event_queue_size`, `history_bars_count`
+- [ ] Optionally sample 3–5 symbols for `stock_ticks_sample` instead of full iteration
+- [ ] **Effect**: Lower lock contention; faster main loop
+
+## Verification
+
+- [ ] Start trading; confirm PnL updates smoothly at ~1s (no flicker)
+- [ ] Check logs page: entries appear in batches, not one-by-one
+- [ ] Monitor CPU/JSON volume: `rg "emit_pnl|send_event"` count should drop
+- [ ] No regression: positions, trades, account metrics still update correctly
+
+## Files Summary
+
+| File | Changes |
+|------|---------|
+| `trading-engine/engine/trading_engine.py` | Throttle PnL, optional lightweight data_status |
+| `trading-engine/protocol/emitter.py` | Batch log buffer + flush timer |
+| `src-tauri/src/sidecar/manager.rs` | Skip emit when pnl/account_metrics unchanged |
+
+---
+
+# Redis Cache Layer — Analysis & Recommendation
+
+## Question
+
+Should we add a Redis cache layer for Python ↔ Rust ↔ Frontend data flow? Is it viable when the app is distributed as a single exe?
+
+## Verdict: **Do not add Redis**
+
+### Why Redis is Not Suitable
+
+| Factor | Analysis |
+|--------|----------|
+| **Architecture** | Python sidecar, Rust, and React run on the same machine. Data flows via stdio (Python→Rust) and Tauri IPC (Rust→React). Adding Redis introduces a separate server process and network hop. |
+| **Latency** | stdio and Tauri IPC are in-process / same-machine. Redis (even localhost) adds TCP + serialization. For real-time PnL/positions, this would be slower, not faster. |
+| **Use case** | Redis excels at: distributed state, pub/sub across machines, persistence, multi-user. QuantDrift is single-user, single-machine, ephemeral trading data. |
+| **Single exe** | Redis is a standalone server. You cannot embed it inside one exe. Options: (A) Ship Redis binary separately — user runs 2 processes; (B) Embed something like Redis — complex, not standard. Neither achieves “run as individual exe.” |
+
+### When Redis Would Make Sense
+
+- Multiple app instances sharing state (e.g. trading engine on server, UI on multiple clients)
+- Persisting positions/config across restarts (SQLite/file is simpler for this)
+- Distributed deployment across machines
+- High-volume logging to a central store (overkill for desktop log viewer)
+
+### Single-Exe Compatibility
+
+| Approach | Single exe? | Notes |
+|----------|-------------|-------|
+| Current (stdio + Tauri) | Yes | Everything runs in one process tree; sidecar spawned by Tauri |
+| Add Redis | No | Requires Redis server running; user must install/start it |
+| Embed Redis binary | Partial | Could bundle redis-server.exe and start it; still 2 processes, not “one exe” |
+| Use SQLite for persistence | Yes | SQLite is embeddable; already used in project for DB |
+
+### Recommendation
+
+**Do not add Redis.** The optimizations in the plan above (throttle PnL, batch logs, skip redundant emits) address the actual bottlenecks without adding infrastructure. For persistence, use the existing SQLite or config files.
+
+### If You Need Caching Later
+
+- **In-memory in Rust (AppState)**: Already done; Rust caches positions, PnL, account_metrics.
+- **In-memory in Python**: Already done; tws_api_client has pnl_cache, tick_cache, positions.
+- **Cross-restart persistence**: SQLite (already in use) or JSON config files.

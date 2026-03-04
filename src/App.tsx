@@ -9,6 +9,7 @@ import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useTheme } from "@/hooks/useTheme";
 import { useTradingEvents } from "@/hooks/useTradingEvents";
+import { useTradingEngine } from "@/hooks/useTradingEngine";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { CommandPalette } from "@/components/common/CommandPalette";
 import { config, logs as logsApi, app as appApi } from "@/lib/tauri-commands";
@@ -33,6 +34,7 @@ const SettingsPage = lazy(() =>
 function AppContent() {
   const { setTradingConfig, setSettings, settings } = useConfigStore();
   const { setLogs } = useLogStore();
+  const { refreshStatus } = useTradingEngine();
 
   // Initialize theme
   useTheme();
@@ -95,17 +97,24 @@ function AppContent() {
 
       // Load initial logs from the Rust buffer
       try {
-        const initialLogs = await logsApi.get(undefined, undefined, 200);
+        const initialLogs = await logsApi.get(undefined, undefined, 60);
         if (initialLogs.length > 0) {
           setLogs(initialLogs);
         }
       } catch (err) {
         console.warn("Failed to load initial logs:", err);
       }
+
+      // Hydrate trading state (status, PnL, trades) from backend
+      try {
+        await refreshStatus();
+      } catch (err) {
+        console.warn("Failed to refresh trading status:", err);
+      }
     };
 
     initialize();
-  }, [setTradingConfig, setSettings, setLogs]);
+  }, [setTradingConfig, setSettings, setLogs, refreshStatus]);
 
   // ---- Close confirmation when trading is active ----
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);

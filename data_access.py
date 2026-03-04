@@ -1,13 +1,19 @@
 import os
+import sys
 import sqlite3
 from typing import List
 from threading import Thread, Lock
 from queue import Queue
 from common import OptionOrder, logger
 
-# DB path: under project root (where this file lives), so it works when sidecar cwd is trading-engine/
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-_DB_DIR = os.path.join(_PROJECT_ROOT, "db")
+# DB path: persistent when frozen (exe), project-relative when dev
+if getattr(sys, "frozen", False):
+    # Same base as common.py logs: APPDATA (Windows) or ~ (Mac/Linux)
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    _DB_DIR = os.path.join(base, "QuantDrift", "db")
+else:
+    _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+    _DB_DIR = os.path.join(_PROJECT_ROOT, "db")
 _DB_PATH = os.path.join(_DB_DIR, "orders.db")
 
 

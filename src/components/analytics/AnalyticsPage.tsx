@@ -1,10 +1,11 @@
-import { useState, memo } from "react";
+import { useState, memo, useEffect } from "react";
 import { PerformanceMetrics } from "./PerformanceMetrics";
 import { WinLossChart } from "./WinLossChart";
 import { PnLChart } from "./PnLChart";
 import { EquityCurve } from "./EquityCurve";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useTradingStore } from "@/stores/tradingStore";
+import { useTradingEngine } from "@/hooks/useTradingEngine";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   BarChart3,
@@ -15,7 +16,13 @@ import {
 
 export const AnalyticsPage = memo(function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState("overview");
+  const { refreshStatus } = useTradingEngine();
   const totalTrades = useTradingStore((s) => s.totalTrades);
+
+  // Hydrate trading data from backend when page mounts (fixes empty charts when navigating or after reload)
+  useEffect(() => {
+    refreshStatus();
+  }, [refreshStatus]);
   const openTrades = useTradingStore((s) => s.openTrades);
   const closedTrades = useTradingStore((s) => s.closedTrades);
   const isRunning = useTradingStore((s) => s.status) === "Running";

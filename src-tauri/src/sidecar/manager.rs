@@ -282,6 +282,9 @@ async fn handle_sidecar_message(
 ) {
     match msg {
         SidecarMessage::Event(event) => {
+            // Skip forwarding to frontend when payload is unchanged (P3 optimization)
+            let mut should_forward = true;
+
             // ---- Update Rust-side AppState based on event type ----
             match event.event.as_str() {
                 "pnl_update" => {
@@ -302,9 +305,16 @@ async fn handle_sidecar_message(
                         .unwrap_or(0.0);
 
                     let mut app = state.lock().await;
-                    app.trading.daily_pnl.total = daily;
-                    app.trading.daily_pnl.unrealized = unrealized;
-                    app.trading.daily_pnl.realized = realized;
+                    let unchanged = (app.trading.daily_pnl.total - daily).abs() < 1e-9
+                        && (app.trading.daily_pnl.unrealized - unrealized).abs() < 1e-9
+                        && (app.trading.daily_pnl.realized - realized).abs() < 1e-9;
+                    if unchanged {
+                        should_forward = false;
+                    } else {
+                        app.trading.daily_pnl.total = daily;
+                        app.trading.daily_pnl.unrealized = unrealized;
+                        app.trading.daily_pnl.realized = realized;
+                    }
                 }
 
                 "position_update" => {
@@ -336,18 +346,60 @@ async fn handle_sidecar_message(
                 }
 
                 "trade_closed" => {
+                    let pnl = event.data.get("pnl").and_then(|v| v.as_f64());
+                    let exit_price = event.data.get("exit_price").and_then(|v| v.as_f64());
+                    let closed_symbol = event.data.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+                    let closed_strike = event.data.get("strike").and_then(|v| v.as_f64());
+                    let closed_right = event.data.get("right").and_then(|v| v.as_str()).unwrap_or("");
+                    let closed_expiry = event.data
+                        .get("expiry")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .replace('-', "")
+                        .trim()
+                        .to_string();
+
                     let mut app = state.lock().await;
-                    if let Some(pnl) = event.data.get("pnl").and_then(|v| v.as_f64()) {
-                        if pnl > 0.0 {
+
+                    if let Some(pnl_val) = pnl {
+                        if pnl_val > 0.0 {
                             app.trading.winning_trades += 1;
                         } else {
                             app.trading.losing_trades += 1;
                         }
                     }
+
+                    // Update matching open trade in trades_today with pnl so hydration returns complete data
+                    fn norm_right(r: &str) -> String {
+                        if r.eq_ignore_ascii_case("call") {
+                            "C".to_string()
+                        } else if r.eq_ignore_ascii_case("put") {
+                            "P".to_string()
+                        } else {
+                            r.to_string()
+                        }
+                    }
+                    for t in app.trading.trades_today.iter_mut() {
+                        let is_open = t.status == "open" || t.status.is_empty();
+                        if !is_open {
+                            continue;
+                        }
+                        let symbol_ok = closed_symbol.is_empty() || t.symbol == closed_symbol;
+                        let strike_ok = closed_strike.map_or(true, |s| (t.strike - s).abs() < 0.01);
+                        let right_ok = closed_right.is_empty()
+                            || norm_right(&t.right) == norm_right(closed_right)
+                            || t.right == closed_right;
+                        let expiry_ok = closed_expiry.is_empty()
+                            || t.expiry.replace('-', "").trim() == closed_expiry;
+                        if symbol_ok && strike_ok && right_ok && expiry_ok {
+                            t.status = "closed".to_string();
+                            t.exit_price = exit_price;
+                            t.pnl = pnl;
+                            break;
+                        }
+                    }
+
                     // Remove matching position (by symbol + strike + right for options)
-                    let closed_symbol = event.data.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
-                    let closed_strike = event.data.get("strike").and_then(|v| v.as_f64());
-                    let closed_right = event.data.get("right").and_then(|v| v.as_str());
                     if !closed_symbol.is_empty() {
                         app.trading.positions.retain(|p| {
                             if p.symbol != closed_symbol {
@@ -358,10 +410,8 @@ async fn handle_sidecar_message(
                                     return true;
                                 }
                             }
-                            if let Some(r) = closed_right {
-                                if !r.is_empty() && p.right != r {
-                                    return true;
-                                }
+                            if !closed_right.is_empty() && p.right != closed_right {
+                                return true;
                             }
                             false
                         });
@@ -386,11 +436,20 @@ async fn handle_sidecar_message(
                 }
 
                 "account_metrics" => {
+                    should_forward = false; // We emit explicitly; avoid double emit from generic forward
                     let mut app = state.lock().await;
+                    let unchanged = app
+                        .trading
+                        .account_metrics
+                        .as_ref()
+                        .map(|prev| prev == &event.data)
+                        .unwrap_or(false);
                     app.trading.account_metrics = Some(event.data.clone());
                     drop(app);
-                    if let Err(e) = handle.emit("trading:account_metrics", &event.data) {
-                        log::error!("Failed to emit account_metrics: {}", e);
+                    if !unchanged {
+                        if let Err(e) = handle.emit("trading:account_metrics", &event.data) {
+                            log::error!("Failed to emit account_metrics: {}", e);
+                        }
                     }
                 }
 
@@ -415,48 +474,59 @@ async fn handle_sidecar_message(
                 }
 
                 "log_message" => {
-                    // Push sidecar log messages into the Rust in-memory log buffer
-                    let timestamp = event
-                        .data
-                        .get("timestamp")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let level = event
-                        .data
-                        .get("level")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("INFO")
-                        .to_string();
-                    let category = event
-                        .data
-                        .get("category")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("trading")
-                        .to_string();
-                    let message = event
-                        .data
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    push_log(LogEntry {
-                        timestamp,
-                        level,
-                        category,
-                        message,
-                    })
-                    .await;
+                    // Push sidecar log messages into the Rust in-memory log buffer.
+                    // Supports both batched (entries array) and single-entry format.
+                    let entries: Vec<LogEntry> = if let Some(arr) = event.data.get("entries").and_then(|v| v.as_array()) {
+                        arr.iter()
+                            .filter_map(|e| {
+                                let timestamp = e.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let level = e.get("level").and_then(|v| v.as_str()).unwrap_or("INFO").to_string();
+                                let category = e.get("category").and_then(|v| v.as_str()).unwrap_or("trading").to_string();
+                                let message = e.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                Some(LogEntry { timestamp, level, category, message })
+                            })
+                            .collect()
+                    } else {
+                        let timestamp = event
+                            .data
+                            .get("timestamp")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let level = event
+                            .data
+                            .get("level")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("INFO")
+                            .to_string();
+                        let category = event
+                            .data
+                            .get("category")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("trading")
+                            .to_string();
+                        let message = event
+                            .data
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        vec![LogEntry { timestamp, level, category, message }]
+                    };
+                    for entry in entries {
+                        push_log(entry).await;
+                    }
                 }
 
                 _ => {}
             }
 
-            // ---- Forward ALL events to the React frontend ----
-            let event_name = format!("trading:{}", event.event);
-            if let Err(e) = handle.emit(&event_name, &event.data) {
-                log::error!("Failed to emit event {}: {}", event_name, e);
+            // ---- Forward events to the React frontend (skip when redundant per P3) ----
+            if should_forward {
+                let event_name = format!("trading:{}", event.event);
+                if let Err(e) = handle.emit(&event_name, &event.data) {
+                    log::error!("Failed to emit event {}: {}", event_name, e);
+                }
             }
         }
 

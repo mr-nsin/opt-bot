@@ -27,18 +27,21 @@ export function usePositions() {
     if (data.symbol) {
       const current = usePositionStore.getState().positions;
       const nr = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+      const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
       const pos = current.find(
         (p) =>
           p.symbol === data.symbol &&
           (data.strike == null || Number(p.strike) === Number(data.strike)) &&
-          (data.right == null || nr(p.right) === nr(data.right))
+          (data.right == null || nr(p.right) === nr(data.right)) &&
+          (data.expiry == null || data.expiry === "" || normExp(p.expiry) === normExp(data.expiry))
       );
       if (pos) {
         addClosedPosition({ ...pos, ...data });
         removePosition(
           data.symbol,
           data.strike != null ? Number(data.strike) : undefined,
-          data.right != null ? String(data.right) : undefined
+          data.right != null ? String(data.right) : undefined,
+          data.expiry != null ? String(data.expiry) : undefined
         );
       }
     }

@@ -49,6 +49,8 @@ class OrderManager:
         self.order_id_tick_lookup = {}
         self.recent_trade_closures = {}  # Track cooldowns
         self.order_lock = Lock()
+        self._log_status_last = {}  # order_id -> last log time (throttle full status dump)
+        self._LOG_STATUS_INTERVAL = 30.0  # seconds between full status logs per order
 
     def set_client(self, client: TwsApiClient) -> None:
         """
@@ -77,7 +79,7 @@ class OrderManager:
         self.close_position(order=order, option_tick=option_tick)
 
     def _find_entry_order(self, symbol: str, strike: float = None, right: str = None) -> Optional[OptionOrder]:
-        """Find entry order matching symbol (and strike/right if provided)."""
+        """Find entry order matching symbol (and strike/right if provided). Uses 0.01 tolerance for strike."""
         def _nr(r):
             return "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r or "")
         with self.order_lock:
@@ -86,7 +88,7 @@ class OrderManager:
                     continue
                 if str(o.symbol or "") != str(symbol):
                     continue
-                if strike is not None and float(o.strike or 0) != float(strike):
+                if strike is not None and abs(float(o.strike or 0) - float(strike)) >= 0.01:
                     continue
                 if right is not None and right != "" and _nr(o.right) != _nr(right):
                     continue
@@ -117,6 +119,8 @@ class OrderManager:
                 self.entry_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
+            if order.id in self._log_status_last:
+                self._log_status_last.pop(order.id)
         
 
     def add_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
@@ -365,15 +369,18 @@ class OrderManager:
         # Set a reference to the parent order that opened the position
         closing_order.orderRef = order.id 
 
-        # Generate an order ID for the closing order and mark the current order as 'exit_placed'
+        if not order.executed_qty or order.executed_qty <= 0:
+            logger.warning(f"Cannot close {order.option_symbol}: executed_qty={order.executed_qty} (invalid)")
+            return
+
         orderId = self.api_client.nextOrderId()
         order.exit_placed = True
 
-        # Rebuild contract if missing (e.g. order loaded from DB); required for placeOrder
         contract = order.contract
         if contract is None and self.api_client:
+            exp_norm = self._norm_expiry(order.expiration)
             contract = self.api_client.get_options_contract(
-                symbol=order.symbol, expiry=order.expiration, right=order.right, strike=order.strike
+                symbol=order.symbol, expiry=exp_norm or order.expiration, right=order.right, strike=order.strike
             )
         if contract is None:
             logger.error(f"Close position failed: cannot get contract for order {order.id} {order.symbol}")
@@ -405,9 +412,16 @@ class OrderManager:
             self.api_client.placeOrder(orderId, contract=contract, order=closing_order)
             self.save_order(order=exit_order)
         except Exception as ex:
+            order.exit_placed = False
             self.del_exit_order(order=exit_order, options_tick=option_tick)
             option_tick.busy = False
-            logger.error(f"Placing Exit order failed: {ex}", exc_info=True)
+            logger.error(f"Placing Exit order failed: {ex} — will retry on next monitor cycle", exc_info=True)
+
+    def _norm_expiry(self, s: str) -> str:
+        """Normalize expiry for matching: 2026-03-06, 20260306, 202603 6 -> 20260306."""
+        if not s:
+            return ""
+        return str(s).replace("-", "").replace(" ", "").strip()
 
     def check_exit_conditions(self, pos: Position) -> None:
         """
@@ -417,33 +431,43 @@ class OrderManager:
         if not pos or pos.position == 0:
             return
         option_tick = None
+        matched_order = None
+        pos_exp_norm = self._norm_expiry(pos.expiry)
+        pos_strike = float(pos.strike or 0)
+        pos_r = "C" if (pos.right or "").upper() in ("C", "CALL") else "P"
+
         with self.order_lock:
             for order in self.entry_orders_cache.values():
                 if not order or order.exit_order or not getattr(order, "active", True):
                     continue
                 if str(order.symbol or "") != str(pos.symbol or ""):
                     continue
-                if float(order.strike or 0) != float(pos.strike or 0):
+                if abs(float(order.strike or 0) - pos_strike) >= 0.01:
                     continue
                 right = (order.right or "").upper()
-                pos_right = (pos.right or "").upper()
-                pos_r = "C" if pos_right in ("C", "CALL") else "P"
-                if (right in ("C", "CALL") and pos_r != "C") or (right in ("P", "PUT") and pos_r != "P"):
+                ord_r = "C" if right in ("C", "CALL") else "P"
+                if ord_r != pos_r:
                     continue
-                expiry = (order.expiration or "").replace("-", "")
-                pos_exp = (pos.expiry or "").replace("-", "")
-                if expiry and pos_exp and expiry != pos_exp:
+                ord_exp = self._norm_expiry(order.expiration)
+                if ord_exp and pos_exp_norm and ord_exp != pos_exp_norm:
                     continue
                 option_tick = self.order_id_tick_lookup.get(order.id)
                 if option_tick is not None:
+                    matched_order = order
                     if getattr(option_tick, "active_order", None) != order:
                         option_tick.active_order = order
                     break
-        if option_tick is not None:
+
+        if option_tick is not None and matched_order is not None:
             try:
                 self.check_and_close_position(tick=option_tick)
             except Exception as ex:
-                logger.error(f"check_exit_conditions error for {pos.symbol}: {ex}", exc_info=True)
+                logger.error(f"check_exit_conditions error for {pos.symbol} {pos.right}{pos.strike}: {ex}", exc_info=True)
+        else:
+            logger.debug(
+                f"Position {pos.symbol} {pos.right} {pos.strike} {pos_exp_norm}: no matching entry order or tick "
+                f"(entry_orders={len(self.entry_orders_cache)}, tick_lookup={len(self.order_id_tick_lookup)})"
+            )
 
     def check_and_close_position(self, tick: Tick) -> None:
         """
@@ -471,37 +495,39 @@ class OrderManager:
 
         if tick.busy:
             return
-        
+
         tick.busy = True
-        
+
         try:
             order = tick.active_order
-            
-            # check if exit order is not already placed.
+
             if order is None:
                 tick.busy = False
-                return 
+                return
 
-            if order.exit_placed == True:
-                logger.info(f"{order.option_symbol} EXIT order already placed.")
+            if order.exit_placed:
+                logger.debug(f"{order.option_symbol} EXIT already placed — skipping")
                 tick.busy = False
                 return
 
-            # check if order is already filled
             if order.order_status != "filled":
-                logger.info(f"{order.option_symbol} Order not filled yet: {order.order_status}")
+                logger.debug(f"{order.option_symbol} Order status={order.order_status} — waiting for fill")
                 tick.busy = False
                 return
-                
-            # Valdate we have valid price data
+
             if tick.last <= 0 and tick.bid <= 0:
-                logger.warning(f"{order.option_symbol} No valid price data available")
+                logger.warning(f"{order.option_symbol} No valid price (last={tick.last} bid={tick.bid}) — skipping TP/SL check")
                 tick.busy = False
                 return
-                
-            # ✓ ADD THIS: Log comprehensive status every time we check
-            self.log_order_status(order=order, tick=tick)
-            
+
+            # Throttled status log (every 30s per order to avoid flood with 10+ positions)
+            import time as _time
+            now = _time.time()
+            last = self._log_status_last.get(order.id, 0)
+            if now - last >= self._LOG_STATUS_INTERVAL:
+                self._log_status_last[order.id] = now
+                self.log_order_status(order=order, tick=tick)
+
             self.check_take_profit(tick=tick, order=order, option_tick=tick)
 
 
@@ -698,10 +724,9 @@ class OrderManager:
         return filled_orders
         
         
-    # Additional helper function for debugging
     def log_order_status(self, order: OptionOrder, tick: Tick) -> None:
-        """Helper function to log comprehensive order status for debugging"""
-        logger.info(f"""
+        """Log comprehensive order status (throttled to every 30s per order; use DEBUG level to avoid flood)."""
+        logger.debug(f"""
         ═══════════════════════════════════════════════════════
         ORDER STATUS: {order.option_symbol}
         ═══════════════════════════════════════════════════════

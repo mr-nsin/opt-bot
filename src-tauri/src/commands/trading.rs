@@ -145,6 +145,7 @@ pub async fn get_trading_status(
         "closed_trades": closed_trades,
         "winning_trades": app.trading.winning_trades,
         "losing_trades": app.trading.losing_trades,
+        "trades_today": app.trading.trades_today,
     }))
 }
 

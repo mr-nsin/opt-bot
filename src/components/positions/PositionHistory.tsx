@@ -14,8 +14,8 @@ export function PositionHistory({ positions }: { positions: Position[] }) {
         {positions.length === 0 ? (
           <p className="text-center text-xs text-muted-foreground py-8">No closed positions today</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+          <div className="overflow-x-auto min-w-0">
+            <table className="w-full text-xs min-w-max">
               <thead>
                 <tr className="border-b text-muted-foreground text-left">
                   <th className="py-2 pr-3 font-medium">Symbol</th>
