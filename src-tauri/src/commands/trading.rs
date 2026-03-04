@@ -1,3 +1,4 @@
+use crate::commands::logs::{push_log, LogEntry};
 use crate::sidecar::{manager, protocol::*};
 use crate::state::app_state::AppState;
 use crate::state::trading_state::TradingStatus;
@@ -77,6 +78,7 @@ pub async fn stop_trading(
     tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
 
     // Kill the sidecar process so the next start gets a completely fresh process.
+    manager::set_expected_termination(true);
     if let Err(e) = manager::kill_sidecar().await {
         log::warn!("Failed to kill sidecar on stop: {}", e);
     }
@@ -97,15 +99,33 @@ pub async fn stop_trading(
 pub async fn emergency_stop(
     app_handle: AppHandle,
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    reason: Option<String>,
 ) -> Result<String, String> {
-    // Send emergency stop to sidecar (cancels orders, closes positions, then disconnects)
-    let request = SidecarRequest::new(methods::EMERGENCY_STOP, None);
-    let _ = manager::send_request(&request).await;
+    let params = reason
+        .as_ref()
+        .map(|r| serde_json::json!({ "reason": r }));
+    let request = SidecarRequest::new(methods::EMERGENCY_STOP, params);
+
+    // If sidecar not running but reason provided (e.g. license invalidation), log it
+    if !manager::is_running().await {
+        if let Some(ref msg) = reason {
+            push_log(LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                level: "ERROR".into(),
+                category: "license".into(),
+                message: msg.clone(),
+            })
+            .await;
+        }
+    } else {
+        let _ = manager::send_request(&request).await;
+    }
 
     // Give the engine time to close all positions (place MKT orders for each)
     tokio::time::sleep(std::time::Duration::from_millis(15000)).await;
 
     // Force kill sidecar process tree
+    manager::set_expected_termination(true);
     if let Err(e) = manager::kill_sidecar().await {
         log::warn!("Failed to kill sidecar on emergency stop: {}", e);
     }

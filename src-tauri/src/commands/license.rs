@@ -1,7 +1,33 @@
+use crate::commands::logs::{push_log, LogEntry};
 use crate::license::{encrypted_store, hardware_id, registry, validator};
 use crate::state::app_state::AppState;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Log one message when license is bound to a different machine (exe copied)
+fn is_machine_mismatch(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("another machine")
+        || lower.contains("decryption failed")
+        || lower.contains("hardware mismatch")
+}
+
+/// Ensure we only log "machine mismatch" once per app session
+static MACHINE_MISMATCH_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn push_machine_mismatch_log() {
+    if MACHINE_MISMATCH_LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // Already logged
+    }
+    let entry = LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        level: "ERROR".into(),
+        category: "license".into(),
+        message: "License is bound to a different machine. This copy cannot be used on this device.".into(),
+    };
+    tauri::async_runtime::spawn(async move { push_log(entry).await });
+}
 
 #[tauri::command]
 pub fn get_hardware_id() -> String {
@@ -53,7 +79,12 @@ pub async fn validate_license(
     let (url, key_hex) = registry_config()
         .ok_or_else(|| REGISTRY_REQUIRED_MSG.to_string())?;
 
-    let license = encrypted_store::load_license()?;
+    let license = encrypted_store::load_license().map_err(|e| {
+        if is_machine_mismatch(&e) {
+            push_machine_mismatch_log();
+        }
+        e
+    })?;
 
     // Re-check against registry and use registry's expiry (so days_remaining matches registry, not stale local file)
     let reg = registry::fetch_registry(&url).await.map_err(|e| {
@@ -64,10 +95,21 @@ pub async fn validate_license(
         .iter()
         .find(|e| e.license_key == license.license_key && e.email == license.customer_email)
         .ok_or("License not found in registry (revoked or invalid)")?;
-    let license_from_registry = registry::verify_registry_entry(entry, &key_hex)?;
+    let license_from_registry = registry::verify_registry_entry(entry, &key_hex).map_err(|e| {
+        if is_machine_mismatch(&e) {
+            push_machine_mismatch_log();
+        }
+        e
+    })?;
 
     // Status from registry license so days_remaining / expires_at match the registry (e.g. 30 days)
-    let status = validator::validate_license(&license_from_registry).map_err(|e| e.to_string())?;
+    let status = validator::validate_license(&license_from_registry).map_err(|e| {
+        let err_str = e.to_string();
+        if is_machine_mismatch(&err_str) {
+            push_machine_mismatch_log();
+        }
+        err_str
+    })?;
 
     // Keep local file in sync with registry expiry
     let _ = encrypted_store::save_license(&license_from_registry);
@@ -105,15 +147,26 @@ pub async fn get_license_status(
         match encrypted_store::load_license() {
             Ok(license) => match validator::validate_license(&license) {
                 Ok(status) => Ok(serde_json::to_value(&status).unwrap()),
-                Err(e) => Ok(serde_json::json!({
-                    "valid": false,
-                    "error": e.to_string()
-                })),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if is_machine_mismatch(&err_str) {
+                        push_machine_mismatch_log();
+                    }
+                    Ok(serde_json::json!({
+                        "valid": false,
+                        "error": err_str
+                    }))
+                }
             },
-            Err(e) => Ok(serde_json::json!({
-                "valid": false,
-                "error": e
-            })),
+            Err(e) => {
+                if is_machine_mismatch(&e) {
+                    push_machine_mismatch_log();
+                }
+                Ok(serde_json::json!({
+                    "valid": false,
+                    "error": e
+                }))
+            }
         }
     } else {
         Ok(serde_json::json!({
@@ -145,9 +198,20 @@ pub async fn activate_license(
         .iter()
         .find(|e| e.license_key == key && e.email == email)
         .ok_or("License key or email not found in registry. Get a valid license from the vendor.")?;
-    let license = registry::verify_registry_entry(entry, &key_hex)?;
+    let license = registry::verify_registry_entry(entry, &key_hex).map_err(|e| {
+        if is_machine_mismatch(&e) {
+            push_machine_mismatch_log();
+        }
+        e
+    })?;
 
-    let status = validator::validate_license(&license).map_err(|e| e.to_string())?;
+    let status = validator::validate_license(&license).map_err(|e| {
+        let err_str = e.to_string();
+        if is_machine_mismatch(&err_str) {
+            push_machine_mismatch_log();
+        }
+        err_str
+    })?;
     encrypted_store::save_license(&license)?;
 
     let mut app = state.lock().await;

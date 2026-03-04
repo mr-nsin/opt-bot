@@ -9,8 +9,10 @@ export const config = {
   getSettingsFile: () => invoke<unknown>("get_settings_file"),
 };
 
-/** Logs: get (level?, category?, limit?), getLogsDir, clear, getStats */
+/** Logs: pushLogEntry, get (level?, category?, limit?), getLogsDir, clear, getStats */
 export const logs = {
+  pushLogEntry: (message: string, level?: string, category?: string) =>
+    invoke<void>("push_log_entry", { message, level: level ?? null, category: category ?? null }),
   get: (level?: string | null, category?: string | null, limit?: number) =>
     invoke<unknown[]>("get_logs", { level: level ?? null, category: category ?? null, limit: limit ?? null }),
   getLogsDir: () => invoke<string>("get_logs_dir"),
@@ -22,7 +24,8 @@ export const logs = {
 export const trading = {
   start: (cfg: unknown) => invoke<string>("start_trading", { config: cfg }),
   stop: () => invoke<string>("stop_trading"),
-  emergencyStop: () => invoke<string>("emergency_stop"),
+  emergencyStop: (reason?: string) =>
+    invoke<string>("emergency_stop", { reason: reason ?? null }),
   getStatus: () =>
     invoke<{
       status: string;

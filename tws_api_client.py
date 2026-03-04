@@ -513,16 +513,9 @@ class TwsApiClient(EWrapper, EClient):
         
     def get_pnl(self, account: str) -> PNL:
         """
-        Get the open position for a given symbol.
-
-        Args:
-            symbol: The symbol to search for.
-
-        Returns:
-            The open position for the given symbol, or None if no open position is found.
+        Get P&L for the given account (daily, realized). Called frequently by pnl_watchdog
+        and at startup; avoid INFO logging to prevent log spam.
         """
-        logger.info(f"get_PNL for account : {account}")
-        logger.info(f"PNL Data for account : {self.pnl_cache}")
         return self.pnl_cache.get("daily", 0.0), self.pnl_cache.get("realized", 0.0)
         
 

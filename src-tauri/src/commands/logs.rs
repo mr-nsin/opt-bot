@@ -24,6 +24,25 @@ pub async fn push_log(entry: LogEntry) {
     buffer.push(entry);
 }
 
+/// Push a log entry from the frontend (e.g. license invalidation message)
+#[tauri::command]
+pub async fn push_log_entry(
+    message: String,
+    level: Option<String>,
+    category: Option<String>,
+) -> Result<(), String> {
+    let level = level.unwrap_or_else(|| "INFO".into());
+    let category = category.unwrap_or_else(|| "system".into());
+    push_log(LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        level,
+        category,
+        message,
+    })
+    .await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_logs(
     level: Option<String>,

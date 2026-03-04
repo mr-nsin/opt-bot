@@ -63,7 +63,7 @@ def main():
     # Register command handlers
     handler.register(messages.START_TRADING, lambda params: engine.start(params.get("config", {})))
     handler.register(messages.STOP_TRADING, lambda params: engine.stop())
-    handler.register(messages.EMERGENCY_STOP, lambda params: engine.emergency_stop())
+    handler.register(messages.EMERGENCY_STOP, lambda params: engine.emergency_stop(params or {}))
     handler.register(messages.GET_STATUS, lambda params: engine.get_status())
     handler.register(messages.GET_POSITIONS, lambda params: engine.get_positions())
     handler.register(messages.CLOSE_POSITION, lambda params: engine.close_position(params))

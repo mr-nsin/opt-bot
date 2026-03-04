@@ -41,7 +41,9 @@ export function useLicense() {
             /* ignore */
           }
           try {
-            await trading.emergencyStop();
+            await trading.emergencyStop(
+              "License invalidated (removed/revoked/expired) — trading stopped"
+            );
           } catch {
             /* ignore if sidecar not running */
           }
@@ -131,7 +133,7 @@ export function useLicense() {
         const exp = new Date(licenseStatus!.expires_at!).getTime();
         if (Date.now() > exp) {
           license.invalidateLicenseState().catch(() => {});
-          trading.emergencyStop().catch(() => {});
+          trading.emergencyStop("License expired — trading stopped").catch(() => {});
           setLicenseStatus((p) => (p ? { ...p, valid: false, error: "License has expired" } : p));
         }
       } catch {
@@ -157,7 +159,9 @@ export function useLicense() {
               /* ignore */
             }
             try {
-              await trading.emergencyStop();
+              await trading.emergencyStop(
+                "License invalidated (removed/revoked/expired) — trading stopped"
+              );
             } catch {
               /* ignore if sidecar not running */
             }

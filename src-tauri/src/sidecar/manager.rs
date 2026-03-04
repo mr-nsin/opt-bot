@@ -27,6 +27,10 @@ static SIDECAR_CHILD: once_cell::sync::Lazy<
 static SIDECAR_PID: once_cell::sync::Lazy<Arc<Mutex<Option<u32>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 
+/// When true, we explicitly killed the sidecar (emergency_stop/stop_trading) — do not log "terminated"
+static EXPECTED_TERMINATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Assign the trading-engine child to a Windows Job Object with kill-on-close.
 /// When the main process exits (X button, Task Manager, crash), the OS closes
 /// all job handles and automatically terminates the child.
@@ -199,16 +203,19 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
                         app.connected_to_tws = false;
                     }
 
-                    push_log(LogEntry {
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        level: "WARN".into(),
-                        category: "system".into(),
-                        message: format!(
-                            "Trading engine process terminated (code: {:?})",
-                            payload.code
-                        ),
-                    })
-                    .await;
+                    // Only log "terminated" when it was unexpected (crash); skip when we killed it
+                    if !EXPECTED_TERMINATION.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        push_log(LogEntry {
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            level: "WARN".into(),
+                            category: "system".into(),
+                            message: format!(
+                                "Trading engine process terminated (code: {:?})",
+                                payload.code
+                            ),
+                        })
+                        .await;
+                    }
 
                     // Clean up child handle and PID
                     let mut child_lock = SIDECAR_CHILD.lock().await;
@@ -239,6 +246,11 @@ pub async fn send_request(request: &SidecarRequest) -> Result<(), String> {
     } else {
         Err("Sidecar is not running".into())
     }
+}
+
+/// Mark that we are about to kill the sidecar so "terminated" log is suppressed
+pub fn set_expected_termination(expected: bool) {
+    EXPECTED_TERMINATION.store(expected, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Kill the sidecar process and its entire process tree

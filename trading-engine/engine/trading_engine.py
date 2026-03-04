@@ -192,9 +192,12 @@ class TradingEngine:
 
         return {"status": "stopped"}
 
-    def emergency_stop(self) -> dict:
-        """Emergency stop: close all orders/positions, then immediately halt."""
-        emit_log("EMERGENCY STOP triggered!", "ERROR", "system")
+    def emergency_stop(self, params: dict = None) -> dict:
+        """Emergency stop: close all orders/positions, then immediately halt.
+        If params.reason is provided, emit only that one message (e.g. license invalidation).
+        Otherwise emit a single default message."""
+        params = params or {}
+        reason = params.get("reason") if isinstance(params.get("reason"), str) else None
         self.running = False
 
         # Signal BOT globals to stop trading loops
@@ -224,7 +227,9 @@ class TradingEngine:
         self._event_queue = None
 
         emit_engine_status("Idle", connected=False)
-        emit_log("Emergency stop complete — all orders cancelled, positions closed", "ERROR", "system")
+        # Only one log message: the reason if provided, else default
+        msg = reason if reason else "Emergency stop — orders cancelled, positions closed"
+        emit_log(msg, "ERROR", "system")
         return {"status": "emergency_stopped"}
 
     def get_status(self) -> dict:
@@ -913,7 +918,9 @@ class TradingEngine:
         """Send P&L update to the frontend. TWS pnl_cache is a flat dict: daily, unrealized, realized.
         Throttled to 1s to reduce IPC volume (~95% fewer emissions)."""
         try:
-            if not hasattr(self._client, "pnl_cache") or not self._client.pnl_cache:
+            if not self.running:
+                return  # Do not emit P&L after emergency_stop
+            if not self._client or not hasattr(self._client, "pnl_cache") or not self._client.pnl_cache:
                 return
             now = time.time()
             if now - self._last_pnl_emit_time < self._pnl_throttle_sec:

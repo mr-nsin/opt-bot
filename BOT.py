@@ -2178,6 +2178,9 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
     logger.info("PnL Watchdog started")
 
     while True:
+        if STOP_TRADING:
+            logger.info("PnL watchdog stopping (STOP_TRADING)")
+            break
         try:
             pnl, realizedPNL = client.get_pnl(account_id)
 
