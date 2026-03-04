@@ -169,3 +169,20 @@ pub async fn deactivate_license(
 
     Ok(())
 }
+
+/// Invalidates the license when revoked (e.g. key removed from registry).
+/// Deletes local license file and clears app state so the user sees the license gate.
+/// Called when validate fails with "not found in registry".
+#[tauri::command]
+pub async fn invalidate_license_state(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<(), String> {
+    // Delete local license so next check has no stale data
+    let _ = encrypted_store::delete_license();
+
+    let mut app = state.lock().await;
+    app.license = None;
+    app.licensed = false;
+
+    Ok(())
+}

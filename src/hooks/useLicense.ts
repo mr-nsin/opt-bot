@@ -1,6 +1,18 @@
 import { useState, useCallback, useEffect } from "react";
-import { license } from "@/lib/tauri-commands";
+import { license, trading } from "@/lib/tauri-commands";
 import type { LicenseStatus } from "@/lib/types";
+
+/** True if validate error indicates revocation, expiry, or no license. Do NOT fall back to local; stop trading. */
+function isRevocationError(err: unknown): boolean {
+  const msg = String(err ?? "").toLowerCase();
+  return (
+    msg.includes("not found") ||
+    msg.includes("revoked") ||
+    msg.includes("expired") ||
+    msg.includes("registry check failed") ||
+    msg.includes("license file not found")
+  );
+}
 
 export function useLicense() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null);
@@ -18,14 +30,63 @@ export function useLicense() {
     );
     try {
       const status = await Promise.race([license.validate(), timeoutPromise]);
-      setLicenseStatus(status);
+      setLicenseStatus(status as LicenseStatus);
     } catch (err) {
       if (!opts?.silent) {
-        try {
-          const status = await license.getStatus();
-          setLicenseStatus(status as LicenseStatus);
-        } catch {
-          setLicenseStatus({ valid: false, tier: "", days_remaining: 0, expires_at: "", features: { live_trading: false, max_symbols: 0, max_daily_trades: 0, strategies: [] }, hardware_bound: false, error: String(err) });
+        if (isRevocationError(err)) {
+          // Key removed from Drive: invalidate local, stop trading, show license gate
+          try {
+            await license.invalidateLicenseState();
+          } catch {
+            /* ignore */
+          }
+          try {
+            await trading.emergencyStop();
+          } catch {
+            /* ignore if sidecar not running */
+          }
+          setLicenseStatus({
+            valid: false,
+            tier: "",
+            days_remaining: 0,
+            expires_at: "",
+            features: {
+              live_trading: false,
+              max_symbols: 0,
+              max_daily_trades: 0,
+              strategies: [],
+            },
+            hardware_bound: false,
+            error: String(err),
+          });
+        } else {
+          // Network/timeout: fall back to local (offline grace)
+          try {
+            const status = (await license.getStatus()) as LicenseStatus;
+            setLicenseStatus(status);
+            if (!status.valid) {
+              try {
+                await trading.emergencyStop();
+              } catch {
+                /* ignore */
+              }
+            }
+          } catch {
+            setLicenseStatus({
+              valid: false,
+              tier: "",
+              days_remaining: 0,
+              expires_at: "",
+              features: {
+                live_trading: false,
+                max_symbols: 0,
+                max_daily_trades: 0,
+                strategies: [],
+              },
+              hardware_bound: false,
+              error: String(err),
+            });
+          }
         }
       }
     } finally {
@@ -62,18 +123,75 @@ export function useLicense() {
     checkLicense();
   }, [checkLicense]);
 
-  // Re-validate periodically against registry (Google Drive); when validity is updated there, UI will reflect it
+  // Proactive expiry check: if expires_at has passed, invalidate and stop trading within 60 sec
+  useEffect(() => {
+    if (!licenseStatus?.valid || !licenseStatus?.expires_at) return;
+    const checkExpired = () => {
+      try {
+        const exp = new Date(licenseStatus!.expires_at!).getTime();
+        if (Date.now() > exp) {
+          license.invalidateLicenseState().catch(() => {});
+          trading.emergencyStop().catch(() => {});
+          setLicenseStatus((p) => (p ? { ...p, valid: false, error: "License has expired" } : p));
+        }
+      } catch {
+        /* ignore parse errors */
+      }
+    };
+    checkExpired(); // run immediately
+    const id = setInterval(checkExpired, 60 * 1000); // then every 60 seconds
+    return () => clearInterval(id);
+  }, [licenseStatus?.valid, licenseStatus?.expires_at]);
+
+  // Re-validate periodically against registry (Google Drive); first check at 1 min, then every 30 min
   useEffect(() => {
     const runValidate = () => {
-      license.validate().then(setLicenseStatus).catch(() => {});
+      license
+        .validate()
+        .then((s) => setLicenseStatus(s as LicenseStatus))
+        .catch(async (err) => {
+          if (isRevocationError(err)) {
+            try {
+              await license.invalidateLicenseState();
+            } catch {
+              /* ignore */
+            }
+            try {
+              await trading.emergencyStop();
+            } catch {
+              /* ignore if sidecar not running */
+            }
+            setLicenseStatus((prev) =>
+              prev
+                ? { ...prev, valid: false, error: String(err) }
+                : {
+                    valid: false,
+                    tier: "",
+                    days_remaining: 0,
+                    expires_at: "",
+                    features: {
+                      live_trading: false,
+                      max_symbols: 0,
+                      max_daily_trades: 0,
+                      strategies: [],
+                    },
+                    hardware_bound: false,
+                    error: String(err),
+                  }
+            );
+          }
+          // Network/timeout: leave status as-is (offline grace)
+        });
     };
-    // Check more frequently when near expiry (<=7 days) so vendor extension is picked up sooner
-    const daysLeft = licenseStatus?.days_remaining ?? 999;
-    const intervalMs =
-      daysLeft <= 7 ? 30 * 60 * 1000 : 4 * 60 * 60 * 1000; // 30 min if expiring soon, else 4 hours
-    const id = setInterval(runValidate, intervalMs);
-    return () => clearInterval(id);
-  }, [licenseStatus?.days_remaining]);
+    const intervalMs = 30 * 60 * 1000; // 30 minutes
+    const earlyCheckMs = 60 * 1000; // 1 minute - first follow-up check
+    const earlyId = setTimeout(runValidate, earlyCheckMs);
+    const intervalId = setInterval(runValidate, intervalMs);
+    return () => {
+      clearTimeout(earlyId);
+      clearInterval(intervalId);
+    };
+  }, []);
 
   return {
     licenseStatus,

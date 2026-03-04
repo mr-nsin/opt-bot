@@ -1,5 +1,18 @@
 # License Security Fixes — Implementation Plan
 
+## Consequences of Drive-Only Validation (Checking Registry Every Time)
+
+| Consequence | Impact |
+|-------------|--------|
+| **Offline use blocked** | If user has no internet, validate() fails. With revocation handling: we only invalidate on "not found"; network errors still fall back to getStatus (local). So offline grace is preserved for network/timeout. |
+| **Revocation works** | When key is removed from Drive, next validate (startup, at 1 min, or every 30 min) fails → we invalidate local, **stop trading (emergency stop)**, show license gate. Max wait: **1 min** (if app just opened) or **30 min** (if key removed right after a check). |
+| **Trading stopped on invalidation** | When license is revoked, expired, or getStatus returns invalid, we call `emergencyStop()` so the sidecar is killed. Trading never continues after license becomes invalid. |
+| **Proactive expiry** | Every 60 sec we check if `expires_at` has passed; if so, invalidate and stop trading immediately (no network needed). |
+| **Registry dependency** | Drive/registry must be reachable for first-time activation and re-validation. Temporary outages: we fall back to local for network errors. |
+| **Startup delay** | Every app launch calls validate() (Drive). ~1–3 s typical. 5 s timeout before fallback. |
+
+---
+
 ## Executive Summary: License Screen on Expiry
 
 | When | Current Behavior | After Fixes |

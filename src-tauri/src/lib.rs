@@ -39,6 +39,7 @@ pub fn run() {
             commands::license::get_license_status,
             commands::license::activate_license,
             commands::license::deactivate_license,
+            commands::license::invalidate_license_state,
             commands::license::get_hardware_id,
             commands::license::get_license_info,
             // Trading commands
