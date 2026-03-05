@@ -78,10 +78,12 @@ class OrderManager:
             option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
         self.close_position(order=order, option_tick=option_tick)
 
-    def _find_entry_order(self, symbol: str, strike: float = None, right: str = None) -> Optional[OptionOrder]:
-        """Find entry order matching symbol (and strike/right if provided). Uses 0.01 tolerance for strike."""
+    def _find_entry_order(self, symbol: str, strike: float = None, right: str = None, expiry: str = None) -> Optional[OptionOrder]:
+        """Find entry order matching symbol (and strike/right/expiry if provided). Uses 0.01 tolerance for strike."""
         def _nr(r):
             return "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r or "")
+        def _norm_exp(e):
+            return (e or "").replace("-", "").replace(" ", "").strip()
         with self.order_lock:
             for o in self.entry_orders_cache.values():
                 if not o or not getattr(o, "active", True):
@@ -91,6 +93,8 @@ class OrderManager:
                 if strike is not None and abs(float(o.strike or 0) - float(strike)) >= 0.01:
                     continue
                 if right is not None and right != "" and _nr(o.right) != _nr(right):
+                    continue
+                if expiry is not None and expiry != "" and _norm_exp(o.expiration) != _norm_exp(expiry):
                     continue
                 return o
         return None
@@ -683,9 +687,13 @@ class OrderManager:
             logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, last={option_tick.last}")
             return
         
-        # Validate prices
+        # Validate prices — must have valid option price for TP/SL check
         if option_tick.last == -1 or option_tick.bid == -1:
-            logger.warning(f"Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+            logger.warning(f"Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid} — skipping SL")
+            _emit_log(
+                f"{order.option_symbol}: No options price data (last={option_tick.last}, bid={option_tick.bid}) — SL check skipped. Ensure contract is subscribed.",
+                "WARN", "position"
+            )
             return
             
         # Log current state

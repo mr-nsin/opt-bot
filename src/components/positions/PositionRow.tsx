@@ -70,6 +70,38 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         <td className="font-mono tabular-nums text-muted-foreground/70 text-xs">${position.avg_price?.toFixed(2)}</td>
         <td className="font-mono tabular-nums font-medium text-xs">${position.current_price?.toFixed(2)}</td>
 
+        {/* Bid / Ask — visible in main row when available */}
+        <td className="text-xs font-mono tabular-nums">
+          {(position.bid != null && position.bid > 0) || (position.ask != null && position.ask > 0) ? (
+            <span className="flex flex-col gap-0.5">
+              {position.bid != null && position.bid > 0 && <span>${Number(position.bid).toFixed(2)}</span>}
+              {position.ask != null && position.ask > 0 && <span className="text-muted-foreground/80">${Number(position.ask).toFixed(2)}</span>}
+            </span>
+          ) : (
+            <span className="text-muted-foreground/40">—</span>
+          )}
+        </td>
+
+        {/* TP | SL — visible in main row when set */}
+        <td className="text-xs">
+          {(position.profit_price != null && position.profit_price > 0) || (position.stoploss_price != null && position.stoploss_price > 0) ? (
+            <span className="flex flex-col gap-0.5">
+              {position.profit_price != null && position.profit_price > 0 && (
+                <span className="text-emerald-500/90 font-mono tabular-nums" title="Take Profit">
+                  TP ${Number(position.profit_price).toFixed(2)}{position.trailing_active ? " ↺" : ""}
+                </span>
+              )}
+              {position.stoploss_price != null && position.stoploss_price > 0 && (
+                <span className="text-red-500/90 font-mono tabular-nums" title="Stop Loss">
+                  SL ${Number(position.stoploss_price).toFixed(2)}
+                </span>
+              )}
+            </span>
+          ) : (
+            <span className="text-muted-foreground/40">—</span>
+          )}
+        </td>
+
         {/* P&L with gauge */}
         <td>
           <div className="space-y-0.5">
@@ -107,11 +139,29 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
 
       {expanded && (
         <tr>
-          <td colSpan={10} className="!p-0">
+          <td colSpan={13} className="!p-0">
             <div className="px-3 py-2 bg-muted/10 border-t border-border/10">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs animate-fade-up">
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 text-xs animate-fade-up">
                 <DetailItem icon={Target} label="Entry Price" value={`$${position.avg_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
-                <DetailItem icon={BarChart3} label="Current Bid" value={`$${position.current_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
+                <DetailItem icon={BarChart3} label="Current" value={`$${position.current_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
+                {(position.bid != null && position.bid > 0) && (
+                  <DetailItem icon={BarChart3} label="Bid" value={`$${Number(position.bid).toFixed(2)}`} color="text-foreground" title="Used for TP/SL when available" />
+                )}
+                {(position.ask != null && position.ask > 0) && (
+                  <DetailItem icon={BarChart3} label="Ask" value={`$${Number(position.ask).toFixed(2)}`} color="text-muted-foreground" title="For display only; not used in TP/SL" />
+                )}
+                {(position.last != null && position.last > 0) && (
+                  <DetailItem icon={BarChart3} label="Last" value={`$${Number(position.last).toFixed(2)}`} color="text-foreground" />
+                )}
+                {(position.exit_price_used != null && position.exit_price_used > 0) && (
+                  <DetailItem
+                    icon={BarChart3}
+                    label="Exit price used"
+                    value={`$${Number(position.exit_price_used).toFixed(2)} (${position.exit_price_source ?? "—"})`}
+                    color="text-amber-500/90"
+                    title="TP/SL logic: bid when valid, else last. Ask not used."
+                  />
+                )}
                 {position.profit_price !== undefined && position.profit_price > 0 && (
                   <DetailItem
                     icon={TrendingUp}
@@ -133,6 +183,11 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                   <DetailItem icon={BarChart3} label="Delta" value={Number(position.delta).toFixed(3)} color="text-blue-400" />
                 )}
               </div>
+              {(position.exit_price_used != null && position.exit_price_used > 0) && (
+                <p className="mt-2 text-[10px] text-muted-foreground/60">
+                  TP/SL logic: Exit price = <span className="font-mono">{position.exit_price_source}</span> when valid. Ask is not used for closing.
+                </p>
+              )}
             </div>
           </td>
         </tr>
@@ -146,14 +201,16 @@ function DetailItem({
   label,
   value,
   color,
+  title,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   color: string;
+  title?: string;
 }) {
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex items-center gap-1.5" title={title}>
       <Icon className={cn("h-2.5 w-2.5 shrink-0", color, "opacity-40")} />
       <div>
         <p className="text-muted-foreground/50 text-xs">{label}</p>

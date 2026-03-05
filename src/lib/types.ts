@@ -108,6 +108,16 @@ export interface Position {
   profit_price?: number;
   stoploss_price?: number;
   trailing_active?: boolean;
+  /** Bid price (used for TP/SL when available) */
+  bid?: number;
+  /** Ask price (for display; not used in TP/SL close logic) */
+  ask?: number;
+  /** Last traded price */
+  last?: number;
+  /** Price used for TP/SL checks: bid if valid, else last */
+  exit_price_used?: number;
+  /** "bid" or "last" — source of exit_price_used */
+  exit_price_source?: string;
   delta?: number;
   entry_time?: string;
   timestamp?: string;

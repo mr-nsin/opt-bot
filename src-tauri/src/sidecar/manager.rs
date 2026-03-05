@@ -332,11 +332,17 @@ async fn handle_sidecar_message(
                 "position_update" => {
                     if let Ok(pos) = serde_json::from_value::<Position>(event.data.clone()) {
                         let mut app = state.lock().await;
+                        let norm_exp = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
                         if let Some(existing) = app
                             .trading
                             .positions
                             .iter_mut()
-                            .find(|p| p.symbol == pos.symbol && (p.strike - pos.strike).abs() < 0.01 && p.right == pos.right)
+                            .find(|p| {
+                                p.symbol == pos.symbol
+                                    && (p.strike - pos.strike).abs() < 0.01
+                                    && p.right == pos.right
+                                    && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
+                            })
                         {
                             *existing = pos;
                         } else {

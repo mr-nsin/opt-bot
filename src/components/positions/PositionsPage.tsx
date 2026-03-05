@@ -171,6 +171,8 @@ export const PositionsPage = memo(function PositionsPage() {
                     <SortTh field="qty" label="Qty" sort={sortField} dir={sortDir} onClick={toggleSort} />
                     <th>Avg</th>
                     <th>Current</th>
+                    <th className="text-muted-foreground/70 font-normal" title="Bid / Ask prices used for TP/SL">Bid / Ask</th>
+                    <th className="text-muted-foreground/70 font-normal">TP / SL</th>
                     <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} />
                     <th className="w-16" />
                   </tr>

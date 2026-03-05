@@ -17,6 +17,16 @@ pub struct Position {
     pub stoploss_price: Option<f64>,
     #[serde(default)]
     pub trailing_active: Option<bool>,
+    #[serde(default)]
+    pub bid: Option<f64>,
+    #[serde(default)]
+    pub ask: Option<f64>,
+    #[serde(default)]
+    pub last: Option<f64>,
+    #[serde(default)]
+    pub exit_price_used: Option<f64>,
+    #[serde(default)]
+    pub exit_price_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

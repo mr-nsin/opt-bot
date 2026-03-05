@@ -259,13 +259,14 @@ class TradingEngine:
                 # Try to get live price from order manager tick lookup, then client tick cache
                 current_price = 0.0
                 entry_order = None
+                tick = None
                 symbol = getattr(pos, 'symbol', str(key))
                 strike = getattr(pos, 'strike', 0)
                 right = getattr(pos, 'right', '')
                 expiry = getattr(pos, 'expiry', '')
 
                 if self._order_mgr:
-                    entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right)
+                    entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
                     if entry_order:
                         tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
                         if tick and hasattr(tick, 'last') and tick.last > 0:
@@ -285,6 +286,14 @@ class TradingEngine:
                             current_price = tick.bid
                     except Exception:
                         pass
+
+                # Extract bid, ask, last for TP/SL logic display (matches order_manager check_take_profit/check_stop_loss)
+                bid_val = float(getattr(tick, 'bid', -1) or -1) if tick else -1
+                ask_val = float(getattr(tick, 'ask', -1) or -1) if tick else -1
+                last_val = float(getattr(tick, 'last', -1) or -1) if tick else -1
+                # Exit price used for TP/SL: bid when valid, else last (same as order_manager)
+                exit_price_used = bid_val if bid_val > 0 else last_val if last_val > 0 else 0.0
+                exit_price_source = "bid" if bid_val > 0 else "last" if last_val > 0 else ""
 
                 pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
                 pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
@@ -306,6 +315,16 @@ class TradingEngine:
                         pos_data["profit_price"] = round(float(entry_order.current_profit_price or entry_order.profit_price or 0), 2)
                         if getattr(entry_order, "profit_trigger", False):
                             pos_data["trailing_active"] = True
+                # Include bid/ask/last and exit logic for TP/SL transparency
+                if bid_val not in (-1, None):
+                    pos_data["bid"] = round(bid_val, 4)
+                if ask_val not in (-1, None):
+                    pos_data["ask"] = round(ask_val, 4)
+                if last_val not in (-1, None):
+                    pos_data["last"] = round(last_val, 4)
+                if exit_price_used > 0:
+                    pos_data["exit_price_used"] = round(exit_price_used, 4)
+                    pos_data["exit_price_source"] = exit_price_source
                 positions.append(pos_data)
         return positions
 
@@ -680,6 +699,16 @@ class TradingEngine:
                 BOT.synchronize_positions()
                 emit_log("Synchronizing orders...", "INFO", "system")
                 BOT.synchronize_orders()
+                # Re-sync positions after delay so DB queue insert_order ops complete (avoids race with get_filled_orders)
+                def _delayed_sync():
+                    time.sleep(3.0)
+                    if self.running and getattr(BOT, "STOP_TRADING", True) is False:
+                        try:
+                            emit_log("Re-syncing positions (DB queue drained)...", "INFO", "system")
+                            BOT.synchronize_positions()
+                        except Exception as ex:
+                            emit_log(f"Delayed sync failed: {ex}", "WARN", "system")
+                threading.Thread(target=_delayed_sync, daemon=True).start()
             except Exception as e:
                 emit_log(f"Data feed init failed: {e}", "ERROR", "system")
                 emit_error(str(e))
@@ -975,6 +1004,15 @@ class TradingEngine:
                     payload["profit_price"] = float(pos["profit_price"])
                 if pos.get("trailing_active") is True:
                     payload["trailing_active"] = True
+                if pos.get("bid") is not None:
+                    payload["bid"] = float(pos["bid"])
+                if pos.get("ask") is not None:
+                    payload["ask"] = float(pos["ask"])
+                if pos.get("last") is not None:
+                    payload["last"] = float(pos["last"])
+                if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
+                    payload["exit_price_used"] = float(pos["exit_price_used"])
+                    payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
                 emit_position(payload)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")
