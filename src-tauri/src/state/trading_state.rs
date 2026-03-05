@@ -11,6 +11,12 @@ pub struct Position {
     pub current_price: f64,
     pub pnl: f64,
     pub pnl_percent: f64,
+    #[serde(default)]
+    pub profit_price: Option<f64>,
+    #[serde(default)]
+    pub stoploss_price: Option<f64>,
+    #[serde(default)]
+    pub trailing_active: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

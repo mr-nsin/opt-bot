@@ -2373,7 +2373,7 @@ def monitor_positions_loop():
             if pos_count > 0:
                 if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL:
                     logger.info(f"Position monitor: {pos_count} open position(s) — checking TP/SL")
-                    _emit_log(f"Monitor: {pos_count} position(s) under TP/SL check", "DEBUG", "position")
+                    _emit_log(f"Position monitor: {pos_count} position(s) under TP/SL check", "INFO", "position")
                     last_heartbeat = time.time()
 
                 # Check positions in parallel (up to 16 workers for 10–20 positions)

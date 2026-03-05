@@ -107,6 +107,7 @@ export interface Position {
   pnl_percent?: number;
   profit_price?: number;
   stoploss_price?: number;
+  trailing_active?: boolean;
   delta?: number;
   entry_time?: string;
   timestamp?: string;

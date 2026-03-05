@@ -258,6 +258,7 @@ class TradingEngine:
 
                 # Try to get live price from order manager tick lookup, then client tick cache
                 current_price = 0.0
+                entry_order = None
                 symbol = getattr(pos, 'symbol', str(key))
                 strike = getattr(pos, 'strike', 0)
                 right = getattr(pos, 'right', '')
@@ -288,7 +289,7 @@ class TradingEngine:
                 pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
                 pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
 
-                positions.append({
+                pos_data = {
                     "symbol": symbol,
                     "strike": strike,
                     "right": right,
@@ -298,7 +299,14 @@ class TradingEngine:
                     "current_price": round(current_price, 4),
                     "pnl": round(pnl, 2),
                     "pnl_percent": round(pnl_pct, 2),
-                })
+                }
+                # Include SL/TP from managed entry order so UI can display them
+                if entry_order:
+                        pos_data["stoploss_price"] = round(float(entry_order.stoploss_price or 0), 2)
+                        pos_data["profit_price"] = round(float(entry_order.current_profit_price or entry_order.profit_price or 0), 2)
+                        if getattr(entry_order, "profit_trigger", False):
+                            pos_data["trailing_active"] = True
+                positions.append(pos_data)
         return positions
 
     def simulate_demo(self, params: dict) -> dict:
@@ -961,6 +969,12 @@ class TradingEngine:
                     "pnl": float(pos.get("pnl", 0)),
                     "pnl_percent": float(pos.get("pnl_percent", 0)),
                 }
+                if pos.get("stoploss_price") is not None:
+                    payload["stoploss_price"] = float(pos["stoploss_price"])
+                if pos.get("profit_price") is not None:
+                    payload["profit_price"] = float(pos["profit_price"])
+                if pos.get("trailing_active") is True:
+                    payload["trailing_active"] = True
                 emit_position(payload)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")

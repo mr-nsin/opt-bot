@@ -112,10 +112,15 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs animate-fade-up">
                 <DetailItem icon={Target} label="Entry Price" value={`$${position.avg_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
                 <DetailItem icon={BarChart3} label="Current Bid" value={`$${position.current_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
-                {position.profit_price !== undefined && (
-                  <DetailItem icon={TrendingUp} label="Take Profit" value={`$${Number(position.profit_price).toFixed(2)}`} color="text-emerald-400" />
+                {position.profit_price !== undefined && position.profit_price > 0 && (
+                  <DetailItem
+                    icon={TrendingUp}
+                    label={position.trailing_active ? "Take Profit (trailing)" : "Take Profit"}
+                    value={`$${Number(position.profit_price).toFixed(2)}`}
+                    color="text-emerald-400"
+                  />
                 )}
-                {position.stoploss_price !== undefined && (
+                {position.stoploss_price !== undefined && position.stoploss_price > 0 && (
                   <DetailItem icon={ShieldAlert} label="Stop Loss" value={`$${Number(position.stoploss_price).toFixed(2)}`} color="text-red-400" />
                 )}
                 {timeHeld && (

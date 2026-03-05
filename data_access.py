@@ -170,6 +170,9 @@ class DAL:
 
                 # Save the changes and close the connection
                 self.conn.commit()
+                # Keep in-memory orders in sync so get_filled_orders sees new orders (synchronize_positions, etc.)
+                if hasattr(self, "orders") and new_order not in self.orders:
+                    self.orders.append(new_order)
         except sqlite3.Error as ex:
             logger.error(f"An error occurred while inserting order into the database: {ex}", exc_info=True)
 
@@ -233,6 +236,7 @@ class DAL:
                 cursor.execute(query)
                 # Save the changes and close the connection
                 self.conn.commit()
+                # option_order is same ref as in self.orders (from insert) — already updated by caller
             return True
         except sqlite3.Error as e:
             logger.error(f"An error occurred: {e.args[0]}")
@@ -254,6 +258,9 @@ class DAL:
                 cursor = self.conn.cursor()
                 # Delete the option order from the database
                 cursor.execute('''DELETE FROM option_orders WHERE id = ?''', (order_id,))
+                # Keep in-memory orders in sync
+                if hasattr(self, "orders"):
+                    self.orders[:] = [o for o in self.orders if o.id != order_id]
                 if cursor.rowcount == 0:
                     # No rows were affected, i.e. there was no matching record in the database
                     print(f"No option order with ID {order_id} found in the database")

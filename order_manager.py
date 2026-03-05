@@ -464,9 +464,11 @@ class OrderManager:
             except Exception as ex:
                 logger.error(f"check_exit_conditions error for {pos.symbol} {pos.right}{pos.strike}: {ex}", exc_info=True)
         else:
-            logger.debug(
-                f"Position {pos.symbol} {pos.right} {pos.strike} {pos_exp_norm}: no matching entry order or tick "
-                f"(entry_orders={len(self.entry_orders_cache)}, tick_lookup={len(self.order_id_tick_lookup)})"
+            # WARN so it appears in UI logs — critical for debugging TP/SL not firing
+            _emit_log(
+                f"Position {pos.symbol} {pos.right}{pos.strike}: no matching entry order or tick — TP/SL not monitored "
+                f"(entry_orders={len(self.entry_orders_cache)}, tick_lookup={len(self.order_id_tick_lookup)})",
+                "WARN", "position"
             )
 
     def check_and_close_position(self, tick: Tick) -> None:
@@ -517,6 +519,10 @@ class OrderManager:
 
             if tick.last <= 0 and tick.bid <= 0:
                 logger.warning(f"{order.option_symbol} No valid price (last={tick.last} bid={tick.bid}) — skipping TP/SL check")
+                _emit_log(
+                    f"{order.option_symbol}: No valid price (last={tick.last}, bid={tick.bid}) — TP/SL skipped",
+                    "WARN", "position"
+                )
                 tick.busy = False
                 return
 
@@ -579,9 +585,13 @@ class OrderManager:
             logger.warning(f"Invalid exit price for {order.option_symbol}: bid={tick.bid}, last={tick.last}")
             return
         
-        # Validate prices
+        # Validate prices — must have valid option price for TP/SL check
         if option_tick.last == -1 or option_tick.bid == -1:
-            logger.warning(f"@@@@@@@@@@@@@@@@@@@@@@@@@@@ Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+            logger.warning(f"Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid} — skipping TP/SL")
+            _emit_log(
+                f"{order.option_symbol}: No options price data (last={option_tick.last}, bid={option_tick.bid}) — TP/SL check skipped. Ensure contract is subscribed.",
+                "WARN", "position"
+            )
             return
             
         # Log current state
