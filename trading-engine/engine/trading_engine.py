@@ -121,15 +121,17 @@ class TradingEngine:
             emit_log(f"Error cancelling orders: {e}", "ERROR", "system")
 
     def _close_all_orders_and_positions(self):
-        """Cancel all open orders and close all positions (used by Emergency Stop)."""
+        """Cancel all open orders and close all positions (used by Emergency Stop).
+        Uses getAndBuyAfterMarketEnd which closes ALL TWS positions (each in its own try/except so one failure does not abort the rest)."""
         try:
             import BOT
             if self._client and self._client.isConnected():
-                emit_log("Cancelling all open orders...", "INFO", "system")
+                emit_log("Emergency stop: cancelling all open orders...", "INFO", "system")
                 BOT.cancel_all_orders()
-                emit_log("Closing all open positions at market price...", "INFO", "system")
-                BOT.getAndBuyAfterMarketEnd()
-                emit_log("All orders cancelled and positions closed", "INFO", "system")
+                emit_log("Emergency stop: closing ALL TWS positions at market (one-by-one, failures logged)...", "INFO", "system")
+                buf_sec = getattr(self.config, "emergency_close_buffer_seconds", 5)
+                BOT.getAndBuyAfterMarketEnd(buffer_seconds=buf_sec)
+                emit_log("Emergency stop: orders cancelled, close orders placed for all positions", "INFO", "system")
             else:
                 emit_log("TWS not connected — cannot close orders/positions", "WARN", "system")
         except Exception as e:
@@ -640,11 +642,8 @@ class TradingEngine:
                 s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
                 for s in stock_list
             }
+            # Cooldown keys are symbol+right+expiry; empty at startup (first trade per combo allowed)
             BOT.trade_time_dict = {}
-            past_time = datetime.now() - timedelta(seconds=int(getattr(self.config, "distance_between_trade", 610)) + 60)
-            for sym in stock_list:
-                BOT.trade_time_dict[f"{sym}_CALL"] = past_time
-                BOT.trade_time_dict[f"{sym}_PUT"] = past_time
 
             # --- Required for checkAlgoAndTrade, checkConditionsAndTrade, takeTrade, placeOrder (same as main_call) ---
             # Without these, BOT hits NameError or wrong behavior when processing signals/trades.

@@ -150,6 +150,7 @@ class TradingConfig:
     per_day_trades: int = 3
     loss_amount_day: float = 200.0
     profit_amount_day: float = 200.0
+    emergency_close_buffer_seconds: int = 5
 
     @classmethod
     def from_dict(cls, data: Dict) -> "TradingConfig":
@@ -190,6 +191,7 @@ class TradingConfig:
             per_day_trades=data.get("per_day_trades", data.get("perDayTrades", 3)),
             loss_amount_day=data.get("loss_amount_day", 200),
             profit_amount_day=data.get("profit_amount_day", 200),
+            emergency_close_buffer_seconds=data.get("emergency_close_buffer_seconds", 5),
         )
 
     def to_bot_config_dict(self) -> Dict[str, Any]:
@@ -235,4 +237,5 @@ class TradingConfig:
             "perDayTrades": self.per_day_trades,
             "loss_amount_day": self.loss_amount_day,
             "profit_amount_day": self.profit_amount_day,
+            "emergency_close_buffer_seconds": self.emergency_close_buffer_seconds,
         }

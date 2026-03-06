@@ -67,6 +67,7 @@ pub struct TradingConfig {
     #[serde(alias = "candleTime")]
     pub candle_time: String,
     pub distance_between_trade: i32,
+    pub emergency_close_buffer_seconds: i32,
     #[serde(alias = "AVG_VOLUMNS_CANDLES")]
     pub avg_volumes_candles: i32,
     #[serde(alias = "stockData")]
@@ -131,6 +132,7 @@ impl Default for TradingConfig {
             fetch_value: "1 D".into(),
             candle_time: "5 mins".into(),
             distance_between_trade: 610,
+            emergency_close_buffer_seconds: 5,
             avg_volumes_candles: 30,
             stock_data,
             stock_list_to_trade: stock_list,
@@ -463,6 +465,7 @@ impl ConfigState {
         m.insert("fetchValue".into(), Value::String(t.fetch_value.clone()));
         m.insert("candleTime".into(), Value::String(t.candle_time.clone()));
         m.insert("distance_between_trade".into(), Value::Number(t.distance_between_trade.into()));
+        m.insert("emergency_close_buffer_seconds".into(), Value::Number(t.emergency_close_buffer_seconds.into()));
         m.insert("AVG_VOLUMNS_CANDLES".into(), Value::Number(t.avg_volumes_candles.into()));
         m.insert("stockData".into(), Value::Object(stock_data_map));
         m.insert("stockListToTrade".into(), Value::Object(stock_list_map));

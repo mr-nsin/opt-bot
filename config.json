@@ -75,5 +75,6 @@
   },
   "perDayTrades": 3,
   "loss_amount_day": -200,
-  "profit_amount_day": 200
+  "profit_amount_day": 200,
+  "emergency_close_buffer_seconds": 5
 }

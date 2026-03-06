@@ -46,6 +46,7 @@ export interface TradingConfig {
   fetch_value?: string;
   candle_time?: string;
   distance_between_trade?: number;
+  emergency_close_buffer_seconds?: number;
   avg_volumes_candles?: number;
   stock_data?: Record<string, { amount: number }>;
   stock_list_to_trade?: Record<string, string>;

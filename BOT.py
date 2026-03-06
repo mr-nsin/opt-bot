@@ -223,22 +223,32 @@ data = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
 def wwma(values, n):
     return values.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
 
-def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch) -> bool:
-    """
-    Check if the time since the last trade exceeds the minimum distance between trades.
+def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
+    """Normalized key for symbol+right+expiry cooldown. Expiry normalized (2026-03-06 -> 20260306)."""
+    norm_exp = (expiry or "").replace("-", "").replace(" ", "").strip()
+    if norm_exp:
+        return f"{symbol}_{right}_{norm_exp}"
+    return f"{symbol}_{right}"
 
-    Parameters:
-    tick (Optional[Tick]): A Tick object containing the time of the last trade.
 
-    Returns:
-    bool: True if the time since the last trade exceeds the minimum distance between trades, False otherwise.
+def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, expiry: str = None) -> bool:
     """
-    key = "{}_{}".format(stockName, rightMatch)
+    Check if cooldown is still active for symbol+right+expiry.
+    Returns True if still in cooldown (should NOT place order), False if OK to trade.
+    """
+    key = _cooldown_key(stockName, rightMatch, expiry)
     last_trade_time = trade_time_dict.get(key)
     if last_trade_time is not None:
         time_since_last_trade = datetime.now() - last_trade_time
-        logger.info(f"{stockName}: time_since_last_trade: {int(time_since_last_trade.total_seconds())}")
-        return int(time_since_last_trade.total_seconds()) < TRADE_COOLDOWN_SECONDS
+        seconds_since = int(time_since_last_trade.total_seconds())
+        if seconds_since < TRADE_COOLDOWN_SECONDS:
+            logger.info(f"COOLDOWN ACTIVE [{key}]: {seconds_since}s since last trade (need {TRADE_COOLDOWN_SECONDS}s)")
+            try:
+                _emit_log(f"Cooldown: {key} — {seconds_since}s elapsed, need {TRADE_COOLDOWN_SECONDS}s", "INFO", "signal")
+            except Exception:
+                pass
+            return True
+        return False
     return False
 
 
@@ -428,13 +438,17 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
         if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
             return "orderAlreadyPresent"
         
-        key = f"{symbol}_{right}"
+        key = _cooldown_key(symbol, right, expiry)
         last_trade_time = trade_time_dict.get(key)
     
         if last_trade_time:
             seconds_since = (datetime.now() - last_trade_time).total_seconds()
             if seconds_since < TRADE_COOLDOWN_SECONDS:
-                logger.info(f"[{key}] Trade skipped. Cooldown active ({int(seconds_since)}s < {TRADE_COOLDOWN_SECONDS}s)")
+                logger.info(f"COOLDOWN ACTIVE [{key}]: Trade skipped — {int(seconds_since)}s since last trade (need {TRADE_COOLDOWN_SECONDS}s)")
+                try:
+                    _emit_log(f"Cooldown: {key} — {int(seconds_since)}s elapsed, need {TRADE_COOLDOWN_SECONDS}s — order blocked", "INFO", "order")
+                except Exception:
+                    pass
                 return "cooldownPeriodHit"
 
         result =  placeOrder(symbol=symbol, 
@@ -1091,16 +1105,14 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     deltaVolDataReturn1 = get_delta_volume(stockName, eachStrike, rightMatch, tradeExpiry)
                     deltaVolDataReturn = deltaVolDataReturn1[0]
                     options_tick = deltaVolDataReturn1[1]
-                    # If the distance between trades check fails
-                    if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch):
-                        logger.info(f"{stockName} distance between trade check failed, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
-                        _emit_log(f"{stockName} {rightMatch}: Cooldown active ({TRADE_COOLDOWN_SECONDS}s) — waiting", "INFO", "signal")
+                    # If the distance between trades check fails (symbol+right+expiry specific)
+                    if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
                         continue
                     else:
-                        tradeKey = '{}_{}'.format(stockName, rightMatch)
+                        tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
-                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {last_trade}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
+                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
 
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1196,15 +1208,14 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     deltaVolDataReturn1 = get_delta_volume(stockName, eachStrike, rightMatch, tradeExpiry)
                     deltaVolDataReturn = deltaVolDataReturn1[0]
                     options_tick = deltaVolDataReturn1[1]
-                    # If the distance between trades check fails
-                    if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch):
-                        logger.info(f"{stockName} distance between trade check failed, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
+                    # If the distance between trades check fails (symbol+right+expiry specific)
+                    if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
                         continue
                     else:
-                        tradeKey = '{}_{}'.format(stockName, rightMatch)
+                        tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
-                            logger.info(f"{stockName} distance between trade check passed last_trade_time is {last_trade}, TRADE_COOLDOWN_SECONDS {TRADE_COOLDOWN_SECONDS}")
+                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
                     
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1383,31 +1394,79 @@ def squareOffAll():
     os._exit(1)
     
 
-def getAndBuyAfterMarketEnd():
+def getAndBuyAfterMarketEnd(buffer_seconds=None):
+    """Close all TWS positions at market. Each position wrapped in try/except so one failure does not abort the rest.
+    After first pass, waits buffer_seconds (from config emergency_close_buffer_seconds or 5), re-checks TWS,
+    and retries MKT close for any positions still open."""
     try:
-        OPEN_POSITION = client.get_all_positions()
-        logger.info(f"Current Open Positions are {OPEN_POSITION}\nClosing all of them")
+        if not client:
+            logger.warning("getAndBuyAfterMarketEnd: client is None — cannot close positions")
+            return
+        buf = buffer_seconds
+        if buf is None:
+            buf = int(globals().get("fileData") or {}).get("emergency_close_buffer_seconds", 5)
+        buf = max(0, int(buf))
 
-        if len(OPEN_POSITION) == 0:
-            logger.info("No Options Positions is present in Portfolio, so exiting the program now only")
+        def _close_positions(positions_to_close, pass_label=""):
+            closed = 0
+            failed = []
+            for i, ePos in enumerate(positions_to_close):
+                totalQty = int(abs(ePos.position))
+                if totalQty <= 0:
+                    continue
+                key = f"{ePos.symbol}{ePos.expiry}{ePos.right}{ePos.strike}"
+                try:
+                    action = "SELL"
+                    orderId = placeOrder(symbol=ePos.symbol,
+                                         expiry=ePos.expiry,
+                                         strike=ePos.strike,
+                                         right=ePos.right,
+                                         action=action,
+                                         totalQuantity=totalQty,
+                                         orderType="MKT",
+                                         options_tick=None,
+                                         closing_order=True,
+                                         is_sqare_off=True)
+                    if orderId and str(orderId) not in ("TWS API connection error", "DayLocked", "error", "None"):
+                        closed += 1
+                        logger.info(f"Square off [{pass_label}][{i+1}/{len(positions_to_close)}]: {key} — orderId={orderId} PLACED")
+                    else:
+                        failed.append((key, orderId))
+                        logger.warning(f"Square off [{pass_label}][{i+1}/{len(positions_to_close)}]: {key} — placeOrder returned {orderId}")
+                except Exception as ex:
+                    failed.append((key, str(ex)))
+                    logger.error(f"Square off [{pass_label}][{i+1}/{len(positions_to_close)}]: {key} FAILED — {ex}", exc_info=True)
+            return closed, failed
+
+        OPEN_POSITION = list(client.get_all_positions())
+        positions_to_close = [p for p in OPEN_POSITION if p and int(abs(getattr(p, "position", 0))) > 0]
+        logger.info(f"getAndBuyAfterMarketEnd: {len(positions_to_close)} position(s) to close (of {len(OPEN_POSITION)} total) — placing MKT close for each")
+
+        if len(positions_to_close) == 0:
+            logger.info("No options positions with qty>0 to close")
             return
 
-        for ePos in OPEN_POSITION:
-            totalQty = int(abs(ePos.position))
+        closed, failed = _close_positions(positions_to_close, pass_label="1st")
 
-            if totalQty > 0:
-                action = "SELL"
-                allSquareOffOrderId = placeOrder(symbol=ePos.symbol,
-                                                expiry=ePos.expiry,
-                                                strike=ePos.strike,
-                                                right=ePos.right,
-                                                action=action,
-                                                totalQuantity=totalQty,
-                                                orderType="MKT",
-                                                options_tick=None,
-                                                closing_order=True,
-                                                is_sqare_off=True)
-                logger.info(f"Square off order placed: {allSquareOffOrderId}")
+        if buf > 0 and len(positions_to_close) > 0:
+            logger.info(f"getAndBuyAfterMarketEnd: waiting {buf}s buffer, then re-checking TWS for still-open positions")
+            time.sleep(buf)
+            OPEN_POSITION_2 = list(client.get_all_positions())
+            still_open = [p for p in OPEN_POSITION_2 if p and int(abs(getattr(p, "position", 0))) > 0]
+            if still_open:
+                logger.warning(f"getAndBuyAfterMarketEnd: {len(still_open)} position(s) still open after buffer — retrying MKT close")
+                closed2, failed2 = _close_positions(still_open, pass_label="2nd")
+                closed += closed2
+                failed.extend(failed2)
+            else:
+                logger.info("getAndBuyAfterMarketEnd: all positions closed after buffer — no retry needed")
+
+        logger.info(f"getAndBuyAfterMarketEnd done: {closed} placed, {len(failed)} failed. Failed: {failed}")
+        if failed:
+            try:
+                _emit_log(f"Emergency close: {closed} placed, {len(failed)} failed — check logs", "WARN", "order")
+            except Exception:
+                pass
     except Exception as ex:
         logger.error(f"Error in getAndBuyAfterMarketEnd: {ex}", exc_info=True)
     
@@ -1877,8 +1936,9 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                             stock_tick=stock_tick)
 
         logger.info("\nupdating new time for last trade\n")
-        trade_key = "{}_{}".format(stock_symbol, right)
-        trade_time_dict.update({trade_key:datetime.now()})
+        trade_key = _cooldown_key(stock_symbol, right, expiry)
+        trade_time_dict.update({trade_key: datetime.now()})
+        logger.info(f"Cooldown recorded for {trade_key} — next trade for same symbol+right+expiry in {TRADE_COOLDOWN_SECONDS}s")
         
         #options_tick.last_trade_time = datetime.now()
         logger.info(f"currentOrderId is = {currentOrderId}")
@@ -2053,6 +2113,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
             
             # If the security type is 'OPT' and an active order exists
             if tick.contract.secType == "OPT" and tick.active_order is not None:
+                logger.debug(f"Event path: OPT tick with active_order -> TP/SL check for {getattr(tick.active_order, 'option_symbol', tick.contract.symbol or '?')}")
                 order_mgr.check_and_close_position(tick=tick)
             elif tick.contract.secType == "STK":
                 # Gate: skip signal scan when market is closed (from config.json market_hours or scriptStartTime/scriptEndTime)
@@ -2135,6 +2196,7 @@ def check_and_close_all_open_positions():
         if len(positions) == 0:
             logger.info("There are no open positions available")
         else:
+            logger.info(f"check_and_close_all_open_positions: closing {len(positions)} position(s) via MKT (day_limit/time/signal)")
             # Iterate over each position
             for pos in positions:
                 # Calculate the total quantity held
@@ -2387,8 +2449,10 @@ def monitor_positions_loop():
 
             if pos_count > 0:
                 if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL:
-                    logger.info(f"Position monitor: {pos_count} open position(s) — checking TP/SL")
-                    _emit_log(f"Position monitor: {pos_count} position(s) under TP/SL check", "INFO", "position")
+                    n_entry = len(getattr(order_mgr, "entry_orders_cache", {}))
+                    n_tick = len(getattr(order_mgr, "order_id_tick_lookup", {}))
+                    logger.info(f"Position monitor: {pos_count} TWS pos | {n_entry} entry_orders, {n_tick} ticks. If no match, see 'Position NO MATCH' or 'matched but NO TICK' in logs.")
+                    _emit_log(f"Monitor: {pos_count} pos, {n_entry} entries, {n_tick} ticks", "INFO", "position")
                     last_heartbeat = time.time()
 
                 # Check positions in parallel (up to 16 workers for 10–20 positions)
@@ -2483,10 +2547,9 @@ def main_call(data):
     
     pnl_thread = None
     
-    for each in stockList:
-        trade_time_dict.update({"{}_{}".format(each, "CALL"):datetime.now(), "{}_{}".format(each, "PUT"):datetime.now()})
-    
-    logger.info("\n trade_time_dict is = {}\n".format(trade_time_dict))
+    # Cooldown keys are now symbol+right+expiry; no pre-population at startup (first trade per combo allowed)
+    trade_time_dict.clear()
+    logger.info("trade_time_dict cleared (expiry-specific cooldown; no entries at startup)")
     
     for each in stockList:
         signal_dict[each] = {"last_signal":"", "current_signal":"", "last_trade_short_strike":"", "last_trade_buy_strike":"", "right":"", "conIdDetails_short":"", "conIdDetails_buy":""}
