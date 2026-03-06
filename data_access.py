@@ -1,6 +1,7 @@
 import os
 import sys
 import sqlite3
+from datetime import datetime
 from typing import List
 from threading import Thread, Lock
 from queue import Queue
@@ -41,6 +42,7 @@ class DAL:
 
         # logs a message to indicate that the function has started
         logger.info("starting handle orders queue")
+        logger.info(f"Using orders.db at {_DB_PATH}")
 
         # Ensure db directory exists, then connect
         os.makedirs(_DB_DIR, exist_ok=True)
@@ -110,14 +112,24 @@ class DAL:
                         active INTEGER,
                         ref_order_id INTEGER)''')
 
-            # Save the changes and close the connection
             self.conn.commit()
+            # Migration: add placed_at for existing DBs
+            try:
+                cursor.execute("ALTER TABLE option_orders ADD COLUMN placed_at TEXT")
+                self.conn.commit()
+                logger.info("Added placed_at column to option_orders")
+            except sqlite3.OperationalError as ae:
+                if "duplicate column name" in str(ae).lower():
+                    pass  # Column already exists
+                else:
+                    raise
         except sqlite3.Error as e:
             logger.error(f"An error occurred: {e.args[0]}")
 
     def insert_order(self, new_order: OptionOrder)-> None:
         try:
-            logger.info(f"insert_order: id={new_order.id} {new_order.symbol} {new_order.right} {new_order.strike} qty={new_order.order_qty} status={new_order.order_status}")
+            placed_at = new_order.placed_at or datetime.utcnow().isoformat()
+            logger.info(f"insert_order: id={new_order.id} {new_order.symbol} {new_order.right} {new_order.strike} qty={new_order.order_qty} status={new_order.order_status} placed_at={placed_at}")
             with self.lock:
                 cursor = self.conn.cursor()
                 cursor.execute('''INSERT INTO option_orders (
@@ -142,8 +154,9 @@ class DAL:
                                 exit_placed,
                                 exit_order,
                                 active,
-                                ref_order_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                ref_order_id,
+                                placed_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (new_order.id,
                         new_order.conId,
                         new_order.symbol,
@@ -162,11 +175,11 @@ class DAL:
                         new_order.profit_trigger,
                         new_order.current_profit_price,
                         new_order.profit_increment,
-                        # new_order.contract,
                         new_order.exit_placed,
                         new_order.exit_order,
                         new_order.active,
-                        new_order.ref_order_id))
+                        new_order.ref_order_id,
+                        placed_at))
 
                 # Save the changes and close the connection
                 self.conn.commit()
@@ -186,6 +199,7 @@ class DAL:
         # Create a list of OptionOrder objects from the retrieved rows (contract not stored in DB)
         option_orders = []
         for row in rows:
+            placed_at = row[23] if len(row) > 23 else None
             option_order = OptionOrder(
                 id=row[0],
                 conId=row[1],
@@ -209,7 +223,8 @@ class DAL:
                 exit_placed=row[19],
                 exit_order=row[20],
                 active=row[21],
-                ref_order_id=row[22])
+                ref_order_id=row[22],
+                placed_at=placed_at)
             option_orders.append(option_order)
         logger.info(f"Loaded {len(option_orders)} orders from DB (these are historical; only active/synced orders are used for trading)")
 

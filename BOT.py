@@ -2225,36 +2225,40 @@ def synchronize_positions():
     Returns:
     None
     """
-    # logs a message to indicate the function has started
     logger.info("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
     logger.info("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ synchronize positions from DB CHECK $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
     logger.info("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-    
-    # gets all positions held by the client
+
+    def _norm_exp(s):
+        return (s or "").replace("-", "").replace(" ", "").strip()
+    def _norm_right(r):
+        r = (r or "").upper()
+        return "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else r
+
     positions = client.get_all_positions()
-    
-    # gets all filled BUY orders from the order manager
     filled_sell_orders = order_mgr.get_filled_orders(order_side='BUY')
-    
-    # loops through each position
+    # Filter to non-zero positions for sync
+    positions_to_sync = [p for p in positions if p.position != 0]
+
+    logger.info(f"synchronize_positions: {len(positions_to_sync)} TWS positions (qty≠0), {len(filled_sell_orders)} filled BUY orders in DB")
+    try:
+        _emit_log(f"Syncing positions: {len(positions_to_sync)} TWS, {len(filled_sell_orders)} filled BUY in DB", "INFO", "system")
+    except Exception:
+        pass
+
+    matched = 0
+    unmatched = 0
+
     for pos in positions:
-        # skips positions with zero quantity
         if pos.position == 0:
             continue
-        
-        # converts the 'right' attribute of the position to a human-readable format
+
         right = pos.right
         if right == "C":
             right = "CALL"
         elif right == "P":
             right = "PUT"
-        
-        # Normalize expiry for matching (TWS: 20260306, order may have 2026-03-06)
-        def _norm_exp(s):
-            return (s or "").replace("-", "").replace(" ", "").strip()
-        def _norm_right(r):
-            r = (r or "").upper()
-            return "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else r
+
         pos_exp = _norm_exp(pos.expiry)
         pos_r = _norm_right(pos.right)
 
@@ -2268,10 +2272,18 @@ def synchronize_positions():
             None,
         )
         
-        # if no matching order is found, logs an error message and continues to the next position
         if order is None:
-            logger.warning(f"{pos.symbol}{pos_exp}{pos_r}{pos.strike} position: no matching filled BUY order in DB — cannot monitor TP/SL")
+            unmatched += 1
+            sought = f"{pos.symbol}{pos_exp}{pos_r}{pos.strike}"
+            db_formats = [f"{o.symbol}{_norm_exp(o.expiration)}{_norm_right(o.right)}{o.strike}" for o in filled_sell_orders if str(o.symbol) == str(pos.symbol)]
+            logger.warning(f"synchronize_positions: no match for {sought} (TWS pos) — cannot monitor TP/SL. DB orders for {pos.symbol}: {db_formats[:5]}{'...' if len(db_formats) > 5 else ''}")
+            try:
+                _emit_log(f"No DB match for {sought} — TP/SL not monitored", "WARN", "position")
+            except Exception:
+                pass
             continue
+
+        matched += 1
 
         # Use normalized expiry for contract (TWS format YYYYMMDD)
         exp_for_contract = pos_exp or _norm_exp(order.expiration)
@@ -2286,11 +2298,14 @@ def synchronize_positions():
         order.contract = contract
         tick.active_order = order
         
-        # adds the order to the order manager's list of active orders
         order_mgr.add_entry_order(order=order, option_tick=tick)
-        
-        # logs a message to indicate that the position has been successfully synchronized
         logger.info(f"Position synchronized: {order.option_symbol} — TP/SL monitoring active")
+
+    logger.info(f"synchronize_positions: done — matched {matched}, unmatched {unmatched}")
+    try:
+        _emit_log(f"Position sync done: {matched} matched, {unmatched} unmatched (no TP/SL)", "INFO", "system")
+    except Exception:
+        pass
 
 def synchronize_orders():
     """

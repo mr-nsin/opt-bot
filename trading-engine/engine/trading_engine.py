@@ -457,9 +457,14 @@ class TradingEngine:
         return {"status": "close_all_requested"}
 
     def update_config(self, params: dict) -> dict:
-        """Update configuration at runtime."""
+        """Update configuration at runtime. Syncs BOT globals so cooldown and other params take effect immediately."""
         config_data = params.get("config", {})
         self.config = TradingConfig.from_dict(config_data)
+        try:
+            import BOT
+            BOT.TRADE_COOLDOWN_SECONDS = int(getattr(self.config, "distance_between_trade", 610))
+        except Exception:
+            pass
         emit_log("Configuration updated", "INFO", "system")
         return {"status": "config_updated"}
 

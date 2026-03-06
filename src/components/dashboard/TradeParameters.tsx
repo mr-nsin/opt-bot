@@ -54,7 +54,7 @@ export function TradeParameters({ disabled }: { disabled?: boolean }) {
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Cooldown (s)</label>
-            <Input type="number" value={tradingConfig.distance_between_trade} onChange={(e) => !disabled && updateTradingConfig({ distance_between_trade: parseInt(e.target.value) })} disabled={disabled} />
+            <Input type="number" value={tradingConfig.distance_between_trade ?? 610} onChange={(e) => !disabled && updateTradingConfig({ distance_between_trade: parseInt(e.target.value) })} disabled={disabled} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2.5">

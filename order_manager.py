@@ -578,12 +578,18 @@ class OrderManager:
             - If the exit price is above the current profit price, the function updates the order's profit trigger and profit price settings.
         """
         
-        # For SELL orders (closing longs), use BID price if available, else LAST
-        # BID is what you can actually sell at RIGHT NOW
-        if tick.bid > 0 and tick.bid <= tick.last:
-            exit_price = tick.bid
+        # For TP trigger: use max(bid, last) so we recognize when price reaches target
+        # (bid can lag last; using bid-only missed TP when last hit target but bid hadn't)
+        bid_val = tick.bid if tick.bid > 0 else -1
+        last_val = tick.last if tick.last > 0 else -1
+        if bid_val > 0 and last_val > 0:
+            exit_price = max(bid_val, last_val)
+        elif last_val > 0:
+            exit_price = last_val
+        elif bid_val > 0:
+            exit_price = bid_val
         else:
-            exit_price = tick.last
+            exit_price = -1
 
         if exit_price <= 0:
             logger.warning(f"Invalid exit price for {order.option_symbol}: bid={tick.bid}, last={tick.last}")
@@ -726,6 +732,8 @@ class OrderManager:
         logger.info(f"Distance to StopLoss: ${distance_to_sl:.2f} ({distance_pct:.1f}% of entry)")
 
     def save_order(self, order: OptionOrder)-> None:
+        if not order.placed_at:
+            order.placed_at = datetime.datetime.utcnow().isoformat()
         self.db.put({"item_type": "new", "order": order})
 
     def get_orders(self)-> List[OptionOrder]:

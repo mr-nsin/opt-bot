@@ -85,6 +85,7 @@ class OptionOrder:
     exit_order: bool = False
     active: bool = False # active untill position is closed or order rejected/cancelled.
     ref_order_id: int = None
+    placed_at: str = None  # ISO timestamp when order was placed
 
     @property
     def option_symbol(self)-> str:
