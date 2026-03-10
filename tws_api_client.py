@@ -18,13 +18,14 @@ import pandas as pd
 from queue import Queue
 
 class TwsApiClient(EWrapper, EClient):
-    def __init__(self, host: str, port: int, clientId: int, event_queue: Queue, callback): 
+    def __init__(self, host: str, port: int, clientId: int, event_queue: Queue, callback, account_id: str = ""): 
         EWrapper.__init__(self)
         EClient.__init__(self, wrapper=self)
         self._host = host
         self._port = port
         self._clientId = clientId
         self.event_queue = event_queue
+        self._configured_account_id = (account_id or "").strip()
         self.nextValidOrderId = 0
         self.ticker_id = 0
         self.ticker_id_contract_cache = {}
@@ -792,10 +793,17 @@ class TwsApiClient(EWrapper, EClient):
         
     @iswrapper
     def managedAccounts(self, accountsList: str):
-        accounts = accountsList.split(",")
-        self.managed_account = accounts[0]
-
-        logger.info(f"Using account for PnL: {self.managed_account}")
+        accounts = [a.strip() for a in accountsList.split(",") if a.strip()]
+        # Use configured account from UI if it's in the managed accounts list
+        if self._configured_account_id and self._configured_account_id in accounts:
+            self.managed_account = self._configured_account_id
+            logger.info(f"Using configured account for PnL: {self.managed_account}")
+        else:
+            self.managed_account = accounts[0] if accounts else ""
+            if self._configured_account_id and self._configured_account_id not in accounts:
+                logger.warning(f"Configured account '{self._configured_account_id}' not in TWS managed accounts {accounts}; using {self.managed_account}")
+            else:
+                logger.info(f"Using account for PnL: {self.managed_account}")
 
         # Cancel existing subscription safely
         try:

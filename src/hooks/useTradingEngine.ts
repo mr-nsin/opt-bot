@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { trading } from "@/lib/tauri-commands";
+import { config, trading } from "@/lib/tauri-commands";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useConfigStore } from "@/stores/configStore";
 
@@ -26,6 +26,8 @@ export function useTradingEngine() {
     setStatus("Starting");
     clearSignalsInSession();
     try {
+      // Persist config before start so account_id and all params are saved
+      await config.save(tradingConfig);
       const result = await trading.start(tradingConfig);
       setStatus("Running");
       setSidecarRunning(true);

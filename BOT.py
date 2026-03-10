@@ -163,7 +163,8 @@ def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
     _client = TwsApiClient(
         host=IP, port=PORT, clientId=CLIENTID,
         event_queue=_event_queue,
-        callback=_order_mgr.process_trade
+        callback=_order_mgr.process_trade,
+        account_id=SUB_ACCOUNT_ID or "",
     )
     _client.connect(host=IP, port=PORT, clientId=CLIENTID)
     _order_mgr.set_client(client=_client)
@@ -325,6 +326,13 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
     order.totalQuantity = int(totalQuantity)
     order.orderType = orderType
     order.lmtPrice = str(lmtPrice)
+    # Route orders explicitly to the configured sub-account when provided
+    try:
+        if SUB_ACCOUNT_ID:
+            order.account = SUB_ACCOUNT_ID
+    except NameError:
+        # SUB_ACCOUNT_ID not initialized yet; fall back to TWS default account
+        pass
     if str(auxPrice) != "0":
         order.auxPrice = str(auxPrice)
     if USE_TIMER_IN_ORDER.lower() == "on" and not closing_order:
@@ -1510,6 +1518,15 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     if bidPrice <= 0 and askPrice <= 0:
         logger.warning(f"{stock_symbol} {right}: No valid bid/ask (bid={bidPrice}, ask={askPrice}) — skipping")
         return "priceConditonNotMatched"
+
+    # Skip strikes with price below $0.25
+    _prices = [p for p in (bidPrice, askPrice, lastPrice) if p > 0]
+    min_price = min(_prices) if _prices else 999.0
+    if min_price < 0.25:
+        logger.info(f"{stock_symbol} {right}: Skip strike with price ${min_price:.2f} < $0.25")
+        _emit_log(f"{stock_symbol} {right}: Skip strike below $0.25 (price=${min_price:.2f})", "INFO", "order")
+        return "strikeBelow25c"
+
     midPrice = (bidPrice + askPrice) / 2 if (bidPrice > 0 and askPrice > 0) else lastPrice
     spreadGap = (askPrice - bidPrice) if (bidPrice > 0 and askPrice > 0) else 0.0
     

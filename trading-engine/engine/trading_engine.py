@@ -248,10 +248,15 @@ class TradingEngine:
             return []
 
         positions = []
+        account_filter = (self.config.account_id or "").strip() if self.config else ""
         if hasattr(self._client, 'positions'):
             for key, pos in self._client.positions.items():
                 qty = getattr(pos, 'position', 0)
                 if qty == 0:
+                    continue
+                # When account_id is configured, only show positions for that account
+                pos_account = getattr(pos, 'account', None) or ""
+                if account_filter and pos_account and pos_account != account_filter:
                     continue
 
                 # avg_cost from TWS is per-share cost (for options: price * multiplier)
@@ -504,6 +509,7 @@ class TradingEngine:
                 clientId=self.config.client_id,
                 event_queue=self._event_queue,
                 callback=self._order_mgr.process_trade if self._order_mgr else None,
+                account_id=getattr(self.config, "account_id", "") or "",
             )
             # Let engine handle reconnects only (avoids duplicate connections from client's connectionClosed)
             self._client.reconnect_handled_externally = True
@@ -626,6 +632,8 @@ class TradingEngine:
             BOT.fetchValue = getattr(self.config, "fetch_value", "1 D")
             BOT.candleTime = getattr(self.config, "candle_time", "5 mins")
             BOT.SUB_ACCOUNT_ID = self.config.account_id or ""
+            if BOT.SUB_ACCOUNT_ID:
+                emit_log(f"Orders will be routed to account: {BOT.SUB_ACCOUNT_ID}", "INFO", "system")
             BOT.tradeExpiry_val = getExpiry(getattr(self.config, "expiry_to_trade", "next"))
             BOT.spy_qqq_tradeExpiry = getExpiry(getattr(self.config, "spy_qqq_expiry", "0DTE"))
             # Required by BOT.checkConditionsAndTrade (delta/volume thresholds)
