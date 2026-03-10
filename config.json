@@ -33,6 +33,8 @@
   "candleTime": "5 mins",
   "distance_between_trade": 120,
   "AVG_VOLUMNS_CANDLES": 30,
+  "USE_RSI_VOLUME_DIVERGENCE": true,
+  "USE_LIQUIDITY_SWEEP": true,
   "stockData": {
     "AAPL": {
       "amount": 350

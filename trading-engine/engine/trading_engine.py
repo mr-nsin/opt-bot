@@ -74,6 +74,7 @@ class TradingEngine:
 
             # Initialize components
             self._event_queue = Queue()
+            self._opt_event_queue = Queue()  # Dedicated for OPT ticks (TP/SL) - never blocked by scan
             self._init_database()
             self._init_order_manager()
             self._init_tws_client()
@@ -194,6 +195,42 @@ class TradingEngine:
 
         return {"status": "stopped"}
 
+    def _stop_engine_after_day_limit(self):
+        """Stop engine when day P&L limit hit by pnl_watchdog. Orders/positions already closed by watchdog.
+        Do NOT cancel orders again (would cancel close orders). Disconnect TWS so user must click Start."""
+        if not self.running:
+            return
+        emit_log("Day P&L limit hit — stopping engine (close orders placed). User must click Start to resume.", "ERROR", "system")
+        self.running = False
+
+        # Stop event processor threads (BOT strategy threads)
+        for t in self._event_processor_threads:
+            try:
+                if t.is_alive():
+                    t.join(timeout=2)
+            except Exception:
+                pass
+        self._event_processor_threads = []
+
+        # Disconnect TWS — do NOT cancel orders (pnl_watchdog already placed close orders)
+        if self._client:
+            try:
+                if hasattr(self._client, 'disconnect'):
+                    self._client.disconnect()
+            except Exception as e:
+                emit_log(f"Error disconnecting TWS: {e}", "WARN", "system")
+            time.sleep(0.5)
+            self._client = None
+
+        self.connected = False
+        self._data_feed_started = False
+        self._order_mgr = None
+        self._db = None
+        self._event_queue = None
+
+        emit_engine_status("Idle", connected=False)
+        emit_log("Trading engine stopped (day limit). Click Start to trade again.", "INFO", "system")
+
     def emergency_stop(self, params: dict = None) -> dict:
         """Emergency stop: close all orders/positions, then immediately halt.
         If params.reason is provided, emit only that one message (e.g. license invalidation).
@@ -294,13 +331,14 @@ class TradingEngine:
                     except Exception:
                         pass
 
-                # Extract bid, ask, last for TP/SL logic display (matches order_manager check_take_profit/check_stop_loss)
+                # Extract bid, ask, last, mid for TP/SL logic display (matches order_manager: uses bid, last, mid)
                 bid_val = float(getattr(tick, 'bid', -1) or -1) if tick else -1
                 ask_val = float(getattr(tick, 'ask', -1) or -1) if tick else -1
                 last_val = float(getattr(tick, 'last', -1) or -1) if tick else -1
-                # Exit price used for TP/SL: bid when valid, else last (same as order_manager)
-                exit_price_used = bid_val if bid_val > 0 else last_val if last_val > 0 else 0.0
-                exit_price_source = "bid" if bid_val > 0 else "last" if last_val > 0 else ""
+                mid_val = round((bid_val + ask_val) / 2.0, 2) if (bid_val > 0 and ask_val > 0) else -1.0
+                prices = [p for p in [bid_val, last_val, mid_val] if p > 0]
+                exit_price_used = max(prices) if prices else 0.0  # best for TP; SL uses min
+                exit_price_source = "bid, last, mid" if mid_val > 0 else ("bid, last" if (bid_val > 0 and last_val > 0) else ("bid" if bid_val > 0 else "last" if last_val > 0 else ""))
 
                 pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
                 pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
@@ -329,6 +367,8 @@ class TradingEngine:
                     pos_data["ask"] = round(ask_val, 4)
                 if last_val not in (-1, None):
                     pos_data["last"] = round(last_val, 4)
+                if mid_val > 0:
+                    pos_data["mid"] = round(mid_val, 4)
                 if exit_price_used > 0:
                     pos_data["exit_price_used"] = round(exit_price_used, 4)
                     pos_data["exit_price_source"] = exit_price_source
@@ -463,6 +503,20 @@ class TradingEngine:
             self._order_mgr.close_all_positions()
         return {"status": "close_all_requested"}
 
+    def close_all_calls(self) -> dict:
+        """Close all BOT-managed CALL positions only."""
+        emit_log("Close All Calls requested (BOT positions only)", "INFO", "orders")
+        if self._order_mgr and hasattr(self._order_mgr, 'close_all_calls'):
+            self._order_mgr.close_all_calls()
+        return {"status": "close_all_calls_requested"}
+
+    def close_all_puts(self) -> dict:
+        """Close all BOT-managed PUT positions only."""
+        emit_log("Close All Puts requested (BOT positions only)", "INFO", "orders")
+        if self._order_mgr and hasattr(self._order_mgr, 'close_all_puts'):
+            self._order_mgr.close_all_puts()
+        return {"status": "close_all_puts_requested"}
+
     def update_config(self, params: dict) -> dict:
         """Update configuration at runtime. Syncs BOT globals so cooldown and other params take effect immediately."""
         config_data = params.get("config", {})
@@ -510,6 +564,7 @@ class TradingEngine:
                 event_queue=self._event_queue,
                 callback=self._order_mgr.process_trade if self._order_mgr else None,
                 account_id=getattr(self.config, "account_id", "") or "",
+                opt_event_queue=self._opt_event_queue,
             )
             # Let engine handle reconnects only (avoids duplicate connections from client's connectionClosed)
             self._client.reconnect_handled_externally = True
@@ -627,6 +682,7 @@ class TradingEngine:
             BOT.client = self._client
             BOT.order_mgr = self._order_mgr
             BOT.event_queue = self._event_queue
+            BOT.opt_event_queue = self._opt_event_queue
             BOT.stockList = stock_list
             BOT.stock_list_to_trade = getattr(self.config, "stock_list_to_trade", None) or {s: "SMART" for s in stock_list}
             BOT.fetchValue = getattr(self.config, "fetch_value", "1 D")
@@ -676,6 +732,8 @@ class TradingEngine:
             BOT.perDayTrades = int(getattr(self.config, "per_day_trades", 3))
             BOT.USE_DIFF_EXPIRY_INDEX = str(getattr(self.config, "use_diff_expiry_index", "yes"))
             BOT.TRANSMIT = getattr(self.config, "order_transmit", True)
+            BOT.USE_RSI_VOLUME_DIVERGENCE = getattr(self.config, "use_rsi_volume_divergence", True)
+            BOT.USE_LIQUIDITY_SWEEP = getattr(self.config, "use_liquidity_sweep", True)
 
             # Ensure expiryStrike.json exists in CWD before BOT runs (avoids "[Errno 2] No such file or directory").
             # When frozen: copy from bundled resource (_MEIPASS); otherwise create empty or copy from sidecar dir.
@@ -764,6 +822,19 @@ class TradingEngine:
                     t.start()
                     self._event_processor_threads.append(t)
                 emit_log(f"Started {processor_count} strategy event processors", "INFO", "system")
+
+                # --- P1: Dedicated TP/SL processors (critical: never blocked by stock scan)
+                if self._opt_event_queue is not None:
+                    tp_sl_count = getattr(BOT, "TP_SL_PROCESSORS_COUNT", 3)
+                    for i in range(tp_sl_count):
+                        tp_t = threading.Thread(
+                            target=BOT.tp_sl_processor,
+                            args=(self._opt_event_queue, i),
+                            daemon=True,
+                        )
+                        tp_t.start()
+                        self._event_processor_threads.append(tp_t)
+                    emit_log(f"Started {tp_sl_count} dedicated TP/SL processors (position monitoring)", "INFO", "system")
 
                 # --- P1a: Start pnl_watchdog_thread (same as standalone main_call) ---
                 BOT.STOP_TRADING = False
@@ -931,6 +1002,16 @@ class TradingEngine:
                         self._last_eod_check_time = now
                         self._check_eod_time()
 
+                # Check if day P&L limit hit by pnl_watchdog — stop engine so user must click Start
+                if self._data_feed_started:
+                    try:
+                        import BOT
+                        if getattr(BOT, "DAY_LOCKED", False):
+                            self._stop_engine_after_day_limit()
+                            break
+                    except Exception:
+                        pass
+
                 time.sleep(0.05)  # 50ms loop
 
             except Exception as e:
@@ -1022,6 +1103,8 @@ class TradingEngine:
                     payload["ask"] = float(pos["ask"])
                 if pos.get("last") is not None:
                     payload["last"] = float(pos["last"])
+                if pos.get("mid") is not None and pos.get("mid") > 0:
+                    payload["mid"] = float(pos["mid"])
                 if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
                     payload["exit_price_used"] = float(pos["exit_price_used"])
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))

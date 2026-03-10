@@ -54,7 +54,7 @@ _process = None
 
 PROCESSORS_COUNT = 4
 
-global client, client_thread, NY_TZ, event_queue, order_mgr, reconnect_time, dataStrike, signal_dict
+global client, client_thread, NY_TZ, event_queue, opt_event_queue, order_mgr, reconnect_time, dataStrike, signal_dict
 global trade_time_dict, recent_trade_times, TRADE_COOLDOWN_SECONDS, tradeExpiry_val
 global starting_profit, starting_loss
 starting_profit = 0
@@ -78,6 +78,7 @@ client = None
 client_thread = None
 NY_TZ = pytz.timezone("America/New_York")
 event_queue = None
+opt_event_queue = None  # Dedicated queue for OPT ticks (TP/SL) - never blocked by STK scan
 order_mgr = None
 reconnect_time = 10
 
@@ -157,14 +158,14 @@ def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
         return False
 
 
-def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
+def init_api_client(_event_queue: Queue, _order_mgr: OrderManager, _opt_event_queue: Queue = None):
     print("calling init_api_client")
-    #_client = TwsApiClient(event_queue=_event_queue, callback=_order_mgr.process_trade)
     _client = TwsApiClient(
         host=IP, port=PORT, clientId=CLIENTID,
         event_queue=_event_queue,
         callback=_order_mgr.process_trade,
         account_id=SUB_ACCOUNT_ID or "",
+        opt_event_queue=_opt_event_queue,
     )
     _client.connect(host=IP, port=PORT, clientId=CLIENTID)
     _order_mgr.set_client(client=_client)
@@ -480,6 +481,103 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
     finally:
         options_tick.locked = False
 
+
+def _check_divergence_and_liquidity_patterns(stock, getCandlesData):
+    """
+    Check RSI divergence, volume divergence, and liquidity sweep patterns.
+    Returns (conditionMatch, right, stock, strength) or (False, "None", stock, "notrade").
+    """
+    if not getCandlesData or len(getCandlesData) < 15:
+        return False, "None", stock, "notrade"
+    try:
+        df = pd.DataFrame({
+            "Date": [x.date for x in getCandlesData],
+            "Open": [float(x.open) for x in getCandlesData],
+            "High": [float(x.high) for x in getCandlesData],
+            "Low": [float(x.low) for x in getCandlesData],
+            "Close": [float(x.close) for x in getCandlesData],
+            "Volume": [int(x.volume) for x in getCandlesData],
+        })
+    except (AttributeError, TypeError):
+        return False, "None", stock, "notrade"
+    use_div = globals().get("USE_RSI_VOLUME_DIVERGENCE", True)
+    use_sweep = globals().get("USE_LIQUIDITY_SWEEP", True)
+    if use_div:
+        rsi_dir, rsi_strength = indi.detect_rsi_divergence(df, period=14, lookback=18)
+        if rsi_dir == "bullish":
+            _emit_log(f"RSI divergence (bullish): {stock} → CALL ({rsi_strength})", "INFO", "signal")
+            return True, "CALL", stock, rsi_strength or "normalBuy"
+        if rsi_dir == "bearish":
+            _emit_log(f"RSI divergence (bearish): {stock} → PUT ({rsi_strength})", "INFO", "signal")
+            return True, "PUT", stock, rsi_strength or "normalSell"
+        vol_dir, vol_strength = indi.detect_volume_divergence(df, lookback=15)
+        if vol_dir == "bullish":
+            _emit_log(f"Volume divergence (bullish): {stock} → CALL ({vol_strength})", "INFO", "signal")
+            return True, "CALL", stock, vol_strength or "normalBuy"
+        if vol_dir == "bearish":
+            _emit_log(f"Volume divergence (bearish): {stock} → PUT ({vol_strength})", "INFO", "signal")
+            return True, "PUT", stock, vol_strength or "normalSell"
+    if use_sweep:
+        sweep_dir, sweep_strength = indi.detect_liquidity_sweep(df, lookback=12)
+        if sweep_dir == "bullish":
+            _emit_log(f"Liquidity sweep (bullish): {stock} → CALL ({sweep_strength})", "INFO", "signal")
+            return True, "CALL", stock, sweep_strength or "strongBuy"
+        if sweep_dir == "bearish":
+            _emit_log(f"Liquidity sweep (bearish): {stock} → PUT ({sweep_strength})", "INFO", "signal")
+            return True, "PUT", stock, sweep_strength or "strongSell"
+    return False, "None", stock, "notrade"
+
+
+def _check_engulfing_patterns(stock, getCandlesData):
+    """Check candle engulfing patterns. Returns (conditionMatch, right, stock, strength). No ADX filter."""
+    if not getCandlesData or len(getCandlesData) < 8:
+        return False, "None", stock, "notrade"
+    last2Candles = getCandlesData[1:8]
+    candle_0, candle_1, candle_2, candle_3, candle_4, candle_5, candle_6 = (
+        last2Candles[0], last2Candles[1], last2Candles[2], last2Candles[3],
+        last2Candles[4], last2Candles[5], last2Candles[6])
+    candle_0_vol = int(candle_0.volume)
+    candle_1_vol = int(candle_1.volume)
+    candle_2_vol = int(candle_2.volume)
+    candle_3_vol = int(candle_3.volume)
+    candle_4_vol = int(candle_4.volume)
+    candle_5_vol = int(candle_5.volume)
+    candle_6_vol = int(candle_6.volume)
+    candle_0_close, candle_1_close, candle_2_close, candle_3_close = float(candle_0.close), float(candle_1.close), float(candle_2.close), float(candle_3.close)
+    candle_4_close, candle_5_close, candle_6_close = float(candle_4.close), float(candle_5.close), float(candle_6.close)
+    candle_0_open, candle_1_open, candle_2_open, candle_3_open = float(candle_0.open), float(candle_1.open), float(candle_2.open), float(candle_3.open)
+    candle_4_open, candle_5_open, candle_6_open = float(candle_4.open), float(candle_5.open), float(candle_6.open)
+    candle_1_high, candle_2_high, candle_3_high, candle_4_high, candle_5_high, candle_6_high = float(candle_1.high), float(candle_2.high), float(candle_3.high), float(candle_4.high), float(candle_5.high), float(candle_6.high)
+    candle_0_low, candle_1_low, candle_2_low, candle_3_low, candle_4_low, candle_5_low, candle_6_low = float(candle_0.low), float(candle_1.low), float(candle_2.low), float(candle_3.low), float(candle_4.low), float(candle_5.low), float(candle_6.low)
+    if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_6_vol >= candle_5_vol*0.65 and candle_5_vol >= candle_4_vol*0.65:
+        return True, "CALL", stock, "strongBuy"
+    elif candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_5_vol >= candle_4_vol*0.65 and (candle_6_vol >= candle_5_vol*1.2 or candle_6_vol >= candle_4_vol*1.2):
+        return True, "CALL", stock, "heavyBuy"
+    elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*0.65:
+        return True, "CALL", stock, "strongBuy"
+    elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*1.25:
+        return True, "CALL", stock, "heavyBuy"
+    elif candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= candle_5_close-candle_5_open*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and (candle_6_vol >= candle_5_vol*0.65 and candle_5_vol >= candle_4_vol*0.85):
+        return True, "CALL", stock, "strongBuy"
+    elif candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= candle_5_close-candle_5_open*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and candle_5_vol >= candle_4_vol*1.05 and candle_6_vol >= candle_5_vol*0.55:
+        return True, "CALL", stock, "heavyBuy"
+    elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and candle_4_open >= candle_4_close and (candle_5_vol >= candle_4_vol*0.65 and candle_6_vol >= candle_5_vol*0.55 and candle_6_vol >= candle_4_vol*0.5):
+        return True, "CALL", stock, "normalBuy"
+    elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and candle_4_open >= candle_4_close and (candle_5_vol > candle_4_vol*0.55 and candle_6_vol >= candle_4_vol*0.52 and candle_6_vol >= candle_5_vol*0.55):
+        return True, "CALL", stock, "mediumBuy"
+    elif (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and candle_3_open >= candle_3_close and (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and (candle_6_vol >= candle_3_vol*0.6 and candle_4_vol >= candle_3_vol*0.55 and candle_5_vol <= candle_3_vol*0.6):
+        return True, "CALL", stock, "mediumBuy"
+    elif candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol >= candle_4_vol*0.8:
+        return True, "PUT", stock, "mediumSell"
+    elif candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol <= candle_5_vol*1.25:
+        return True, "PUT", stock, "strongSell"
+    elif candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and candle_6_vol >= candle_5_vol*0.8:
+        return True, "PUT", stock, "mediumSell"
+    elif (candle_0_close < candle_1_low) and candle_1_vol >= candle_0_vol*0.8:
+        return True, "PUT", stock, "normalSell"
+    return False, "None", stock, "notrade"
+
+
 def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
     from datetime import datetime
     logger.info(f"Checking BEARISH OR BULLISH Engulf Data for stock = {stock}")
@@ -528,192 +626,75 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
 
         current_sig = signal_dict[stock]['current_signal']
         last_sig = signal_dict[stock]['last_signal']
-        
+
+        # Stale signal fix: only trade on NEW flips after system start
+        # On first run per symbol, store baseline and skip (don't trade on pre-start data)
+        if not signal_dict[stock].get('signal_baseline_initialized', False):
+            signal_dict[stock]['signal_baseline_initialized'] = True
+            signal_dict[stock]['baseline_last'] = last_sig
+            signal_dict[stock]['baseline_current'] = current_sig
+            _emit_log(f"Signal baseline: {stock} last={last_sig} current={current_sig} (no trade until new flip)", "INFO", "signal")
+            return False, "None", stock, "notrade"
+
         if last_sig != current_sig:
-            logger.info("Signal Match for stock = {} and trade signal is = {}".format(stock, current_sig))
-            _emit_log(f"SuperTrend FLIP: {stock} {last_sig}→{current_sig} (signal change detected)", "INFO", "signal")
-            trade_value = "trade"
+            # Flip detected — check if it's the same stale flip we saw at start
+            baseline_last = signal_dict[stock].get('baseline_last', '')
+            baseline_current = signal_dict[stock].get('baseline_current', '')
+            if (last_sig, current_sig) == (baseline_last, baseline_current):
+                _emit_log(f"SuperTrend FLIP (stale): {stock} {last_sig}→{current_sig} — skipped (pre-start signal)", "DEBUG", "signal")
+                # Fall through to engulfing — don't miss engulfing signals
+            else:
+                # Valid new SuperTrend flip — apply ADX filter (skip sideways)
+                adx_period = int(globals().get("ADX_PERIOD", 14))
+                adx_min = float(globals().get("ADX_MIN_TREND", 25))
+                try:
+                    adx_val = indi.ADX(new_df, period=adx_period)
+                    if adx_val >= adx_min:
+                        logger.info("Signal Match for stock = {} and trade signal is = {} (ADX={:.1f} >= {})".format(stock, current_sig, adx_val, adx_min))
+                        _emit_log(f"SuperTrend FLIP: {stock} {last_sig}→{current_sig} ADX={adx_val:.1f} ✓", "INFO", "signal")
+                        right = "CALL"
+                        if current_sig.lower() == "sell":
+                            right = "PUT"
+                        return True, right, stock, "strongBuy"
+                    else:
+                        _emit_log(f"SuperTrend FLIP (sideways): {stock} ADX={adx_val:.1f} < {adx_min} — skipping, checking engulfing", "INFO", "signal")
+                        # Fall through to engulfing — don't miss engulfing patterns
+                except Exception as adx_ex:
+                    logger.warning(f"ADX calc failed for {stock}: {adx_ex} — allowing SuperTrend trade")
+                    right = "CALL"
+                    if current_sig.lower() == "sell":
+                        right = "PUT"
+                    return True, right, stock, "strongBuy"
         else:
             _emit_log(f"SuperTrend: {stock} signal={current_sig} (no change)", "DEBUG", "signal")
 
-        right = "CALL"
-        if current_sig.lower() == "sell":
-            right = "PUT"
-        _emit_log(f"Signal result: {stock} → {right} ({indicator} OK)", "INFO", "signal")
-        return True, right,  stock, "strongBuy"
-    else:
-        if getCandlesData is None:
-            return False, "None", stock, "notrade"
-        
-        if len(getCandlesData) < 8:
-            logger.info(f"{stock} not enough candles.")
-            logger.info(f"\n Received Candles for stocks= {stock} are = {getCandlesData}\n")
+        # Fall through: check engulfing patterns (never skip — no ADX filter)
+        if getCandlesData is not None and len(getCandlesData) >= 8:
+            engulf_result = _check_engulfing_patterns(stock, getCandlesData)
+            if engulf_result[0]:
+                _emit_log(f"Engulfing pattern: {stock} → {engulf_result[1]} ({engulf_result[3]})", "INFO", "signal")
+                return engulf_result
+            # Divergence + liquidity sweep (RSI div, volume div, sweep-and-reverse)
+            div_result = _check_divergence_and_liquidity_patterns(stock, getCandlesData)
+            if div_result[0]:
+                return div_result
+
+        return False, "None", stock, "notrade"
+
+    if indicator != "supertrend":
+        if getCandlesData is None or len(getCandlesData) < 8:
             _emit_log(f"IBKR bars: {stock} received {len(getCandlesData) if getCandlesData else 0} bars (need 8 for engulfing)", "INFO", "data")
             return False, "None", stock, "notrade"
-        
-        last2Candles = getCandlesData[1:8]
-        logger.info(f"Last 7 candles data 1st is = {last2Candles}")
-        
-        candle_0 = last2Candles[0]
-        candle_1 = last2Candles[1]
-        candle_2 = last2Candles[2]
-        candle_3 = last2Candles[3]
-        candle_4 = last2Candles[4]
-        candle_5 = last2Candles[5]
-        candle_6 = last2Candles[6]
-        
-        # candle_0_range = round((float(candle_0.high) - float(candle_0.low)), 3)
-        # candle_1_range = round((float(candle_1.high) - float(candle_1.low)), 3)
-        # candle_2_range = round((float(candle_2.high) - float(candle_2.low)), 3)
-        # candle_3_range = round((float(candle_3.high) - float(candle_3.low)), 3)
-        
-        candle_0_vol = int(candle_0.volume)
-        candle_1_vol = int(candle_1.volume)
-        candle_2_vol = int(candle_2.volume)
-        candle_3_vol = int(candle_3.volume)
-        candle_4_vol = int(candle_4.volume)
-        candle_5_vol = int(candle_5.volume)
-        candle_6_vol = int(candle_6.volume)
-        
-        candle_0_close = float(candle_0.close)
-        candle_1_close = float(candle_1.close)
-        candle_2_close = float(candle_2.close)
-        candle_3_close = float(candle_3.close)
-        candle_4_close = float(candle_4.close)
-        candle_5_close = float(candle_5.close)
-        candle_6_close = float(candle_6.close)
-        
-        candle_0_open = float(candle_0.open)
-        candle_1_open = float(candle_1.open)
-        candle_2_open = float(candle_2.open)
-        candle_3_open = float(candle_3.open)
-        candle_4_open = float(candle_4.open)
-        candle_5_open = float(candle_5.open)
-        candle_6_open = float(candle_6.open)
-        
-        candle_1_high = float(candle_1.high)
-        candle_2_high = float(candle_2.high)
-        candle_3_high = float(candle_3.high)
-        candle_4_high = float(candle_4.high)
-        candle_5_high = float(candle_5.high)
-        candle_6_high = float(candle_6.high)
-        
-        candle_0_low = float(candle_0.low)
-        candle_1_low = float(candle_1.low)
-        candle_2_low = float(candle_2.low)
-        candle_3_low = float(candle_3.low)
-        candle_4_low = float(candle_4.low)
-        candle_5_low = float(candle_5.low)
-        candle_6_low = float(candle_6.low)
-        
-        #AI_function() # match the pattern
-        if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
-            candle_6_vol>= candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.65:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-AAAAA-StrongBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "strongBuy"
-        elif candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
-            candle_5_vol >=candle_4_vol*0.65 and (candle_6_vol >=candle_5_vol*1.2 or candle_6_vol >=candle_4_vol*1.2):
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-AAAAA_HVY_VOL-StrongBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "heavyBuy"
-        elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2<= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2<= candle_3_close) and \
-            candle_6_vol >=candle_5_vol*0.65:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 4 candles Pure Bullish Engulf Condition <<<CALL-BBBBB-StrongBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "strongBuy"
-        elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2<= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2<= candle_3_close) and \
-            candle_6_vol >=candle_5_vol*1.25:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 4 candles Pure Bullish Engulf Condition <<<CALL-BBBBB_HVY_VOL_StrongBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "heavyBuy"
-        elif candle_6_close >= candle_5_close and candle_5_close>=candle_5_open and (candle_5_open-candle_5_low>=candle_5_close-candle_5_open*2) and \
-            (candle_5_high-candle_5_open<=candle_5_close-candle_5_open) and \
-            (candle_6_vol >=candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.85):
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-CCCCC-StrongBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "strongBuy"
-        elif candle_6_close >= candle_5_close and candle_5_close>=candle_5_open and (candle_5_open-candle_5_low>=candle_5_close-candle_5_open*2) and \
-            (candle_5_high-candle_5_open<=candle_5_close-candle_5_open) and \
-            candle_5_vol >=candle_4_vol*1.05 and candle_6_vol >=candle_5_vol*0.55:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-CCCCC_HVY_VOL_StrongBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "heavyBuy"
-        elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and \
-            candle_4_open >= candle_4_close and \
-            (candle_5_vol >= candle_4_vol*0.65 and candle_6_vol >= candle_5_vol*0.55 and candle_6_vol >=candle_4_vol*0.5):
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bullish Engulf Condition <<<CALL-DDDDD-MediumBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "normalBuy"
-        elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and \
-            candle_4_open >= candle_4_close and \
-            (candle_5_vol > candle_4_vol*0.55 and candle_6_vol >=candle_4_vol*0.52 and candle_6_vol >=candle_5_vol*0.55):
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bullish Engulf Condition <<<CALL-DDDDD_HVY_VOL_MediumBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "mediumBuy"
-        elif (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and \
-            candle_3_open >= candle_3_close and \
-            (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and \
-            (candle_6_vol >= candle_3_vol*0.6 and candle_4_vol >= candle_3_vol*0.55 and candle_5_vol <= candle_3_vol*0.6):
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bullish Engulf Condition <<<CALL-EEEEE-MediumBUY>> meet. Return TRUE \
-                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "mediumBuy"
-        elif candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_4_open and \
-            candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol * 0.85 and candle_6_vol >= candle_4_vol * 0.8:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-AAAAA_MediumSELL>> meet. Return TRUE \
-                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "mediumSell"
-        elif candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and \
-            candle_6_vol >= candle_5_vol * 0.85 and candle_6_vol <= candle_5_vol * 1.25:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-BBBBB_StrongSELL>> meet. Return TRUE \
-                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "strongSell"
-        elif candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and \
-            candle_6_vol >= candle_5_vol * 0.8:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-BBBBB_HVY_VOL_StrongSELL>> meet. Return TRUE \
-                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "mediumSell"
-        elif (candle_2_close <= candle_3_close or candle_2_close > candle_3_close) and \
-                (candle_1_close >= candle_2_close or candle_1_close < candle_2_close) and \
-                (candle_0_open >= candle_1_close or candle_0_open < candle_1_close) and \
-                (candle_0_close < candle_1_low) and \
-                candle_1_vol >= candle_0_vol * 0.8:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-AAAAA>> meet. Return TRUE \
-                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
-                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "normalSell"
-        else:
-            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> NO CONDITION MEET. Return FALSE \
-                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
-                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}. \
-                        ********************************** STOCK CHECK END ********************************************\n\n".format(
-                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return False, "None", stock, "notrade"
+        engulf_result = _check_engulfing_patterns(stock, getCandlesData)
+        if engulf_result[0]:
+            return engulf_result
+        div_result = _check_divergence_and_liquidity_patterns(stock, getCandlesData)
+        if div_result[0]:
+            return div_result
+        return False, "None", stock, "notrade"
+
+    return False, "None", stock, "notrade"
+
 
 def checkVWAPValue(stock, Right, candlesData):
     # from datetime import datetime
@@ -2104,16 +2085,37 @@ def fetch_all_strike_expiries():
 def check_order_conditions(tick: Tick):
     pass
 
+TP_SL_PROCESSORS_COUNT = 3  # Dedicated threads for TP/SL - never blocked by stock scan
+
+def tp_sl_processor(opt_queue: Queue, count: int) -> None:
+    """
+    Dedicated processor for OPT ticks - TP/SL monitoring only.
+    Never blocked by heavy stock scanning. Critical for timely position closes.
+    """
+    logger.info(f"Starting TP/SL processor #{count + 1} (dedicated position monitoring)")
+    _emit_log(f"TP/SL processor #{count + 1} started — monitoring positions", "INFO", "position")
+    keep_running = True
+    while keep_running:
+        try:
+            event_data = opt_queue.get(block=True, timeout=0.05)
+            tick: Tick = event_data["tick"]
+            if tick.contract.secType == "OPT" and tick.active_order is not None:
+                order_mgr.check_and_close_position(tick=tick)
+            opt_queue.task_done()
+        except Empty:
+            if client is not None and not client.isConnected():
+                time.sleep(1.0)
+                if getattr(client, "connection_closed", False):
+                    keep_running = False
+        except Exception as ex:
+            logger.error(f"TP/SL processor error: {ex}", exc_info=True)
+            _emit_log(f"TP/SL processor error: {ex}", "ERROR", "position")
+
+
 def event_processor(event_queue: Queue, count: int) -> None:
     """
-    Processes events from the event queue.
-
-    Parameters:
-        event_queue (Queue): The queue containing the events to be processed.
-        count (int): The count of the event processor.
-
-    Returns:
-        None
+    Processes STK events from the event queue (signal scanning).
+    OPT ticks are handled by dedicated tp_sl_processor threads.
     """
     logger.info(f"Starting event processor #{count + 1}")
     _emit_log(f"Event processor #{count + 1} started — scanning for signals", "INFO", "signal")
@@ -2128,11 +2130,8 @@ def event_processor(event_queue: Queue, count: int) -> None:
             sec_type = getattr(tick.contract, "secType", "")
             _emit_log(f"IBKR tick: {sym} ({sec_type}) last={getattr(tick, 'last', -1)} bid={getattr(tick, 'bid', -1)}", "DEBUG", "data")
             
-            # If the security type is 'OPT' and an active order exists
-            if tick.contract.secType == "OPT" and tick.active_order is not None:
-                logger.debug(f"Event path: OPT tick with active_order -> TP/SL check for {getattr(tick.active_order, 'option_symbol', tick.contract.symbol or '?')}")
-                order_mgr.check_and_close_position(tick=tick)
-            elif tick.contract.secType == "STK":
+            # OPT ticks are handled by dedicated tp_sl_processor (opt_event_queue) — event_queue gets STK only
+            if tick.contract.secType == "STK":
                 # Gate: skip signal scan when market is closed (from config.json market_hours or scriptStartTime/scriptEndTime)
                 _start = str(globals().get("startTime", "0935")).replace(":", "").replace("-", "")[:4]
                 _end = str(globals().get("endTime", "1545")).replace(":", "").replace("-", "")[:4]
@@ -2185,7 +2184,9 @@ def event_processor(event_queue: Queue, count: int) -> None:
                         _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
                 else:
                     _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged)", "DEBUG", "signal")
-            
+            else:
+                # Non-STK tick (should not reach here when opt_event_queue is used)
+                pass
             # Mark the event as processed
             event_queue.task_done()
         except Empty:
@@ -2239,15 +2240,18 @@ def check_and_close_all_open_positions():
 def init_start_event_processors():
     processors = None
     if client.isConnected():
-        # Create the specified number of event processors
-        processors = [Thread(target=event_processor, args=(event_queue, count,)) for count in range(PROCESSORS_COUNT)]
-        # Start the event processors
+        # Dedicated TP/SL processors (critical: never blocked by stock scan)
+        if opt_event_queue is not None:
+            tp_sl_threads = [Thread(target=tp_sl_processor, args=(opt_event_queue, c,), daemon=True) for c in range(TP_SL_PROCESSORS_COUNT)]
+            for t in tp_sl_threads:
+                t.start()
+            logger.info(f"Started {TP_SL_PROCESSORS_COUNT} dedicated TP/SL processors")
+        # Scan processors (STK ticks only)
+        processors = [Thread(target=event_processor, args=(event_queue, count,), daemon=True) for count in range(PROCESSORS_COUNT)]
         for processor in processors:
             processor.start()
     else:
-        # Log an error message if the TWS client is not connected
         logger.error("TWS is not connected.")
-
     return processors
     
 
@@ -2510,6 +2514,7 @@ def main_call(data):
     
     global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
     global VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val
+    global USE_RSI_VOLUME_DIVERGENCE, USE_LIQUIDITY_SWEEP
     global trade_time_dict, signal_dict, profit_amount_day, loss_amount_day
     global starting_profit, starting_loss
     starting_profit = 0
@@ -2558,6 +2563,8 @@ def main_call(data):
     SPY_QQQ_EXPIRY = fileData["SPY_QQQ_EXPIRY"]
     PROFIT_INCREMENT = fileData["profit_increment"]
     TRADE_COOLDOWN_SECONDS = fileData["distance_between_trade"]
+    USE_RSI_VOLUME_DIVERGENCE = file_data.get("USE_RSI_VOLUME_DIVERGENCE", True)
+    USE_LIQUIDITY_SWEEP = file_data.get("USE_LIQUIDITY_SWEEP", True)
 
     tradeExpiry_val = getExpiry(EXPIRY)
     spy_qqq_tradeExpiry = getExpiry(SPY_QQQ_EXPIRY)
@@ -2573,14 +2580,15 @@ def main_call(data):
     logger.info("Signal Dict is = {}".format(signal_dict))
     
     print("PORT = {}".format(PORT))
-    global client, client_thread, NY_TZ, event_queue, order_mgr, reconnect_time, dataStrike
+    global client, client_thread, NY_TZ, event_queue, opt_event_queue, order_mgr, reconnect_time, dataStrike
     
     client_thread = None
     client = None
     event_queue = Queue()
+    opt_event_queue = Queue()  # Dedicated for OPT ticks (TP/SL) - never blocked by scan
     db = DAL()
     order_mgr = OrderManager(db=db)
-    client = init_api_client(_event_queue=event_queue, _order_mgr = order_mgr)
+    client = init_api_client(_event_queue=event_queue, _order_mgr=order_mgr, _opt_event_queue=opt_event_queue)
 
     # Start the TWS client connection
     start_client(_client=client)

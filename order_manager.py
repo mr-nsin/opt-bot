@@ -92,6 +92,120 @@ class OrderManager:
             except Exception as ex:
                 logger.error(f"Error closing position {symbol}: {ex}", exc_info=True)
 
+    def _is_call(self, order: OptionOrder) -> bool:
+        r = (order.right or "").upper()
+        return r in ("C", "CALL")
+
+    def _is_put(self, order: OptionOrder) -> bool:
+        r = (order.right or "").upper()
+        return r in ("P", "PUT")
+
+    def close_all_calls(self) -> None:
+        """
+        Close all BOT-managed CALL positions only (used when user clicks Close All Calls).
+        """
+        if not self.api_client or not self.api_client.isConnected():
+            logger.warning("Cannot close positions: TWS not connected")
+            return
+        with self.order_lock:
+            to_close = [s for s, o in self.entry_orders_cache.items() if o and self._is_call(o)]
+        for symbol in to_close:
+            try:
+                self.close_position_by_symbol(symbol)
+            except Exception as ex:
+                logger.error(f"Error closing call position {symbol}: {ex}", exc_info=True)
+        if to_close:
+            logger.info(f"Close All Calls: requested close for {len(to_close)} call position(s)")
+
+    def close_all_puts(self) -> None:
+        """
+        Close all BOT-managed PUT positions only (used when user clicks Close All Puts).
+        """
+        if not self.api_client or not self.api_client.isConnected():
+            logger.warning("Cannot close positions: TWS not connected")
+            return
+        with self.order_lock:
+            to_close = [s for s, o in self.entry_orders_cache.items() if o and self._is_put(o)]
+        for symbol in to_close:
+            try:
+                self.close_position_by_symbol(symbol)
+            except Exception as ex:
+                logger.error(f"Error closing put position {symbol}: {ex}", exc_info=True)
+        if to_close:
+            logger.info(f"Close All Puts: requested close for {len(to_close)} put position(s)")
+
+    def _norm_expiry(self, exp: str) -> str:
+        """Normalize expiry to YYYYMMDD for matching (e.g. 2026-03-06 -> 20260306)."""
+        if not exp:
+            return ""
+        s = str(exp).replace("-", "").replace("/", "").strip()
+        if len(s) == 8 and s.isdigit():
+            return s
+        if len(s) == 10 and s[4] == "0" and s[7] == "0":
+            return s.replace("-", "")[:8]
+        return s[:8] if len(s) >= 8 else s
+
+    def _norm_right(self, r: str) -> str:
+        """Normalize right to C or P."""
+        if not r:
+            return ""
+        r = str(r).upper()
+        if r in ("C", "CALL"):
+            return "C"
+        if r in ("P", "PUT"):
+            return "P"
+        return r[0] if r else ""
+
+    def _find_entry_order(self, symbol: str, strike: float = None, right: str = None, expiry: str = None) -> Optional[OptionOrder]:
+        """Find entry order matching position (symbol, strike, right, expiry)."""
+        if not symbol:
+            return None
+        pos_exp = self._norm_expiry(expiry or "")
+        pos_right = self._norm_right(right or "")
+        pos_strike = float(strike) if strike is not None else None
+        with self.order_lock:
+            for order in self.entry_orders_cache.values():
+                if not order:
+                    continue
+                if (order.symbol or "").upper() != (symbol or "").upper():
+                    continue
+                if pos_strike is not None and order.strike is not None:
+                    if abs(float(order.strike) - pos_strike) > 0.01:
+                        continue
+                if pos_right and order.right:
+                    if self._norm_right(order.right) != pos_right:
+                        continue
+                if pos_exp and order.expiration:
+                    if self._norm_expiry(order.expiration) != pos_exp:
+                        continue
+                return order
+        return None
+
+    def check_exit_conditions(self, pos) -> None:
+        """
+        For a TWS position, find matching entry order and tick, then run TP/SL check.
+        Used by monitor_positions_loop as backup when ticks are sparse.
+        """
+        if not pos or getattr(pos, "position", 0) == 0:
+            return
+        symbol = getattr(pos, "symbol", "") or ""
+        strike = getattr(pos, "strike", None)
+        right = getattr(pos, "right", None)
+        expiry = getattr(pos, "expiry", None) or getattr(pos, "lastTradeDateOrContractMonth", None)
+        entry_order = self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
+        if not entry_order:
+            logger.debug(
+                f"Position {symbol} {strike} {right} {expiry}: no matching entry order "
+                f"(entry_orders={len(self.entry_orders_cache)}, ticks={len(self.order_id_tick_lookup)})"
+            )
+            return
+        option_tick = self.order_id_tick_lookup.get(entry_order.id)
+        if option_tick is None:
+            logger.debug(f"Position {symbol} {strike} {right}: matched order but NO TICK")
+            return
+        option_tick.active_order = entry_order
+        self.check_and_close_position(tick=option_tick)
+
     def del_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         with self.order_lock:
             if self.orders_cache.get(order.id, None):
@@ -380,6 +494,7 @@ class OrderManager:
                 symbol=order.symbol, expiry=order.expiration, right=order.right, strike=order.strike
             )
         if contract is None:
+            order.exit_placed = False  # Allow retry on next TP/SL check
             logger.error(f"Close position failed: cannot get contract for order {order.id} {order.symbol}")
             return
 
@@ -409,6 +524,7 @@ class OrderManager:
             self.api_client.placeOrder(orderId, contract=contract, order=closing_order)
             self.save_order(order=exit_order)
         except Exception as ex:
+            order.exit_placed = False  # Allow retry on next TP/SL check
             self.del_exit_order(order=exit_order, options_tick=option_tick)
             option_tick.busy = False
             logger.error(f"Placing Exit order failed: {ex}", exc_info=True)
@@ -486,110 +602,81 @@ class OrderManager:
         finally:
             tick.busy = False
 
+    def _get_valid_prices(self, tick: Tick) -> tuple:
+        """
+        Collect valid bid, last, and mid (bid+ask)/2 prices from tick.
+        Returns (prices_list, bid, last, mid) - prices_list excludes invalid values.
+        """
+        prices = []
+        bid = float(getattr(tick, "bid", -1) or -1)
+        last = float(getattr(tick, "last", -1) or -1)
+        ask = float(getattr(tick, "ask", -1) or -1)
+        mid = -1.0
+        if bid > 0:
+            prices.append(bid)
+        if last > 0:
+            prices.append(last)
+        if ask > 0 and bid > 0:
+            mid = round((bid + ask) / 2.0, 2)
+            prices.append(mid)
+        return (prices, bid, last, mid)
+
     def check_take_profit(self, tick: Tick, order: OptionOrder, option_tick: Tick) -> None:
         """
         Check if the take profit condition for the given order is met, and close the position if it is.
-
-        Args:
-            tick (Tick): The latest tick data for the order's underlying instrument.
-            order (OptionOrder): The order to check for the take profit condition.
-
-        Returns:
-            None
-
-        Raises:
-            N/A
-
-        Example:
-            check_take_profit(my_tick, my_order)
-
-        Notes:
-            - The function uses the higher price of the bid or last price as the exit price.
-            - The function logs information about the exit price and the order's take profit settings.
-            - If the take profit condition is met, the function logs information about the trigger and closes the position using the `close_position` method.
-            - If the exit price is above the current profit price, the function updates the order's profit trigger and profit price settings.
+        Uses bid, last, and mid (bid+ask)/2 — if ANY of these hits the target, close at MKT.
         """
-        
-        # For SELL orders (closing longs), use BID price if available, else LAST
-        # BID is what you can actually sell at RIGHT NOW
-        if tick.bid > 0 and tick.bid <= tick.last:
-            exit_price = tick.bid
-        else:
-            exit_price = tick.last
-
-        if exit_price <= 0:
-            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={tick.bid}, last={tick.last}")
+        prices, bid, last, mid = self._get_valid_prices(option_tick)
+        if not prices:
+            logger.warning(f"Invalid price data for {order.option_symbol}: bid={bid}, last={last}, ask={getattr(option_tick, 'ask', -1)}")
             return
 
-        # 10% profit target: close when profit >= 10% of investment (whichever comes first: 10% or ATR trailing)
+        best_price = max(prices)   # for TP: highest = best view of price
+        worst_price = min(prices)  # for pullback: lowest = price has fallen
+
+        # 10% profit target: close when profit >= 10% of investment (if ANY price hits 10%, close)
         try:
             inv_amount = float(order.average_price or 0) * float(order.executed_qty or 0) * 100.0
             if inv_amount > 0:
                 order_side = (order.order_side or "BUY").upper()
-                if order_side == "BUY":
-                    unrealized_profit = (exit_price - float(order.average_price or 0)) * float(order.executed_qty or 0) * 100.0
-                else:
-                    unrealized_profit = (float(order.average_price or 0) - exit_price) * float(order.executed_qty or 0) * 100.0
-                profit_target_10pct = inv_amount * 0.10
-                if unrealized_profit >= profit_target_10pct:
-                    logger.info(f"✓ HIT 10% PROFIT TARGET: {order.option_symbol} — profit ${unrealized_profit:.2f} >= 10% of ${inv_amount:.2f}")
-                    _emit_log(f"HIT 10% PROFIT: {order.option_symbol} — ${unrealized_profit:.2f} profit (≥10% of ${inv_amount:.2f}) — CLOSING", "INFO", "order")
-                    self.close_position(order=order, option_tick=option_tick)
-                    return
+                for p in prices:
+                    if order_side == "BUY":
+                        unrealized_profit = (p - float(order.average_price or 0)) * float(order.executed_qty or 0) * 100.0
+                    else:
+                        unrealized_profit = (float(order.average_price or 0) - p) * float(order.executed_qty or 0) * 100.0
+                    profit_target_10pct = inv_amount * 0.10
+                    if unrealized_profit >= profit_target_10pct:
+                        logger.info(f"✓ HIT 10% PROFIT TARGET: {order.option_symbol} — profit ${unrealized_profit:.2f} >= 10% of ${inv_amount:.2f} (price ${p:.2f})")
+                        _emit_log(f"HIT 10% PROFIT: {order.option_symbol} — ${unrealized_profit:.2f} profit (≥10% of ${inv_amount:.2f}) — CLOSING", "INFO", "order")
+                        self.close_position(order=order, option_tick=option_tick)
+                        return
         except (TypeError, ValueError) as e:
             logger.debug(f"10% profit calc skipped for {order.option_symbol}: {e}")
 
-        # Validate prices
-        if option_tick.last == -1 or option_tick.bid == -1:
-            logger.warning(f"@@@@@@@@@@@@@@@@@@@@@@@@@@@ Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
-            return
-            
-        # Log current state
+        # Log current state (bid, last, mid)
+        mid_str = f"${mid:.2f}" if mid >= 0 else "—"
         logger.info(f"TAKE PROFIT CHECK - Order({order.id}) {order.option_symbol}: "
-            f"Exit Price: ${exit_price:.2f}, "
-            f"Bid: ${tick.bid:.2f}, "
-            f"Last: ${tick.last:.2f}, "
+            f"Bid: ${bid:.2f}, Last: ${last:.2f}, Mid: {mid_str}, "
             f"Initial Profit: ${order.profit_price:.2f}, "
             f"Current Profit: ${order.current_profit_price:.2f}, "
             f"Trigger Active: {order.profit_trigger}")
-        
-        # Use the higher price, bid or last price
-        #exit_price = tick.last if tick.last >= tick.bid else tick.bid
-        #exit_price = option_tick.bid if option_tick.bid <= option_tick.last else option_tick.last
-        
-        # Log information about the exit price and the order's take profit settings
-        #logger.info(f"TAKE PROFIT check_take_profit  Order({order.id}) {order.option_symbol}: Last Price: {tick.last}, Bid Price : {tick.bid}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")
-            
-        """"if order.profit_trigger == True and exit_price <= order.current_profit_price:    
-            # If the take profit condition is met, log information about the trigger and close the position
-            logger.info(f"HIT TakeProfit: Order({order.id}) {order.option_symbol}: Exit Px: {exit_price}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")
-            self.close_position(order=order, option_tick=option_tick)
+
+        # Trailing profit: if ANY price >= target, activate trigger and raise target
+        current_tp = float(order.current_profit_price or order.profit_price or 0)
+        profit_inc = float(order.profit_increment or 0)
+        if current_tp <= 0:
+            logger.warning(f"Invalid TP target for {order.option_symbol}: current_profit_price={order.current_profit_price}")
             return
-            
-        # Calculate next profit target
-        next_profit_target = round(order.current_profit_price + order.profit_increment, 2)
-            
-        if exit_price >= next_profit_target:
-            # If the exit price is above the current profit price, update the profit trigger and profit price settings
-            order.profit_trigger = True
-            old_target = order.current_profit_price
-            order.current_profit_price = next_profit_target
-            logger.info(f"00000000000000000000000000000 TakeProfit Triggered: Order({order.id}) {order.option_symbol}: Exit Px: {exit_price}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")"""
-        
-        # OPTION 2: Trailing profit (your current approach, fixed)
-        # Check if we've reached the profit target
-        if exit_price >= order.current_profit_price:
-            # Price is at or above profit target - set trigger and raise target
+        if best_price >= current_tp:
             if not order.profit_trigger:
                 logger.info(f" Profit Trigger ACTIVATED: Order({order.id}) {order.option_symbol}: "
-                           f"${exit_price:.2f} >= ${order.current_profit_price:.2f}")
+                           f"best ${best_price:.2f} >= ${current_tp:.2f}")
                 _emit_log(
-                    f"TP TRIGGER: {order.option_symbol} — price ${exit_price:.2f} ≥ target ${order.current_profit_price:.2f} (trailing activated)",
+                    f"TP TRIGGER: {order.option_symbol} — price ${best_price:.2f} ≥ target ${current_tp:.2f} (trailing activated)",
                     "INFO", "position"
                 )
-        
             order.profit_trigger = True
-            order.current_profit_price = round(exit_price + order.profit_increment, 2)
+            order.current_profit_price = round(best_price + profit_inc, 2)
             logger.info(f" Trailing Profit Updated: Next target: ${order.current_profit_price:.2f}")
             _emit_log(
                 f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
@@ -597,13 +684,13 @@ class OrderManager:
             )
             self.db.update(order=order)
             return
-    
-        # If trigger is active and price has fallen back, close the position
-        if order.profit_trigger and exit_price < (order.current_profit_price - order.profit_increment):
+
+        # If trigger is active and ANY price has fallen back, close the position
+        if order.profit_trigger and worst_price < (order.current_profit_price - profit_inc):
             logger.info(f"✓ HIT Trailing TakeProfit: Order({order.id}) {order.option_symbol}: "
-                       f"Exit: ${exit_price:.2f} < Trailing: ${order.current_profit_price:.2f}")
+                       f"worst ${worst_price:.2f} < Trailing: ${order.current_profit_price:.2f}")
             _emit_log(
-                f"HIT TAKE PROFIT: {order.option_symbol} — exit ${exit_price:.2f} < trail ${order.current_profit_price:.2f} — CLOSING",
+                f"HIT TAKE PROFIT: {order.option_symbol} — price ${worst_price:.2f} < trail ${order.current_profit_price:.2f} — CLOSING",
                 "INFO", "order"
             )
             self.close_position(order=order, option_tick=option_tick)
@@ -611,60 +698,40 @@ class OrderManager:
 
     def check_stop_loss(self, last_price: float, order: OptionOrder, option_tick: Tick) -> None:
         """
-        Checks if the last traded price has fallen below the stoploss price for the given order.
-        If so, closes the position by placing a market order to exit the position.
-
-        Args:
-            last_price (float): The last traded price for the security.
-            order (OptionOrder): The option order for which stop loss needs to be checked.
-
-        Returns:
-            None
-
-        Notes:
-            The function checks if the last traded price has fallen below the stoploss price for the given order. 
-            If so, it closes the position by placing a market order to exit the position. The function takes in the last 
-            traded price as well as the option order for which stop loss needs to be checked as arguments.
+        Checks if bid, last, or mid price has hit the stoploss.
+        If ANY of these is <= stoploss_price, closes the position at MKT.
         """
-        
-        exit_price = option_tick.bid if option_tick.bid > 0 else option_tick.last
-        
-        if exit_price <= 0:
-            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, last={option_tick.last}")
+        prices, bid, last, mid = self._get_valid_prices(option_tick)
+        if not prices:
+            logger.warning(f"Invalid price data for {order.option_symbol}: bid={bid}, last={last}, ask={getattr(option_tick, 'ask', -1)}")
             return
-        
-        # Validate prices
-        if option_tick.last == -1 or option_tick.bid == -1:
-            logger.warning(f"Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+
+        worst_price = min(prices)  # for SL: lowest = worst view of price
+        sl_price = float(order.stoploss_price or 0)
+        if sl_price <= 0:
+            logger.warning(f"Invalid SL for {order.option_symbol}: stoploss_price={order.stoploss_price}")
             return
-            
-        # Log current state
+
+        # Log current state (bid, last, mid)
+        mid_str = f"${mid:.2f}" if mid >= 0 else "—"
         logger.info(f"STOPLOSS CHECK - Order({order.id}) {order.option_symbol}: "
-            f"Exit Price: ${exit_price:.2f}, "
-            f"Bid: ${option_tick.bid:.2f}, "
-            f"Last: ${option_tick.last:.2f}, "
-            f"StopLoss: ${order.stoploss_price:.2f}")
-        
-        # Use the higher price, bid or last price
-        #exit_price = option_tick.last if option_tick.last >= option_tick.bid else option_tick.bid
-        #exit_price = option_tick.bid if option_tick.bid <= option_tick.last else option_tick.last
-        
-        # Log the current state of the order and the last traded price
-        #logger.info(f"STOPLOSS check_stop_loss Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, Last Price: {option_tick.last}, Bid Price: {option_tick.bid}AuxPrice : {order.stoploss_price}")
-        
-        # If the last traded price is less than or equal to the stoploss price, execute stop loss
-        if exit_price <= order.stoploss_price:
-            logger.info(f"11111111111111111111111111 HIT Stoploss: Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, AuxPrice: {order.stoploss_price}")
+            f"Bid: ${bid:.2f}, Last: ${last:.2f}, Mid: {mid_str}, "
+            f"StopLoss: ${sl_price:.2f}")
+
+        # If ANY price (bid, last, mid) <= stoploss, execute stop loss
+        if worst_price <= sl_price:
+            logger.info(f"HIT Stoploss: Order({order.id}) {order.option_symbol}: worst price ${worst_price:.2f} ≤ SL ${sl_price:.2f}")
             _emit_log(
-                f"HIT STOP LOSS: {order.option_symbol} — exit ${exit_price:.2f} ≤ SL ${order.stoploss_price:.2f} — CLOSING",
+                f"HIT STOP LOSS: {order.option_symbol} — price ${worst_price:.2f} ≤ SL ${sl_price:.2f} — CLOSING",
                 "WARN", "order"
             )
-            # close position
             self.close_position(order=order, option_tick=option_tick)
-        
+            return
+
         # Show distance to stoploss for monitoring
-        distance_to_sl = exit_price - order.stoploss_price
-        distance_pct = (distance_to_sl / order.order_price) * 100 if order.order_price > 0 else 0
+        distance_to_sl = worst_price - sl_price
+        entry_price = float(order.average_price or order.order_price or 0)
+        distance_pct = (distance_to_sl / entry_price) * 100 if entry_price > 0 else 0
         logger.info(f"Distance to StopLoss: ${distance_to_sl:.2f} ({distance_pct:.1f}% of entry)")
 
     def save_order(self, order: OptionOrder)-> None:

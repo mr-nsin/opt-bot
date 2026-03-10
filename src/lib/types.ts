@@ -115,9 +115,11 @@ export interface Position {
   ask?: number;
   /** Last traded price */
   last?: number;
-  /** Price used for TP/SL checks: bid if valid, else last */
+  /** Mid price (bid+ask)/2 */
+  mid?: number;
+  /** Price used for TP/SL checks: best of bid, last, mid for TP; worst for SL */
   exit_price_used?: number;
-  /** "bid" or "last" — source of exit_price_used */
+  /** "bid, last, mid" or "bid, last" etc — source of exit_price_used */
   exit_price_source?: string;
   delta?: number;
   entry_time?: string;

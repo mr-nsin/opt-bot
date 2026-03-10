@@ -178,6 +178,168 @@ def fibonacci(stock, start='2020-01-01', end='2021-01-01'):
     return levels
     
     
+def ADX(df, period=14):
+    """
+    Average Directional Index — measures trend strength.
+    ADX < 25 typically = sideways/weak trend; ADX > 25 = trending.
+    Returns last ADX value or 0 if insufficient data.
+    """
+    if df is None or len(df) < period + 1:
+        return 0.0
+    high = df["High"] if "High" in df.columns else df["high"]
+    low = df["Low"] if "Low" in df.columns else df["low"]
+    close = df["Close"] if "Close" in df.columns else df["close"]
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    tr = np.maximum(high - low, np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1))))
+    atr = pd.Series(tr, index=df.index).ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr
+    di_sum = plus_di + minus_di
+    dx = np.where(di_sum > 0, 100 * abs(plus_di - minus_di) / di_sum, 0.0)
+    dx = pd.Series(dx, index=df.index)
+    adx = dx.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    val = float(adx.iloc[-1]) if len(adx) > 0 and not pd.isna(adx.iloc[-1]) else 0.0
+    return val
+
+
+def _find_swing_lows(series, window=2):
+    """Return positional indices of local minima (swing lows)."""
+    idx = []
+    for i in range(window, len(series) - window):
+        val = series.iloc[i]
+        if all(val <= series.iloc[j] for j in range(i - window, i + window + 1) if j != i):
+            idx.append(i)
+    return idx
+
+
+def _find_swing_highs(series, window=2):
+    """Return positional indices of local maxima (swing highs)."""
+    idx = []
+    for i in range(window, len(series) - window):
+        val = series.iloc[i]
+        if all(val >= series.iloc[j] for j in range(i - window, i + window + 1) if j != i):
+            idx.append(i)
+    return idx
+
+
+def detect_rsi_divergence(df, period=14, lookback=20):
+    """
+    Detect RSI divergence: price vs RSI moving opposite.
+    Bullish: price makes lower low, RSI makes higher low → potential reversal up (CALL).
+    Bearish: price makes higher high, RSI makes lower high → potential reversal down (PUT).
+    Returns ("bullish"|"bearish"|None, strength_str) or (None, None).
+    """
+    if df is None or len(df) < lookback or len(df) < period + 5:
+        return None, None
+    close = df["Close"] if "Close" in df.columns else df["close"]
+    high = df["High"] if "High" in df.columns else df["high"]
+    low = df["Low"] if "Low" in df.columns else df["low"]
+    df_calc = df[["Close"]].copy() if "Close" in df.columns else df[["close"]].copy()
+    df_calc.columns = ["Close"]
+    df_rsi = getRSICalculate(df_calc, period)
+    rsi = df_rsi["RSI"]
+    tail = min(lookback, len(df) - 1)
+    low_series = low.iloc[-tail:]
+    high_series = high.iloc[-tail:]
+    rsi_tail = rsi.iloc[-tail:]
+    swing_lows = _find_swing_lows(low_series, window=2)
+    swing_highs = _find_swing_highs(high_series, window=2)
+    if len(swing_lows) >= 2:
+        i1, i2 = swing_lows[-2], swing_lows[-1]
+        real_i1, real_i2 = low_series.index[i1], low_series.index[i2]
+        price_lo1, price_lo2 = float(low.loc[real_i1]), float(low.loc[real_i2])
+        rsi_lo1 = float(rsi.loc[real_i1]) if real_i1 in rsi.index and not pd.isna(rsi.loc[real_i1]) else 50
+        rsi_lo2 = float(rsi.loc[real_i2]) if real_i2 in rsi.index and not pd.isna(rsi.loc[real_i2]) else 50
+        if price_lo2 < price_lo1 and rsi_lo2 > rsi_lo1 and rsi_lo2 < 45:
+            strength = "strongBuy" if rsi_lo2 < 35 else "normalBuy"
+            return "bullish", strength
+    if len(swing_highs) >= 2:
+        i1, i2 = swing_highs[-2], swing_highs[-1]
+        real_i1, real_i2 = high_series.index[i1], high_series.index[i2]
+        price_hi1, price_hi2 = float(high.loc[real_i1]), float(high.loc[real_i2])
+        rsi_hi1 = float(rsi.loc[real_i1]) if real_i1 in rsi.index and not pd.isna(rsi.loc[real_i1]) else 50
+        rsi_hi2 = float(rsi.loc[real_i2]) if real_i2 in rsi.index and not pd.isna(rsi.loc[real_i2]) else 50
+        if price_hi2 > price_hi1 and rsi_hi2 < rsi_hi1 and rsi_hi2 > 55:
+            strength = "strongSell" if rsi_hi2 > 65 else "normalSell"
+            return "bearish", strength
+    return None, None
+
+
+def detect_volume_divergence(df, lookback=15):
+    """
+    Volume divergence: price vs volume moving opposite.
+    Bullish: price makes lower low, volume makes higher low (accumulation) → CALL.
+    Bearish: price makes higher high, volume makes lower high (distribution) → PUT.
+    Returns ("bullish"|"bearish"|None, strength_str) or (None, None).
+    """
+    if df is None or len(df) < lookback:
+        return None, None
+    vol_col = "Volume" if "Volume" in df.columns else "volume"
+    if vol_col not in df.columns:
+        return None, None
+    close = df["Close"] if "Close" in df.columns else df["close"]
+    high = df["High"] if "High" in df.columns else df["high"]
+    low = df["Low"] if "Low" in df.columns else df["low"]
+    vol = df[vol_col]
+    tail = min(lookback, len(df) - 1)
+    low_series = low.iloc[-tail:]
+    high_series = high.iloc[-tail:]
+    vol_tail = vol.iloc[-tail:]
+    swing_lows = _find_swing_lows(low_series, window=2)
+    swing_highs = _find_swing_highs(high_series, window=2)
+    if len(swing_lows) >= 2:
+        i1, i2 = swing_lows[-2], swing_lows[-1]
+        real_i1, real_i2 = low_series.index[i1], low_series.index[i2]
+        price_lo1, price_lo2 = float(low.loc[real_i1]), float(low.loc[real_i2])
+        v1 = float(vol.loc[real_i1]) if real_i1 in vol.index else 0
+        v2 = float(vol.loc[real_i2]) if real_i2 in vol.index else 0
+        if price_lo2 < price_lo1 and v2 > v1 * 1.1:
+            return "bullish", "normalBuy"
+    if len(swing_highs) >= 2:
+        i1, i2 = swing_highs[-2], swing_highs[-1]
+        real_i1, real_i2 = high_series.index[i1], high_series.index[i2]
+        price_hi1, price_hi2 = float(high.loc[real_i1]), float(high.loc[real_i2])
+        v1 = float(vol.loc[real_i1]) if real_i1 in vol.index else 0
+        v2 = float(vol.loc[real_i2]) if real_i2 in vol.index else 0
+        if price_hi2 > price_hi1 and v2 < v1 * 0.9:
+            return "bearish", "normalSell"
+    return None, None
+
+
+def detect_liquidity_sweep(df, lookback=12, wick_ratio=0.3):
+    """
+    Liquidity sweep (sweep and reverse): price wicks through a key level then reverses.
+    Bullish sweep: price sweeps below recent swing low (wick) then closes above → CALL.
+    Bearish sweep: price sweeps above recent swing high (wick) then closes below → PUT.
+    Returns ("bullish"|"bearish"|None, strength_str) or (None, None).
+    """
+    if df is None or len(df) < lookback:
+        return None, None
+    high = df["High"] if "High" in df.columns else df["high"]
+    low = df["Low"] if "Low" in df.columns else df["low"]
+    open_ = df["Open"] if "Open" in df.columns else df["open"]
+    close = df["Close"] if "Close" in df.columns else df["close"]
+    tail = df.iloc[-lookback:]
+    recent_low = float(tail["Low"].min()) if "Low" in tail.columns else float(tail["low"].min())
+    recent_high = float(tail["High"].max()) if "High" in tail.columns else float(tail["high"].max())
+    curr = df.iloc[-1]
+    c_high = float(curr["High"]) if "High" in curr else float(curr["high"])
+    c_low = float(curr["Low"]) if "Low" in curr else float(curr["low"])
+    c_open = float(curr["Open"]) if "Open" in curr else float(curr["open"])
+    c_close = float(curr["Close"]) if "Close" in curr else float(curr["close"])
+    body = abs(c_close - c_open)
+    lower_wick = min(c_open, c_close) - c_low
+    upper_wick = c_high - max(c_open, c_close)
+    if c_low < recent_low and c_close > recent_low and lower_wick > body * wick_ratio:
+        return "bullish", "strongBuy"
+    if c_high > recent_high and c_close < recent_high and upper_wick > body * wick_ratio:
+        return "bearish", "strongSell"
+    return None, None
+
+
 def BOTSingal(data, multiplier=1.0):
     multiplier = multiplier
     data['tr0'] = abs(data["High"] - data["Low"])

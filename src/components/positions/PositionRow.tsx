@@ -148,10 +148,13 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                   <DetailItem icon={BarChart3} label="Bid" value={`$${Number(position.bid).toFixed(2)}`} color="text-foreground" title="Used for TP/SL when available" />
                 )}
                 {(position.ask != null && position.ask > 0) && (
-                  <DetailItem icon={BarChart3} label="Ask" value={`$${Number(position.ask).toFixed(2)}`} color="text-muted-foreground" title="For display only; not used in TP/SL" />
+                  <DetailItem icon={BarChart3} label="Ask" value={`$${Number(position.ask).toFixed(2)}`} color="text-muted-foreground" title="Used for mid=(bid+ask)/2" />
                 )}
                 {(position.last != null && position.last > 0) && (
                   <DetailItem icon={BarChart3} label="Last" value={`$${Number(position.last).toFixed(2)}`} color="text-foreground" />
+                )}
+                {(position.mid != null && position.mid > 0) && (
+                  <DetailItem icon={BarChart3} label="Mid" value={`$${Number(position.mid).toFixed(2)}`} color="text-foreground" title="(bid+ask)/2 — used for TP/SL" />
                 )}
                 {(position.exit_price_used != null && position.exit_price_used > 0) && (
                   <DetailItem
@@ -159,7 +162,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                     label="Exit price used"
                     value={`$${Number(position.exit_price_used).toFixed(2)} (${position.exit_price_source ?? "—"})`}
                     color="text-amber-500/90"
-                    title="TP/SL logic: bid when valid, else last. Ask not used."
+                    title="TP/SL logic: bid, last, mid — if any hits TP or SL, close at MKT."
                   />
                 )}
                 {position.profit_price !== undefined && position.profit_price > 0 && (
@@ -185,7 +188,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
               </div>
               {(position.exit_price_used != null && position.exit_price_used > 0) && (
                 <p className="mt-2 text-[10px] text-muted-foreground/60">
-                  TP/SL logic: Exit price = <span className="font-mono">{position.exit_price_source}</span> when valid. Ask is not used for closing.
+                  TP/SL logic: Uses bid, last, mid — if any hits TP or SL, close at MKT.
                 </p>
               )}
             </div>

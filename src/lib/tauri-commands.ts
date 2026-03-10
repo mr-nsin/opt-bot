@@ -56,12 +56,14 @@ export const trading = {
   simulateDemo: () => invoke<string>("simulate_demo"),
 };
 
-/** Positions: getAll, close(symbol), closeAll */
+/** Positions: getAll, close(symbol), closeAll, closeAllCalls, closeAllPuts */
 export const positions = {
   getAll: () => invoke<unknown[]>("get_positions"),
   close: (symbol: string, strike?: number, right?: string) =>
     invoke<string>("close_position", { symbol, strike, right }),
   closeAll: () => invoke<string>("close_all_positions"),
+  closeAllCalls: () => invoke<string>("close_all_calls_positions"),
+  closeAllPuts: () => invoke<string>("close_all_puts_positions"),
 };
 
 /** App lifecycle */

@@ -70,6 +70,14 @@ export function usePositions() {
     await positionsApi.closeAll();
   }, []);
 
+  const closeAllCalls = useCallback(async () => {
+    await positionsApi.closeAllCalls();
+  }, []);
+
+  const closeAllPuts = useCallback(async () => {
+    await positionsApi.closeAllPuts();
+  }, []);
+
   return {
     positions,
     closedPositions,
@@ -77,5 +85,7 @@ export function usePositions() {
     refreshPositions,
     closePosition,
     closeAll,
+    closeAllCalls,
+    closeAllPuts,
   };
 }

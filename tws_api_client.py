@@ -18,13 +18,14 @@ import pandas as pd
 from queue import Queue
 
 class TwsApiClient(EWrapper, EClient):
-    def __init__(self, host: str, port: int, clientId: int, event_queue: Queue, callback, account_id: str = ""): 
+    def __init__(self, host: str, port: int, clientId: int, event_queue: Queue, callback, account_id: str = "", opt_event_queue: Queue = None):
         EWrapper.__init__(self)
         EClient.__init__(self, wrapper=self)
         self._host = host
         self._port = port
         self._clientId = clientId
         self.event_queue = event_queue
+        self.opt_event_queue = opt_event_queue  # Dedicated queue for OPT ticks (TP/SL) - never blocked by STK scan
         self._configured_account_id = (account_id or "").strip()
         self.nextValidOrderId = 0
         self.ticker_id = 0
@@ -590,7 +591,8 @@ class TwsApiClient(EWrapper, EClient):
             if tickType == 1:
                 tick.bid = price
                 if self.initialization_done and tick.contract.secType == "OPT":
-                    self.event_queue.put({"tick": tick})
+                    q = self.opt_event_queue if self.opt_event_queue else self.event_queue
+                    q.put({"tick": tick})
             # Update the ask price of the tick data, if the tickType is 2
             elif tickType == 2:
                 tick.ask = price
@@ -599,7 +601,10 @@ class TwsApiClient(EWrapper, EClient):
             elif tickType == 4:
                 tick.last = price
                 if self.initialization_done:
-                    self.event_queue.put({"tick": tick})
+                    if tick.contract.secType == "OPT" and self.opt_event_queue:
+                        self.opt_event_queue.put({"tick": tick})
+                    else:
+                        self.event_queue.put({"tick": tick})
             # Update the close price of the tick data, if the tickType is 9
             elif tickType == 9:
                 tick.close = price

@@ -68,6 +68,8 @@ def main():
     handler.register(messages.GET_POSITIONS, lambda params: engine.get_positions())
     handler.register(messages.CLOSE_POSITION, lambda params: engine.close_position(params))
     handler.register(messages.CLOSE_ALL, lambda params: engine.close_all())
+    handler.register(messages.CLOSE_ALL_CALLS, lambda params: engine.close_all_calls())
+    handler.register(messages.CLOSE_ALL_PUTS, lambda params: engine.close_all_puts())
     handler.register(messages.UPDATE_CONFIG, lambda params: engine.update_config(params))
     handler.register(messages.PING, lambda params: {"pong": True, "timestamp": time.time()})
     handler.register(messages.SIMULATE_DEMO, lambda params: engine.simulate_demo(params))

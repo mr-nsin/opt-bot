@@ -48,3 +48,31 @@ pub async fn close_all_positions(
 
     Ok("Close all positions request sent".into())
 }
+
+#[tauri::command]
+pub async fn close_all_calls_positions(
+    _state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if !manager::is_running().await {
+        return Err("Trading engine is not running".into());
+    }
+
+    let request = SidecarRequest::new(methods::CLOSE_ALL_CALLS, None);
+    manager::send_request(&request).await?;
+
+    Ok("Close all call positions request sent".into())
+}
+
+#[tauri::command]
+pub async fn close_all_puts_positions(
+    _state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if !manager::is_running().await {
+        return Err("Trading engine is not running".into());
+    }
+
+    let request = SidecarRequest::new(methods::CLOSE_ALL_PUTS, None);
+    manager::send_request(&request).await?;
+
+    Ok("Close all put positions request sent".into())
+}

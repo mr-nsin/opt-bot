@@ -17,6 +17,8 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  ArrowUpCircle,
+  ArrowDownCircle,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
@@ -26,8 +28,10 @@ type SortField = "symbol" | "pnl" | "strike" | "qty";
 type SortDir = "asc" | "desc";
 
 export const PositionsPage = memo(function PositionsPage() {
-  const { positions, closedPositions, loading, refreshPositions, closeAll } = usePositions();
+  const { positions, closedPositions, loading, refreshPositions, closeAll, closeAllCalls, closeAllPuts } = usePositions();
   const [showCloseAll, setShowCloseAll] = useState(false);
+  const [showCloseCalls, setShowCloseCalls] = useState(false);
+  const [showClosePuts, setShowClosePuts] = useState(false);
   const [sortField, setSortField] = useState<SortField>("pnl");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -89,14 +93,34 @@ export const PositionsPage = memo(function PositionsPage() {
           </h2>
           <p className="text-xs text-muted-foreground/60">Active and closed positions</p>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-8 text-xs">
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
           {positions.length > 0 && (
-            <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-8 text-xs">
-              <XCircle className="h-3 w-3 mr-1" /> Close All
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowCloseCalls(true)}
+                className="h-8 text-xs"
+                title="Close all BOT-managed call positions"
+              >
+                <ArrowUpCircle className="h-3 w-3 mr-1" /> Square Off Calls
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowClosePuts(true)}
+                className="h-8 text-xs"
+                title="Close all BOT-managed put positions"
+              >
+                <ArrowDownCircle className="h-3 w-3 mr-1" /> Square Off Puts
+              </Button>
+              <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-8 text-xs">
+                <XCircle className="h-3 w-3 mr-1" /> Close All
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -200,6 +224,24 @@ export const PositionsPage = memo(function PositionsPage() {
         variant="destructive"
         onConfirm={() => { setShowCloseAll(false); closeAll(); }}
         onCancel={() => setShowCloseAll(false)}
+      />
+      <ConfirmDialog
+        open={showCloseCalls}
+        title="Square Off All Calls"
+        message={`Close all BOT-managed call positions${summary.callCount > 0 ? ` (${summary.callCount} call${summary.callCount !== 1 ? "s" : ""} in list)` : ""}? Manual trades are not affected.`}
+        confirmLabel="Square Off Calls"
+        variant="destructive"
+        onConfirm={() => { setShowCloseCalls(false); closeAllCalls(); }}
+        onCancel={() => setShowCloseCalls(false)}
+      />
+      <ConfirmDialog
+        open={showClosePuts}
+        title="Square Off All Puts"
+        message={`Close all BOT-managed put positions${summary.putCount > 0 ? ` (${summary.putCount} put${summary.putCount !== 1 ? "s" : ""} in list)` : ""}? Manual trades are not affected.`}
+        confirmLabel="Square Off Puts"
+        variant="destructive"
+        onConfirm={() => { setShowClosePuts(false); closeAllPuts(); }}
+        onCancel={() => setShowClosePuts(false)}
       />
     </div>
   );

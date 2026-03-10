@@ -151,6 +151,8 @@ class TradingConfig:
     loss_amount_day: float = 200.0
     profit_amount_day: float = 200.0
     emergency_close_buffer_seconds: int = 5
+    use_rsi_volume_divergence: bool = True
+    use_liquidity_sweep: bool = True
 
     @classmethod
     def from_dict(cls, data: Dict) -> "TradingConfig":
@@ -192,6 +194,8 @@ class TradingConfig:
             loss_amount_day=data.get("loss_amount_day", 200),
             profit_amount_day=data.get("profit_amount_day", 200),
             emergency_close_buffer_seconds=data.get("emergency_close_buffer_seconds", 5),
+            use_rsi_volume_divergence=data.get("use_rsi_volume_divergence", data.get("USE_RSI_VOLUME_DIVERGENCE", True)),
+            use_liquidity_sweep=data.get("use_liquidity_sweep", data.get("USE_LIQUIDITY_SWEEP", True)),
         )
 
     def to_bot_config_dict(self) -> Dict[str, Any]:
@@ -238,4 +242,6 @@ class TradingConfig:
             "loss_amount_day": self.loss_amount_day,
             "profit_amount_day": self.profit_amount_day,
             "emergency_close_buffer_seconds": self.emergency_close_buffer_seconds,
+            "USE_RSI_VOLUME_DIVERGENCE": self.use_rsi_volume_divergence,
+            "USE_LIQUIDITY_SWEEP": self.use_liquidity_sweep,
         }

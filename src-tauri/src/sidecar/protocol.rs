@@ -65,6 +65,8 @@ pub mod methods {
     pub const GET_POSITIONS: &str = "get_positions";
     pub const CLOSE_POSITION: &str = "close_position";
     pub const CLOSE_ALL: &str = "close_all";
+    pub const CLOSE_ALL_CALLS: &str = "close_all_calls";
+    pub const CLOSE_ALL_PUTS: &str = "close_all_puts";
     pub const UPDATE_CONFIG: &str = "update_config";
     pub const PING: &str = "ping";
     pub const SIMULATE_DEMO: &str = "simulate_demo";
