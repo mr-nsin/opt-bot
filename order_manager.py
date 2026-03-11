@@ -81,6 +81,34 @@ class OrderManager:
         logger.info(f"CLOSE POSITION REQUEST: {order.option_symbol} — reason={reason}")
         self.close_position(order=order, option_tick=option_tick)
 
+    def close_positions_by_right(self, right: str) -> int:
+        """
+        Close all managed positions matching the given right (CALL or PUT).
+        Returns the number of positions closed.
+        """
+        if not self.api_client or not self.api_client.isConnected():
+            logger.warning("Cannot close positions: TWS not connected")
+            return 0
+        right_norm = (right or "").upper()
+        if right_norm not in ("CALL", "PUT", "C", "P"):
+            logger.warning(f"Invalid right for close_positions_by_right: {right}")
+            return 0
+        r_match = "C" if right_norm in ("CALL", "C") else "P"
+        with self.order_lock:
+            orders = [o for o in self.entry_orders_cache.values() if o and (o.right or "")[0:1].upper() == r_match]
+        count = 0
+        for order in orders:
+            try:
+                option_tick = self.order_id_tick_lookup.get(order.id)
+                if option_tick is None:
+                    option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
+                self.close_position(order=order, option_tick=option_tick)
+                count += 1
+            except Exception as ex:
+                logger.error(f"Error closing position {order.option_symbol}: {ex}", exc_info=True)
+        logger.info(f"Close {right_norm} positions: {count} closed")
+        return count
+
     def close_all_positions(self) -> None:
         """
         Close all managed open positions (used by Tauri/sidecar when user clicks Close All).

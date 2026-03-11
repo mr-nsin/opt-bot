@@ -78,6 +78,22 @@ pub struct TradingConfig {
     pub per_day_trades: i32,
     pub loss_amount_day: f64,
     pub profit_amount_day: f64,
+    #[serde(alias = "ADX_ON_OFF", default)]
+    pub adx_on_off: String,
+    #[serde(alias = "ADX_THRESHOLD", default)]
+    pub adx_threshold: f64,
+    #[serde(alias = "RSI_DIVERGENCE_ON_OFF", default)]
+    pub rsi_divergence_on_off: String,
+    #[serde(alias = "VOLUME_DIVERGENCE_ON_OFF", default)]
+    pub volume_divergence_on_off: String,
+    #[serde(alias = "LIQUIDITY_SWAP_ON_OFF", default)]
+    pub liquidity_swap_on_off: String,
+    #[serde(alias = "LIQUIDITY_CHECK_ON_OFF", default)]
+    pub liquidity_check_on_off: String,
+    #[serde(alias = "LIQUIDITY_MIN_VOLUME", default)]
+    pub liquidity_min_volume: i32,
+    #[serde(alias = "LIQUIDITY_MAX_SPREAD_PCT", default)]
+    pub liquidity_max_spread_pct: f64,
 }
 
 /// Default symbols aligned with config.json — all symbols from stockData/stockListToTrade.
@@ -139,6 +155,14 @@ impl Default for TradingConfig {
             per_day_trades: 3,
             loss_amount_day: 200.0,
             profit_amount_day: 200.0,
+            adx_on_off: "ON".into(),
+            adx_threshold: 25.0,
+            rsi_divergence_on_off: "ON".into(),
+            volume_divergence_on_off: "ON".into(),
+            liquidity_swap_on_off: "ON".into(),
+            liquidity_check_on_off: "ON".into(),
+            liquidity_min_volume: 20,
+            liquidity_max_spread_pct: 15.0,
         }
     }
 }
@@ -472,6 +496,14 @@ impl ConfigState {
         m.insert("perDayTrades".into(), Value::Number(t.per_day_trades.into()));
         m.insert("loss_amount_day".into(), Value::Number(serde_json::Number::from_f64(t.loss_amount_day).unwrap_or(0.into())));
         m.insert("profit_amount_day".into(), Value::Number(serde_json::Number::from_f64(t.profit_amount_day).unwrap_or(0.into())));
+        m.insert("ADX_ON_OFF".into(), Value::String(t.adx_on_off.clone()));
+        m.insert("ADX_THRESHOLD".into(), Value::Number(serde_json::Number::from_f64(t.adx_threshold).unwrap_or(0.into())));
+        m.insert("RSI_DIVERGENCE_ON_OFF".into(), Value::String(t.rsi_divergence_on_off.clone()));
+        m.insert("VOLUME_DIVERGENCE_ON_OFF".into(), Value::String(t.volume_divergence_on_off.clone()));
+        m.insert("LIQUIDITY_SWAP_ON_OFF".into(), Value::String(t.liquidity_swap_on_off.clone()));
+        m.insert("LIQUIDITY_CHECK_ON_OFF".into(), Value::String(t.liquidity_check_on_off.clone()));
+        m.insert("LIQUIDITY_MIN_VOLUME".into(), Value::Number(t.liquidity_min_volume.into()));
+        m.insert("LIQUIDITY_MAX_SPREAD_PCT".into(), Value::Number(serde_json::Number::from_f64(t.liquidity_max_spread_pct).unwrap_or(0.into())));
         serde_json::to_string_pretty(&Value::Object(m)).map_err(|e| format!("Serialize: {}", e))
     }
 

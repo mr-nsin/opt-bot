@@ -26,8 +26,10 @@ type SortField = "symbol" | "pnl" | "strike" | "qty";
 type SortDir = "asc" | "desc";
 
 export const PositionsPage = memo(function PositionsPage() {
-  const { positions, closedPositions, loading, refreshPositions, closeAll } = usePositions();
+  const { positions, closedPositions, loading, refreshPositions, closeAll, closeCalls, closePuts } = usePositions();
   const [showCloseAll, setShowCloseAll] = useState(false);
+  const [showCloseCalls, setShowCloseCalls] = useState(false);
+  const [showClosePuts, setShowClosePuts] = useState(false);
   const [sortField, setSortField] = useState<SortField>("pnl");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -89,10 +91,20 @@ export const PositionsPage = memo(function PositionsPage() {
           </h2>
           <p className="text-xs text-muted-foreground/60">Active and closed positions</p>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap">
           <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-8 text-xs">
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
+          {summary.callCount > 0 && (
+            <Button variant="outline" size="sm" onClick={() => setShowCloseCalls(true)} className="h-8 text-xs border-emerald-500/50 text-emerald-600 hover:bg-emerald-500/10">
+              <TrendingUp className="h-3 w-3 mr-1" /> Close Calls ({summary.callCount})
+            </Button>
+          )}
+          {summary.putCount > 0 && (
+            <Button variant="outline" size="sm" onClick={() => setShowClosePuts(true)} className="h-8 text-xs border-red-500/50 text-red-600 hover:bg-red-500/10">
+              <TrendingDown className="h-3 w-3 mr-1" /> Close Puts ({summary.putCount})
+            </Button>
+          )}
           {positions.length > 0 && (
             <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-8 text-xs">
               <XCircle className="h-3 w-3 mr-1" /> Close All
@@ -200,6 +212,24 @@ export const PositionsPage = memo(function PositionsPage() {
         variant="destructive"
         onConfirm={() => { setShowCloseAll(false); closeAll(); }}
         onCancel={() => setShowCloseAll(false)}
+      />
+      <ConfirmDialog
+        open={showCloseCalls}
+        title="Close All Calls"
+        message={`Close all ${summary.callCount} CALL position(s)?`}
+        confirmLabel="Close Calls"
+        variant="default"
+        onConfirm={() => { setShowCloseCalls(false); closeCalls(); }}
+        onCancel={() => setShowCloseCalls(false)}
+      />
+      <ConfirmDialog
+        open={showClosePuts}
+        title="Close All Puts"
+        message={`Close all ${summary.putCount} PUT position(s)?`}
+        confirmLabel="Close Puts"
+        variant="default"
+        onConfirm={() => { setShowClosePuts(false); closePuts(); }}
+        onCancel={() => setShowClosePuts(false)}
       />
     </div>
   );

@@ -16,6 +16,7 @@ pub async fn close_position(
     symbol: String,
     strike: Option<f64>,
     right: Option<String>,
+    expiry: Option<String>,
     _state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
     if !manager::is_running().await {
@@ -28,6 +29,9 @@ pub async fn close_position(
     }
     if let Some(r) = right {
         params["right"] = serde_json::json!(r);
+    }
+    if let Some(e) = expiry {
+        params["expiry"] = serde_json::json!(e);
     }
 
     let request = SidecarRequest::new(methods::CLOSE_POSITION, Some(params));
@@ -47,4 +51,32 @@ pub async fn close_all_positions(
     manager::send_request(&request).await?;
 
     Ok("Close all positions request sent".into())
+}
+
+#[tauri::command]
+pub async fn close_calls_positions(
+    _state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if !manager::is_running().await {
+        return Err("Trading engine is not running".into());
+    }
+
+    let request = SidecarRequest::new(methods::CLOSE_CALLS, None);
+    manager::send_request(&request).await?;
+
+    Ok("Close all calls request sent".into())
+}
+
+#[tauri::command]
+pub async fn close_puts_positions(
+    _state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    if !manager::is_running().await {
+        return Err("Trading engine is not running".into());
+    }
+
+    let request = SidecarRequest::new(methods::CLOSE_PUTS, None);
+    manager::send_request(&request).await?;
+
+    Ok("Close all puts request sent".into())
 }

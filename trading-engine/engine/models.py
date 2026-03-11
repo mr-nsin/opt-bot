@@ -151,6 +151,14 @@ class TradingConfig:
     loss_amount_day: float = 200.0
     profit_amount_day: float = 200.0
     emergency_close_buffer_seconds: int = 5
+    adx_on_off: str = "ON"
+    adx_threshold: float = 25.0
+    rsi_divergence_on_off: str = "ON"
+    volume_divergence_on_off: str = "ON"
+    liquidity_swap_on_off: str = "ON"
+    liquidity_check_on_off: str = "ON"
+    liquidity_min_volume: int = 20
+    liquidity_max_spread_pct: float = 15.0
 
     @classmethod
     def from_dict(cls, data: Dict) -> "TradingConfig":
@@ -192,6 +200,14 @@ class TradingConfig:
             loss_amount_day=data.get("loss_amount_day", 200),
             profit_amount_day=data.get("profit_amount_day", 200),
             emergency_close_buffer_seconds=data.get("emergency_close_buffer_seconds", 5),
+            adx_on_off=data.get("adx_on_off", data.get("ADX_ON_OFF", "ON")),
+            adx_threshold=float(data.get("adx_threshold", data.get("ADX_THRESHOLD", 25))),
+            rsi_divergence_on_off=data.get("rsi_divergence_on_off", data.get("RSI_DIVERGENCE_ON_OFF", "ON")),
+            volume_divergence_on_off=data.get("volume_divergence_on_off", data.get("VOLUME_DIVERGENCE_ON_OFF", "ON")),
+            liquidity_swap_on_off=data.get("liquidity_swap_on_off", data.get("LIQUIDITY_SWAP_ON_OFF", "ON")),
+            liquidity_check_on_off=data.get("liquidity_check_on_off", data.get("LIQUIDITY_CHECK_ON_OFF", "ON")),
+            liquidity_min_volume=int(data.get("liquidity_min_volume", data.get("LIQUIDITY_MIN_VOLUME", 20))),
+            liquidity_max_spread_pct=float(data.get("liquidity_max_spread_pct", data.get("LIQUIDITY_MAX_SPREAD_PCT", 15))),
         )
 
     def to_bot_config_dict(self) -> Dict[str, Any]:
@@ -238,4 +254,12 @@ class TradingConfig:
             "loss_amount_day": self.loss_amount_day,
             "profit_amount_day": self.profit_amount_day,
             "emergency_close_buffer_seconds": self.emergency_close_buffer_seconds,
+            "ADX_ON_OFF": self.adx_on_off,
+            "ADX_THRESHOLD": self.adx_threshold,
+            "RSI_DIVERGENCE_ON_OFF": self.rsi_divergence_on_off,
+            "VOLUME_DIVERGENCE_ON_OFF": self.volume_divergence_on_off,
+            "LIQUIDITY_SWAP_ON_OFF": self.liquidity_swap_on_off,
+            "LIQUIDITY_CHECK_ON_OFF": self.liquidity_check_on_off,
+            "LIQUIDITY_MIN_VOLUME": self.liquidity_min_volume,
+            "LIQUIDITY_MAX_SPREAD_PCT": self.liquidity_max_spread_pct,
         }

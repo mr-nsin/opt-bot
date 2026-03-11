@@ -445,15 +445,16 @@ class TradingEngine:
             emit_engine_status("Idle", connected=False)
 
     def close_position(self, params: dict) -> dict:
-        """Close a specific position by symbol (and optionally strike/right for options)."""
+        """Close a specific position by symbol (and optionally strike/right/expiry for options)."""
         symbol = params.get("symbol", "")
         strike = params.get("strike")
         right = params.get("right")
+        expiry = params.get("expiry")
         if strike is not None:
             strike = float(strike)
-        emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right}" if strike or right else ""), "INFO", "orders")
+        emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right} expiry={expiry}" if strike or right or expiry else ""), "INFO", "orders")
         if self._order_mgr and hasattr(self._order_mgr, 'close_position_by_symbol'):
-            self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right)
+            self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right, expiry=expiry)
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
@@ -462,6 +463,22 @@ class TradingEngine:
         if self._order_mgr and hasattr(self._order_mgr, 'close_all_positions'):
             self._order_mgr.close_all_positions()
         return {"status": "close_all_requested"}
+
+    def close_calls(self) -> dict:
+        """Close all CALL positions."""
+        emit_log("Close ALL CALLS requested", "WARN", "orders")
+        count = 0
+        if self._order_mgr and hasattr(self._order_mgr, 'close_positions_by_right'):
+            count = self._order_mgr.close_positions_by_right("CALL")
+        return {"status": "close_calls_requested", "count": count}
+
+    def close_puts(self) -> dict:
+        """Close all PUT positions."""
+        emit_log("Close ALL PUTS requested", "WARN", "orders")
+        count = 0
+        if self._order_mgr and hasattr(self._order_mgr, 'close_positions_by_right'):
+            count = self._order_mgr.close_positions_by_right("PUT")
+        return {"status": "close_puts_requested", "count": count}
 
     def update_config(self, params: dict) -> dict:
         """Update configuration at runtime. Syncs BOT globals so cooldown and other params take effect immediately."""

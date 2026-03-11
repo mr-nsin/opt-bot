@@ -95,6 +95,7 @@ with open("config.json", "r",  encoding="utf-8") as fopen:
 # Connection Details - IP, PORT, ClientID
 global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK, VOLUME_CHECK, ATR_CHECKS
 global ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val, profit_amount_day, loss_amount_day
+global ADX_ON_OFF, ADX_THRESHOLD, RSI_DIVERGENCE_ON_OFF, VOLUME_DIVERGENCE_ON_OFF, LIQUIDITY_SWAP_ON_OFF, LIQUIDITY_CHECK_ON_OFF, LIQUIDITY_MIN_VOLUME, LIQUIDITY_MAX_SPREAD_PCT
 
 
 # -- LICENSE SYSTEM --
@@ -960,6 +961,20 @@ def get_delta_volume(stock, strike, right, expiry):
     if market_data:
         delta_val = getattr(market_data, "delta", None)
         vol_val = getattr(market_data, "volume", None)
+        bid_val = getattr(market_data, "bid", None)
+        ask_val = getattr(market_data, "ask", None)
+        last_val = getattr(market_data, "last", None)
+        # Liquidity check: skip illiquid options (wide spread, low volume) — effectively "liquidity swap" to try next strike
+        liq_on = str(globals().get("LIQUIDITY_CHECK_ON_OFF", "OFF")).lower() == "on"
+        if liq_on and hasattr(indi, "checkLiquidity"):
+            min_vol = int(globals().get("LIQUIDITY_MIN_VOLUME", 20))
+            max_spread = float(globals().get("LIQUIDITY_MAX_SPREAD_PCT", 15))
+            if not indi.checkLiquidity(bid_val, ask_val, last_val, vol_val, min_volume=min_vol, max_spread_pct=max_spread):
+                logger.info(f"Liquidity check failed for {stock} {right} {strike} — skipping (try next strike)")
+                _emit_log(f"Liquidity: {stock} {right} {strike} illiquid — skip", "INFO", "signal")
+                deltaVolData.append("NoDataPresent")
+                deltaVolData.append(market_data)
+                return deltaVolData
         if delta_val is not None and delta_val != -1 and vol_val is not None and vol_val != -1:
             deltaVolData = [(delta_val, vol_val)]
 
@@ -998,6 +1013,59 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
         logger.warning(f"No/insufficient candle data for {Stock}; skipping algo check (historical data may not be ready)")
         _emit_log(f"Algo: {Stock} insufficient bars ({n_candles}) — skipping trade check", "INFO", "signal")
         return (False, 0.0, ([0], [0], [0]))
+
+    df_candles = client.to_df(getCandlesData)
+
+    # ADX filter: skip sideways market (ADX < threshold)
+    adx_on = str(globals().get("ADX_ON_OFF", "OFF")).lower() == "on"
+    if adx_on:
+        adx_threshold = float(globals().get("ADX_THRESHOLD", 25))
+        adx_val = indi.getADX(df_candles, period=14) if hasattr(indi, "getADX") else None
+        if adx_val is not None and adx_val < adx_threshold:
+            logger.info(f"ADX={adx_val:.1f} < {adx_threshold} (sideways market) — skipping {Stock}")
+            _emit_log(f"ADX: {Stock} sideway market (ADX={adx_val:.1f}) — no trade", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0])) if onlyAtrCheck == "no" else (False, 0.0, ([0], [0], [0]))  # noqa: E501
+        elif adx_val is not None:
+            _emit_log(f"ADX: {Stock} ADX={adx_val:.1f} ≥ {adx_threshold} ✓", "DEBUG", "signal")
+
+    # RSI divergence: must align with signal (CALL needs bullish or none, PUT needs bearish or none)
+    rsi_div_on = str(globals().get("RSI_DIVERGENCE_ON_OFF", "OFF")).lower() == "on"
+    if rsi_div_on == "on" and onlyAtrCheck == "no":
+        rsi_div = indi.checkRSIDivergence(df_candles, rsi_period=14, lookback=5) if hasattr(indi, "checkRSIDivergence") else None
+        if rsi_div == "bearish" and Right.upper() in ("CALL", "C"):
+            logger.info(f"RSI bearish divergence — skip CALL for {Stock}")
+            _emit_log(f"RSI divergence: {Stock} bearish — skip CALL", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0]))
+        if rsi_div == "bullish" and Right.upper() in ("PUT", "P"):
+            logger.info(f"RSI bullish divergence — skip PUT for {Stock}")
+            _emit_log(f"RSI divergence: {Stock} bullish — skip PUT", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0]))
+
+    # Volume divergence: must align with signal
+    vol_div_on = str(globals().get("VOLUME_DIVERGENCE_ON_OFF", "OFF")).lower() == "on"
+    if vol_div_on == "on" and onlyAtrCheck == "no":
+        vol_div = indi.checkVolumeDivergence(df_candles, lookback=5) if hasattr(indi, "checkVolumeDivergence") else None
+        if vol_div == "bearish" and Right.upper() in ("CALL", "C"):
+            logger.info(f"Volume bearish divergence — skip CALL for {Stock}")
+            _emit_log(f"Volume divergence: {Stock} bearish — skip CALL", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0]))
+        if vol_div == "bullish" and Right.upper() in ("PUT", "P"):
+            logger.info(f"Volume bullish divergence — skip PUT for {Stock}")
+            _emit_log(f"Volume divergence: {Stock} bullish — skip PUT", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0]))
+
+    # Liquidity swap pattern: sweep and reversal — must align with signal (CALL needs bullish, PUT needs bearish)
+    liq_swap_on = str(globals().get("LIQUIDITY_SWAP_ON_OFF", "OFF")).lower() == "on"
+    if liq_swap_on == "on" and onlyAtrCheck == "no":
+        liq_swap = indi.checkLiquiditySwapPattern(df_candles, lookback=5) if hasattr(indi, "checkLiquiditySwapPattern") else None
+        if liq_swap == "bearish" and Right.upper() in ("CALL", "C"):
+            logger.info(f"Liquidity swap bearish — skip CALL for {Stock}")
+            _emit_log(f"Liquidity swap: {Stock} bearish sweep — skip CALL", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0]))
+        if liq_swap == "bullish" and Right.upper() in ("PUT", "P"):
+            logger.info(f"Liquidity swap bullish — skip PUT for {Stock}")
+            _emit_log(f"Liquidity swap: {Stock} bullish sweep — skip PUT", "INFO", "signal")
+            return (False, 0.0, ([0], [0], [0]))
 
     logger.info("\nVWAP_ON_OFF => {}\n".format(VWAP_ON_OFF))
     if onlyAtrCheck == "no":
@@ -2518,6 +2586,7 @@ def main_call(data):
     
     global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
     global VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val
+    global ADX_ON_OFF, ADX_THRESHOLD, RSI_DIVERGENCE_ON_OFF, VOLUME_DIVERGENCE_ON_OFF, LIQUIDITY_SWAP_ON_OFF, LIQUIDITY_CHECK_ON_OFF, LIQUIDITY_MIN_VOLUME, LIQUIDITY_MAX_SPREAD_PCT
     global trade_time_dict, signal_dict, profit_amount_day, loss_amount_day
     global starting_profit, starting_loss
     starting_profit = 0
@@ -2560,6 +2629,15 @@ def main_call(data):
     BODY = data["BODY"]
     loss_amount_day = float(data["loss_amount_day"])
     profit_amount_day = float(data["profit_amount_day"])
+
+    ADX_ON_OFF = str(data.get("ADX_ON_OFF", fileData.get("ADX_ON_OFF", "OFF"))).upper()
+    ADX_THRESHOLD = float(data.get("ADX_THRESHOLD", fileData.get("ADX_THRESHOLD", 25)))
+    RSI_DIVERGENCE_ON_OFF = str(data.get("RSI_DIVERGENCE_ON_OFF", fileData.get("RSI_DIVERGENCE_ON_OFF", "OFF"))).upper()
+    VOLUME_DIVERGENCE_ON_OFF = str(data.get("VOLUME_DIVERGENCE_ON_OFF", fileData.get("VOLUME_DIVERGENCE_ON_OFF", "OFF"))).upper()
+    LIQUIDITY_SWAP_ON_OFF = str(data.get("LIQUIDITY_SWAP_ON_OFF", fileData.get("LIQUIDITY_SWAP_ON_OFF", "OFF"))).upper()
+    LIQUIDITY_CHECK_ON_OFF = str(data.get("LIQUIDITY_CHECK_ON_OFF", fileData.get("LIQUIDITY_CHECK_ON_OFF", "OFF"))).upper()
+    LIQUIDITY_MIN_VOLUME = int(data.get("LIQUIDITY_MIN_VOLUME", fileData.get("LIQUIDITY_MIN_VOLUME", 20)))
+    LIQUIDITY_MAX_SPREAD_PCT = float(data.get("LIQUIDITY_MAX_SPREAD_PCT", fileData.get("LIQUIDITY_MAX_SPREAD_PCT", 15)))
     
     # 
     USE_DIFF_EXPIRY_INDEX = fileData["USE_DIFF_EXPIRY_INDEX"]

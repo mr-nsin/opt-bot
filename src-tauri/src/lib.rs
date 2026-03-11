@@ -59,6 +59,8 @@ pub fn run() {
             commands::positions::get_positions,
             commands::positions::close_position,
             commands::positions::close_all_positions,
+            commands::positions::close_calls_positions,
+            commands::positions::close_puts_positions,
             // Log commands
             commands::logs::push_log_entry,
             commands::logs::get_logs,

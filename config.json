@@ -76,5 +76,13 @@
   "perDayTrades": 3,
   "loss_amount_day": -200,
   "profit_amount_day": 200,
-  "emergency_close_buffer_seconds": 5
+  "emergency_close_buffer_seconds": 5,
+  "ADX_ON_OFF": "ON",
+  "ADX_THRESHOLD": 25,
+  "RSI_DIVERGENCE_ON_OFF": "ON",
+  "VOLUME_DIVERGENCE_ON_OFF": "ON",
+  "LIQUIDITY_SWAP_ON_OFF": "ON",
+  "LIQUIDITY_CHECK_ON_OFF": "ON",
+  "LIQUIDITY_MIN_VOLUME": 20,
+  "LIQUIDITY_MAX_SPREAD_PCT": 15
 }

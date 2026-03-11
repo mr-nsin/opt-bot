@@ -60,14 +60,22 @@ export function usePositions() {
   }, [setPositions, setLoading]);
 
   const closePosition = useCallback(
-    async (symbol: string, strike?: number, right?: string) => {
-      await positionsApi.close(symbol, strike, right);
+    async (symbol: string, strike?: number, right?: string, expiry?: string) => {
+      await positionsApi.close(symbol, strike, right, expiry);
     },
     []
   );
 
   const closeAll = useCallback(async () => {
     await positionsApi.closeAll();
+  }, []);
+
+  const closeCalls = useCallback(async () => {
+    await positionsApi.closeCalls();
+  }, []);
+
+  const closePuts = useCallback(async () => {
+    await positionsApi.closePuts();
   }, []);
 
   return {
@@ -77,5 +85,7 @@ export function usePositions() {
     refreshPositions,
     closePosition,
     closeAll,
+    closeCalls,
+    closePuts,
   };
 }
