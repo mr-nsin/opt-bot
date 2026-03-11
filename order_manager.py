@@ -33,7 +33,7 @@ class OrderManager:
     Attributes:
         api_client (TwsApiClient): An instance of TwsApiClient that communicates with the API server.
         orders_cache (dict): A dictionary that stores all orders with their IDs as keys and the orders themselves as values.
-        entry_orders_cache (dict): A dictionary that stores entry orders with their symbols as keys and the orders themselves as values.
+        entry_orders_cache (dict): A dictionary that stores entry orders keyed by option_symbol (symbol+expiry+right+strike) to support multiple positions per underlying.
         exit_orders_cache (dict): A dictionary that stores exit orders with their symbols as keys and the orders themselves as values.
     """
     
@@ -59,22 +59,26 @@ class OrderManager:
         """
         self.api_client = client
 
-    def close_position_by_symbol(self, symbol: str) -> None:
+    def _option_key(self, order: OptionOrder) -> str:
+        """Composite key for option orders (symbol+expiry+right+strike) to support multiple positions per underlying."""
+        return getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
+
+    def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None, expiry: str = None, reason: str = "manual") -> None:
         """
-        Close an open position by symbol (used by Tauri/sidecar when user clicks Close).
-        Looks up the entry order and optional tick, then calls close_position(order, option_tick).
+        Close an open position by symbol (and optionally strike/right/expiry for options).
+        Used by Tauri/sidecar when user clicks Close, and by monitor_positions_loop.
         """
         if not self.api_client or not self.api_client.isConnected():
             logger.warning("Cannot close position: TWS not connected")
             return
-        with self.order_lock:
-            order = self.entry_orders_cache.get(symbol) or self.exit_orders_cache.get(symbol)
+        order = self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
         if not order:
-            logger.warning(f"No managed position found for symbol {symbol}")
+            logger.warning(f"No managed position found for symbol {symbol}" + (f" strike={strike} right={right}" if strike or right else ""))
             return
         option_tick = self.order_id_tick_lookup.get(order.id)
         if option_tick is None:
             option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
+        logger.info(f"CLOSE POSITION REQUEST: {order.option_symbol} — reason={reason}")
         self.close_position(order=order, option_tick=option_tick)
 
     def close_all_positions(self) -> None:
@@ -85,72 +89,135 @@ class OrderManager:
             logger.warning("Cannot close all positions: TWS not connected")
             return
         with self.order_lock:
-            symbols = list(self.entry_orders_cache.keys())
-        for symbol in symbols:
+            orders = list(self.entry_orders_cache.values())
+        for order in orders:
+            if not order:
+                continue
             try:
-                self.close_position_by_symbol(symbol)
+                option_tick = self.order_id_tick_lookup.get(order.id)
+                if option_tick is None:
+                    option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
+                self.close_position(order=order, option_tick=option_tick)
             except Exception as ex:
-                logger.error(f"Error closing position {symbol}: {ex}", exc_info=True)
+                logger.error(f"Error closing position {order.option_symbol}: {ex}", exc_info=True)
+
+    def _norm_expiry(self, exp: str) -> str:
+        """Normalize expiry to YYYYMMDD for matching (e.g. 2026-03-06 -> 20260306)."""
+        if not exp:
+            return ""
+        s = str(exp).replace("-", "").replace("/", "").strip()
+        if len(s) == 8 and s.isdigit():
+            return s
+        if len(s) == 10 and s[4] == "0" and s[7] == "0":
+            return s.replace("-", "")[:8]
+        return s[:8] if len(s) >= 8 else s
+
+    def _norm_right(self, r: str) -> str:
+        """Normalize right to C or P."""
+        if not r:
+            return ""
+        r = str(r).upper()
+        if r in ("C", "CALL"):
+            return "C"
+        if r in ("P", "PUT"):
+            return "P"
+        return r[0] if r else ""
+
+    def _find_entry_order(self, symbol: str, strike: float = None, right: str = None, expiry: str = None) -> Optional[OptionOrder]:
+        """Find entry order matching position (symbol, strike, right, expiry)."""
+        if not symbol:
+            return None
+        pos_exp = self._norm_expiry(expiry or "")
+        pos_right = self._norm_right(right or "")
+        pos_strike = float(strike) if strike is not None else None
+        with self.order_lock:
+            for order in self.entry_orders_cache.values():
+                if not order:
+                    continue
+                if (order.symbol or "").upper() != (symbol or "").upper():
+                    continue
+                if pos_strike is not None and order.strike is not None:
+                    if abs(float(order.strike) - pos_strike) > 0.01:
+                        continue
+                if pos_right and order.right:
+                    if self._norm_right(order.right) != pos_right:
+                        continue
+                if pos_exp and order.expiration:
+                    if self._norm_expiry(order.expiration) != pos_exp:
+                        continue
+                return order
+        return None
+
+    def check_exit_conditions(self, pos) -> None:
+        """
+        For a TWS position, find matching entry order and tick, then run TP/SL check.
+        Used by monitor_positions_loop as backup when ticks are sparse.
+        """
+        if not pos or getattr(pos, "position", 0) == 0:
+            return
+        symbol = getattr(pos, "symbol", "") or ""
+        strike = getattr(pos, "strike", None)
+        right = getattr(pos, "right", None)
+        expiry = getattr(pos, "expiry", None) or getattr(pos, "lastTradeDateOrContractMonth", None)
+        entry_order = self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
+        if not entry_order:
+            logger.debug(
+                f"Position {symbol} {strike} {right} {expiry}: no matching entry order "
+                f"(entry_orders={len(self.entry_orders_cache)}, ticks={len(self.order_id_tick_lookup)})"
+            )
+            return
+        option_tick = self.order_id_tick_lookup.get(entry_order.id)
+        if option_tick is None:
+            logger.debug(f"Position {symbol} {strike} {right}: matched order but NO TICK")
+            return
+        option_tick.active_order = entry_order
+        self.check_and_close_position(tick=option_tick)
 
     def del_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
+        key = self._option_key(order)
         with self.order_lock:
             if self.orders_cache.get(order.id, None):
                 self.orders_cache.pop(order.id)
-
-            if self.entry_orders_cache.get(order.symbol, None):
-                self.entry_orders_cache.pop(order.symbol)
-
+            if self.entry_orders_cache.get(key, None):
+                self.entry_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
-        
 
     def add_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
         Adds an entry order to the orders_cache and entry_orders_cache.
-
-        Args:
-            order (OptionOrder): The entry order to be added.
+        Keyed by option_symbol to support multiple positions per underlying.
         """
         with self.order_lock:
             self.orders_cache[order.id] = order
-            self.entry_orders_cache[order.symbol] = order
+            self.entry_orders_cache[self._option_key(order)] = order
             self.order_id_tick_lookup[order.id] = option_tick
 
     def del_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
+        key = self._option_key(order)
         with self.order_lock:
             if self.orders_cache.get(order.id, None):
                 self.orders_cache.pop(order.id)
-
-            if self.exit_orders_cache.get(order.symbol, None):
-                self.exit_orders_cache.pop(order.symbol)
- 
+            if self.exit_orders_cache.get(key, None):
+                self.exit_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
 
     def add_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
         Adds an exit order to the orders_cache and exit_orders_cache.
-
-        Args:
-            order (OptionOrder): The exit order to be added.
+        Keyed by option_symbol for consistency with entry_orders_cache.
         """
         with self.order_lock:
             self.orders_cache[order.id] = order
-            self.exit_orders_cache[order.symbol] = order
+            self.exit_orders_cache[self._option_key(order)] = order
             self.order_id_tick_lookup[order.id] = option_tick
 
-    def get_entry_order(self, symbol: str) -> Optional[OptionOrder]:
+    def get_entry_order(self, symbol: str, right: str = None, strike: float = None, expiry: str = None) -> Optional[OptionOrder]:
         """
-        Returns the entry order associated with the given symbol from entry_orders_cache.
-
-        Args:
-            symbol (str): The symbol for which the entry order is to be retrieved.
-
-        Returns:
-            The entry order associated with the symbol, or None if the symbol is not found.
+        Returns the first matching entry order for symbol (and optionally right/strike/expiry).
         """
-        with self.order_lock:
-            return self.entry_orders_cache.get(symbol, None)
+        return self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
 
 
     def process_trade(self, trade: Trade) -> None:
@@ -489,43 +556,55 @@ class OrderManager:
     def check_take_profit(self, tick: Tick, order: OptionOrder, option_tick: Tick) -> None:
         """
         Check if the take profit condition for the given order is met, and close the position if it is.
+        Supports both Long (BUY) and Short (SELL) positions with correct exit price and conditions.
 
         Args:
             tick (Tick): The latest tick data for the order's underlying instrument.
             order (OptionOrder): The order to check for the take profit condition.
+            option_tick (Tick): Option tick (bid/ask/last for the option contract).
 
         Returns:
             None
 
-        Raises:
-            N/A
-
-        Example:
-            check_take_profit(my_tick, my_order)
-
         Notes:
-            - The function uses the higher price of the bid or last price as the exit price.
-            - The function logs information about the exit price and the order's take profit settings.
-            - If the take profit condition is met, the function logs information about the trigger and closes the position using the `close_position` method.
-            - If the exit price is above the current profit price, the function updates the order's profit trigger and profit price settings.
+            - Long: exit_price = max(bid, last) — price we receive when selling. TP when price rises.
+            - Short: exit_price = ask (or last) — price we pay to buy back. TP when price falls.
         """
-        
-        # For SELL orders (closing longs), use BID price if available, else LAST
-        # BID is what you can actually sell at RIGHT NOW
-        if tick.bid > 0 and tick.bid <= tick.last:
-            exit_price = tick.bid
+        order_side = (order.order_side or "BUY").upper()
+        is_long = order_side == "BUY"
+
+        bid_val = option_tick.bid if option_tick.bid > 0 else -1
+        ask_val = option_tick.ask if option_tick.ask > 0 else -1
+        last_val = option_tick.last if option_tick.last > 0 else -1
+
+        # Exit price: Long = what we receive (sell at bid); Short = what we pay (buy at ask)
+        if is_long:
+            if bid_val > 0 and last_val > 0:
+                exit_price = max(bid_val, last_val)
+            elif last_val > 0:
+                exit_price = last_val
+            elif bid_val > 0:
+                exit_price = bid_val
+            else:
+                exit_price = -1
         else:
-            exit_price = tick.last
+            if ask_val > 0 and last_val > 0:
+                exit_price = min(ask_val, last_val)  # Best price we might pay to buy back
+            elif ask_val > 0:
+                exit_price = ask_val
+            elif last_val > 0:
+                exit_price = last_val
+            else:
+                exit_price = -1
 
         if exit_price <= 0:
-            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={tick.bid}, last={tick.last}")
+            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={bid_val}, ask={ask_val}, last={last_val}")
             return
 
         # 10% profit target: close when profit >= 10% of investment (whichever comes first: 10% or ATR trailing)
         try:
             inv_amount = float(order.average_price or 0) * float(order.executed_qty or 0) * 100.0
             if inv_amount > 0:
-                order_side = (order.order_side or "BUY").upper()
                 if order_side == "BUY":
                     unrealized_profit = (exit_price - float(order.average_price or 0)) * float(order.executed_qty or 0) * 100.0
                 else:
@@ -539,19 +618,31 @@ class OrderManager:
         except (TypeError, ValueError) as e:
             logger.debug(f"10% profit calc skipped for {order.option_symbol}: {e}")
 
-        # Validate prices
-        if option_tick.last == -1 or option_tick.bid == -1:
-            logger.warning(f"@@@@@@@@@@@@@@@@@@@@@@@@@@@ Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+        # Validate prices (Long: bid/last; Short: ask/last)
+        if is_long and (option_tick.last == -1 or option_tick.bid == -1):
+            logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
             return
-            
-        # Log current state
-        logger.info(f"TAKE PROFIT CHECK - Order({order.id}) {order.option_symbol}: "
-            f"Exit Price: ${exit_price:.2f}, "
-            f"Bid: ${tick.bid:.2f}, "
-            f"Last: ${tick.last:.2f}, "
-            f"Initial Profit: ${order.profit_price:.2f}, "
-            f"Current Profit: ${order.current_profit_price:.2f}, "
-            f"Trigger Active: {order.profit_trigger}")
+        if not is_long and (option_tick.last == -1 or option_tick.ask == -1):
+            logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
+            return
+
+        # Log current state with condition values for debugging
+        if is_long:
+            cond1 = exit_price >= order.current_profit_price  # Activate trailing / raise target
+            close_threshold = order.current_profit_price - order.profit_increment
+            cond2 = order.profit_trigger and exit_price < close_threshold  # Close on pullback
+            cond1_str = f"exit>=current → trail: {cond1}"
+            cond2_str = f"trigger & exit<close → close: {cond2}"
+        else:
+            cond1 = exit_price <= order.current_profit_price  # Activate trailing (price fell, we can buy cheap)
+            close_threshold = order.current_profit_price + order.profit_increment
+            cond2 = order.profit_trigger and exit_price >= close_threshold  # Close when price rose back
+            cond1_str = f"exit<=current → trail: {cond1}"
+            cond2_str = f"trigger & exit>=close → close: {cond2}"
+        logger.info(f"TAKE PROFIT CHECK - Order({order.id}) {order.option_symbol} [{order_side}]: "
+            f"Exit: ${exit_price:.2f}, Bid: ${option_tick.bid:.2f}, Ask: ${option_tick.ask:.2f}, Last: ${option_tick.last:.2f}, "
+            f"Initial: ${order.profit_price:.2f}, Current: ${order.current_profit_price:.2f}, Incr: ${order.profit_increment:.2f}, "
+            f"Trigger: {order.profit_trigger} | {cond1_str} | {cond2_str}")
         
         # Use the higher price, bid or last price
         #exit_price = tick.last if tick.last >= tick.bid else tick.bid
@@ -576,74 +667,106 @@ class OrderManager:
             order.current_profit_price = next_profit_target
             logger.info(f"00000000000000000000000000000 TakeProfit Triggered: Order({order.id}) {order.option_symbol}: Exit Px: {exit_price}, profitPrice : {order.profit_price}, current profit price:{order.current_profit_price}, profit trigger: {order.profit_trigger}")"""
         
-        # OPTION 2: Trailing profit (your current approach, fixed)
-        # Check if we've reached the profit target
-        if exit_price >= order.current_profit_price:
-            # Price is at or above profit target - set trigger and raise target
-            if not order.profit_trigger:
-                logger.info(f" Profit Trigger ACTIVATED: Order({order.id}) {order.option_symbol}: "
-                           f"${exit_price:.2f} >= ${order.current_profit_price:.2f}")
+        # Trailing profit: Long = price rises then trails down; Short = price falls then trails up
+        if is_long:
+            # Long: trigger when exit_price >= target; trail up; close when exit_price < (target - increment)
+            if exit_price >= order.current_profit_price:
+                if not order.profit_trigger:
+                    logger.info(f" Profit Trigger ACTIVATED: Order({order.id}) {order.option_symbol}: "
+                               f"${exit_price:.2f} >= ${order.current_profit_price:.2f}")
+                    _emit_log(
+                        f"TP TRIGGER: {order.option_symbol} — price ${exit_price:.2f} ≥ target ${order.current_profit_price:.2f} (trailing activated)",
+                        "INFO", "position"
+                    )
+                order.profit_trigger = True
+                order.current_profit_price = round(exit_price + order.profit_increment, 2)
+                logger.info(f" Trailing Profit Updated: Next target: ${order.current_profit_price:.2f}")
                 _emit_log(
-                    f"TP TRIGGER: {order.option_symbol} — price ${exit_price:.2f} ≥ target ${order.current_profit_price:.2f} (trailing activated)",
-                    "INFO", "position"
+                    f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
+                    "DEBUG", "position"
                 )
-        
-            order.profit_trigger = True
-            order.current_profit_price = round(exit_price + order.profit_increment, 2)
-            logger.info(f" Trailing Profit Updated: Next target: ${order.current_profit_price:.2f}")
-            _emit_log(
-                f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
-                "DEBUG", "position"
-            )
-            self.db.update(order=order)
-            return
-    
-        # If trigger is active and price has fallen back, close the position
-        if order.profit_trigger and exit_price < (order.current_profit_price - order.profit_increment):
-            logger.info(f"✓ HIT Trailing TakeProfit: Order({order.id}) {order.option_symbol}: "
-                       f"Exit: ${exit_price:.2f} < Trailing: ${order.current_profit_price:.2f}")
-            _emit_log(
-                f"HIT TAKE PROFIT: {order.option_symbol} — exit ${exit_price:.2f} < trail ${order.current_profit_price:.2f} — CLOSING",
-                "INFO", "order"
-            )
-            self.close_position(order=order, option_tick=option_tick)
-            return
+                self.db.update(order=order)
+                return
+            if order.profit_trigger and exit_price < (order.current_profit_price - order.profit_increment):
+                logger.info(f"✓ HIT Trailing TakeProfit: Order({order.id}) {order.option_symbol}: "
+                           f"Exit: ${exit_price:.2f} < Trailing: ${order.current_profit_price:.2f}")
+                _emit_log(
+                    f"HIT TAKE PROFIT: {order.option_symbol} — exit ${exit_price:.2f} < trail ${order.current_profit_price:.2f} — CLOSING",
+                    "INFO", "order"
+                )
+                self.close_position(order=order, option_tick=option_tick)
+                return
+        else:
+            # Short: trigger when exit_price <= target (price fell, we can buy cheap); trail down; close when exit_price >= (target + increment)
+            if exit_price <= order.current_profit_price:
+                if not order.profit_trigger:
+                    logger.info(f" Profit Trigger ACTIVATED: Order({order.id}) {order.option_symbol} [SHORT]: "
+                               f"${exit_price:.2f} <= ${order.current_profit_price:.2f}")
+                    _emit_log(
+                        f"TP TRIGGER: {order.option_symbol} — price ${exit_price:.2f} ≤ target ${order.current_profit_price:.2f} (trailing activated)",
+                        "INFO", "position"
+                    )
+                order.profit_trigger = True
+                order.current_profit_price = round(exit_price - order.profit_increment, 2)
+                logger.info(f" Trailing Profit Updated [SHORT]: Next target: ${order.current_profit_price:.2f}")
+                _emit_log(
+                    f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
+                    "DEBUG", "position"
+                )
+                self.db.update(order=order)
+                return
+            if order.profit_trigger and exit_price >= (order.current_profit_price + order.profit_increment):
+                logger.info(f"✓ HIT Trailing TakeProfit: Order({order.id}) {order.option_symbol} [SHORT]: "
+                           f"Exit: ${exit_price:.2f} >= Trailing: ${order.current_profit_price:.2f}")
+                _emit_log(
+                    f"HIT TAKE PROFIT: {order.option_symbol} — exit ${exit_price:.2f} ≥ trail ${order.current_profit_price:.2f} — CLOSING",
+                    "INFO", "order"
+                )
+                self.close_position(order=order, option_tick=option_tick)
+                return
 
     def check_stop_loss(self, last_price: float, order: OptionOrder, option_tick: Tick) -> None:
         """
-        Checks if the last traded price has fallen below the stoploss price for the given order.
-        If so, closes the position by placing a market order to exit the position.
+        Checks if the stop loss condition is met for the given order.
+        Long: close when exit <= SL (price fell). Short: close when exit >= SL (price rose).
 
         Args:
             last_price (float): The last traded price for the security.
             order (OptionOrder): The option order for which stop loss needs to be checked.
-
-        Returns:
-            None
+            option_tick (Tick): Option tick (bid/ask/last).
 
         Notes:
-            The function checks if the last traded price has fallen below the stoploss price for the given order. 
-            If so, it closes the position by placing a market order to exit the position. The function takes in the last 
-            traded price as well as the option order for which stop loss needs to be checked as arguments.
+            - Long: exit_price = bid (sell price); close when price fell (exit <= SL).
+            - Short: exit_price = ask (buy-back price); close when price rose (exit >= SL).
         """
-        
-        exit_price = option_tick.bid if option_tick.bid > 0 else option_tick.last
-        
+        order_side = (order.order_side or "BUY").upper()
+        is_long = order_side == "BUY"
+
+        # Exit price: Long = bid (sell); Short = ask (buy to close)
+        if is_long:
+            exit_price = option_tick.bid if option_tick.bid > 0 else option_tick.last
+        else:
+            exit_price = option_tick.ask if option_tick.ask > 0 else option_tick.last
+
         if exit_price <= 0:
-            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, last={option_tick.last}")
+            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, ask={option_tick.ask}, last={option_tick.last}")
             return
-        
+
         # Validate prices
-        if option_tick.last == -1 or option_tick.bid == -1:
-            logger.warning(f"Invalid price data for {order.option_symbol}: last={option_tick.last}, bid={option_tick.bid}")
+        if is_long and (option_tick.last == -1 or option_tick.bid == -1):
+            logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
             return
-            
-        # Log current state
-        logger.info(f"STOPLOSS CHECK - Order({order.id}) {order.option_symbol}: "
-            f"Exit Price: ${exit_price:.2f}, "
-            f"Bid: ${option_tick.bid:.2f}, "
-            f"Last: ${option_tick.last:.2f}, "
-            f"StopLoss: ${order.stoploss_price:.2f}")
+        if not is_long and (option_tick.last == -1 or option_tick.ask == -1):
+            logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
+            return
+
+        # Long: close when exit <= SL. Short: close when exit >= SL
+        sl_hit = exit_price <= order.stoploss_price if is_long else exit_price >= order.stoploss_price
+        cond_str = f"exit<=SL" if is_long else f"exit>=SL"
+        logger.info(f"STOPLOSS CHECK - Order({order.id}) {order.option_symbol} [{order_side}]: "
+            f"Exit: ${exit_price:.2f}, Bid: ${option_tick.bid:.2f}, Ask: ${option_tick.ask:.2f}, Last: ${option_tick.last:.2f}, "
+            f"StopLoss: ${order.stoploss_price:.2f} | "
+            f"CONDITION ({cond_str} → close): {sl_hit} [${exit_price:.2f} {'<=' if is_long else '>='} ${order.stoploss_price:.2f}]")
         
         # Use the higher price, bid or last price
         #exit_price = option_tick.last if option_tick.last >= option_tick.bid else option_tick.bid
@@ -652,18 +775,18 @@ class OrderManager:
         # Log the current state of the order and the last traded price
         #logger.info(f"STOPLOSS check_stop_loss Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, Last Price: {option_tick.last}, Bid Price: {option_tick.bid}AuxPrice : {order.stoploss_price}")
         
-        # If the last traded price is less than or equal to the stoploss price, execute stop loss
-        if exit_price <= order.stoploss_price:
-            logger.info(f"11111111111111111111111111 HIT Stoploss: Order({order.id}) {order.option_symbol}: Exit Price: {exit_price}, AuxPrice: {order.stoploss_price}")
+        # Execute stop loss when condition is met
+        if sl_hit:
+            op = "≤" if is_long else "≥"
+            logger.info(f"✓ HIT STOPLOSS: Order({order.id}) {order.option_symbol}: Exit ${exit_price:.2f} {op} SL ${order.stoploss_price:.2f} — CLOSING")
             _emit_log(
-                f"HIT STOP LOSS: {order.option_symbol} — exit ${exit_price:.2f} ≤ SL ${order.stoploss_price:.2f} — CLOSING",
+                f"HIT STOP LOSS: {order.option_symbol} — exit ${exit_price:.2f} {op} SL ${order.stoploss_price:.2f} — CLOSING",
                 "WARN", "order"
             )
-            # close position
             self.close_position(order=order, option_tick=option_tick)
-        
-        # Show distance to stoploss for monitoring
-        distance_to_sl = exit_price - order.stoploss_price
+
+        # Show distance to stoploss for monitoring (positive = safe for long, negative = safe for short)
+        distance_to_sl = (exit_price - order.stoploss_price) if is_long else (order.stoploss_price - exit_price)
         distance_pct = (distance_to_sl / order.order_price) * 100 if order.order_price > 0 else 0
         logger.info(f"Distance to StopLoss: ${distance_to_sl:.2f} ({distance_pct:.1f}% of entry)")
 

@@ -31,6 +31,7 @@ class TwsApiClient(EWrapper, EClient):
         self.ticker_id_contract_cache = {}
         self.tick_cache = {}
         self.ticker_contract_cache = {}
+        self._snapshot_only_tickers = set()  # tickers subscribed with snapshot=True only (no streaming)
         self.reqId = 1000
         self.contract_detail_fetched = False
         self.temp_contract_detail = None
@@ -234,7 +235,8 @@ class TwsApiClient(EWrapper, EClient):
         contract.lastTradeDateOrContractMonth = expiry
 
         # result = self.get_contract_detail(contract=contract)
-        ticker = f"{symbol}{expiry}{right}{strike}"
+        right_char = (right[0] if right and len(right) >= 1 else "C").upper()
+        ticker = f"{symbol}{expiry}{right_char}{strike}"
         self.ticker_contract_cache[ticker] = contract
 
         return contract
@@ -332,18 +334,29 @@ class TwsApiClient(EWrapper, EClient):
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract, option_symbol=ticker)
             else:
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract)
+            if snapshot:
+                self._snapshot_only_tickers.add(ticker)
         else:
             if not snapshot:
-                logger.info(f"Contract {ticker} already subscribed (ticker_id={ticker_id}), skipping re-subscribe")
-                return
+                if ticker in self._snapshot_only_tickers:
+                    # Upgrade from snapshot to streaming: cancel snapshot, re-subscribe for live updates
+                    logger.info(f"Upgrading {ticker} from snapshot to streaming (ticker_id={ticker_id})")
+                    self.cancelMktData(ticker_id)
+                    self._snapshot_only_tickers.discard(ticker)
+                    self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=False, regulatorySnapshot=False, mktDataOptions=[])
+                    return
+                else:
+                    logger.info(f"Contract {ticker} already subscribed (ticker_id={ticker_id}), skipping re-subscribe")
+                    return
             else:
                 temp_ticker_id = ticker_id
                 ticker_id = self.nextTickerId()
                 self.ticker_id_contract_cache[ticker] = ticker_id
                 self.tick_cache[ticker_id] = self.tick_cache[temp_ticker_id]
+                self._snapshot_only_tickers.add(ticker)
 
-        logger.info(f"Subscribing contract {contract} ticker_id {ticker_id}")
-        self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=snapshot,regulatorySnapshot= False, mktDataOptions=[])
+        logger.info(f"Subscribing contract {contract} ticker_id {ticker_id} snapshot={snapshot}")
+        self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=snapshot, regulatorySnapshot=False, mktDataOptions=[])
         
         # logger.info(f'subscribe: {contract.localSymbol}, TickerId: {ticker_id}')
         # self.ticker_id_contract_cache[contract.conId] = ticker_id

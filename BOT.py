@@ -956,8 +956,12 @@ def get_delta_volume(stock, strike, right, expiry):
     market_data = client.get_options_data(symbol=stock, expiry=expiry, right=right, strike=strike)
 
     # Check if the market data is not None, then add delta and volume of the options to deltaVolData
+    # Treat delta=-1 or volume=-1 as missing/invalid options data (P3 from log analysis)
     if market_data:
-        deltaVolData = [(market_data.delta, market_data.volume)]
+        delta_val = getattr(market_data, "delta", None)
+        vol_val = getattr(market_data, "volume", None)
+        if delta_val is not None and delta_val != -1 and vol_val is not None and vol_val != -1:
+            deltaVolData = [(delta_val, vol_val)]
 
     # If deltaVolData is empty, then add the string "NoDataPresent" to deltaVolData
     if not deltaVolData:
@@ -970,7 +974,7 @@ def get_delta_volume(stock, strike, right, expiry):
 def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
-        return "DayLocked"
+        return (False, 0.0, ([0], [0], [0]))
 
     isPreviousNeutralCandles = False
     # Use globals so sidecar (trading_engine) can set these; fallback if run as library without main_call
@@ -1075,9 +1079,10 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
     position = client.get_open_position(symbol=stockName)
     logger.info(f"get_open_position: {stockName}: {position}")
     if position != None:
-        pos_right = position.__str__().split(",")[::-1][1].split("=")[1]
+        pos_right = (position.right or "")[0] if getattr(position, "right", None) else ""
         logger.info("Position = {} and pos_right = {}".format(position.position, pos_right))
-        if position.position != 0 and pos_right.lower() == rightMatch[0].lower():
+        right_char = (rightMatch[0][0] if rightMatch and rightMatch[0] else "").lower()
+        if position.position != 0 and pos_right and pos_right.lower() == right_char:
             logger.info(f"Position already Present for Stock = {stockName}")
             _emit_log(f"{stockName} {rightMatch}: Position already open (qty={position.position}) — skipping", "INFO", "signal")
             return "positionAlreadyPresent"
@@ -1412,8 +1417,12 @@ def getAndBuyAfterMarketEnd(buffer_seconds=None):
             return
         buf = buffer_seconds
         if buf is None:
-            buf = int(globals().get("fileData") or {}).get("emergency_close_buffer_seconds", 5)
-        buf = max(0, int(buf))
+            file_data = globals().get("fileData") or {}
+            buf = file_data.get("emergency_close_buffer_seconds", 5) if isinstance(file_data, dict) else 5
+        try:
+            buf = max(0, int(buf) if buf is not None else 5)
+        except (TypeError, ValueError):
+            buf = 5
 
         def _close_positions(positions_to_close, pass_label=""):
             closed = 0
@@ -1513,11 +1522,11 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
             lastPrice = round((bidPrice + askPrice) / 2, 2)
             logger.info(f"options_tick.last=-1, using mid-price ${lastPrice:.2f} (bid=${bidPrice:.2f}, ask=${askPrice:.2f})")
         else:
-            return "priceConditonNotMatched"
+            return "priceConditionNotMatched"
 
     if bidPrice <= 0 and askPrice <= 0:
         logger.warning(f"{stock_symbol} {right}: No valid bid/ask (bid={bidPrice}, ask={askPrice}) — skipping")
-        return "priceConditonNotMatched"
+        return "priceConditionNotMatched"
 
     # Skip strikes with price below $0.25
     _prices = [p for p in (bidPrice, askPrice, lastPrice) if p > 0]
@@ -1961,9 +1970,9 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         logger.info(f"currentOrderId is = {currentOrderId}")
         return "orderPlaced"
     else:
-        logger.info(f"Öptions Price is Above ${MAX_CONTRACT_AMOUNT} so going or next check")
+        logger.info(f"Options Price is Above ${MAX_CONTRACT_AMOUNT} so going for next check")
         _emit_log(f"{stock_symbol} {right}: Options price ${lastPrice * 100:.0f} > max ${MAX_CONTRACT_AMOUNT} — too expensive", "INFO", "order")
-        return "priceConditonNotMatched"
+        return "priceConditionNotMatched"
 
 
 def get_stock_strikes(symbol: str):
@@ -2196,8 +2205,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
                 if getattr(client, "connection_closed", False):
                     keep_running = False
         except Exception as ex:
-            # Log the error
-            logger.error("Error occurred:", exc_info=True)
+            logger.error(f"Event processor error: {ex}", exc_info=True)
             _emit_log(f"Event processor error: {ex}", "ERROR", "trading")
 
 
