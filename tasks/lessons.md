@@ -70,3 +70,22 @@ When the same symbol+right+expiry signal fires again after an exit, the cooldown
 
 ### Pattern
 - **Canonical keys** — When data flows through different systems (IB API uses C/P, app logic uses CALL/PUT), normalize to one format at the key-construction boundary.
+
+---
+
+## Position Monitoring & UI Issues (2026-03-12)
+
+### Issues Found
+1. **Trade appears in Positions before Trade Blotter** — `position_update` (every 2s) populated positionStore, but `trade_executed` only populated tradingStore. Blotter appeared delayed.
+2. **Active Positions tab continuously re-rendered** — 2s polling interval PLUS 2s event-driven updates = double-update causing flicker.
+3. **Current price / bid / ask not updating live** — Prices only sent via `position_update` snapshots every 2s. `emit_tick` existed but was never called. No frontend tick subscription.
+4. **position_update and trade_closed listeners page-scoped** — Only ran when Positions page was active; positionStore went stale on other pages.
+
+### Fixes
+1. On `trade_executed`, immediately add a position to `positionStore` so Blotter and Active Positions show simultaneously.
+2. Removed 2s polling interval from PositionsPage; rely on event-driven `position_update` (now 1s) + manual Refresh button.
+3. Reduced `_positions_interval_sec` from 2s to 1s for faster price updates.
+4. Moved `position_update` and `trade_closed` listeners from `usePositions` (page-level) to `useTradingEvents` (app-level).
+
+### Pattern
+- **App-level event listeners** — Position and trade events must be handled at the app root, not in page-specific hooks that unmount when navigating away.

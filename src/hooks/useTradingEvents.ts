@@ -213,6 +213,25 @@ export function useTradingEvents() {
       timestamp: data.timestamp || new Date().toISOString(),
     });
 
+    // Immediately add to positionStore so Active Positions and Trade Blotter show at the same time
+    const { positions, setPositions } = usePositionStore.getState();
+    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+    const alreadyExists = positions.some(
+      (p) => p.symbol === (data.symbol || "") && Number(p.strike) === Number(data.strike || 0) && nrFn(p.right) === nrFn(data.right)
+    );
+    if (!alreadyExists) {
+      setPositions([...positions, {
+        symbol: data.symbol || "",
+        right: data.right || "",
+        strike: data.strike || 0,
+        expiry: data.expiry || "",
+        quantity: data.quantity || 0,
+        avg_price: data.entry_price || data.price || 0,
+        current_price: data.entry_price || data.price || 0,
+        pnl: 0,
+      } as any]);
+    }
+
     const state = useTradingStore.getState();
     const newTotal = state.totalTrades + 1;
     const closed = state.winningTrades + state.losingTrades;
@@ -291,6 +310,46 @@ export function useTradingEvents() {
     setLastSignal(signal);
     addSignalToSession(signal);
     // Notifications only for orders (trade_executed, trade_closed), not signals
+  });
+
+  // ---- Position updates (app-level so positions update on any page) ----
+  useTauriEvent("trading:position_update", (data: any) => {
+    const store = usePositionStore.getState();
+    const current = store.positions;
+    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+    const existing = current.find(
+      (p) => p.symbol === data.symbol && Number(p.strike) === Number(data.strike) && nrFn(p.right) === nrFn(data.right)
+    );
+    if (existing) {
+      store.updatePosition(data.symbol, data);
+    } else if (data.quantity > 0) {
+      store.setPositions([...current, data]);
+    }
+  });
+
+  // ---- Position closed (move active → closed, app-level) ----
+  useTauriEvent("trading:trade_closed", (closedData: any) => {
+    if (!closedData.symbol) return;
+    const store = usePositionStore.getState();
+    const current = store.positions;
+    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+    const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
+    const pos = current.find(
+      (p) =>
+        p.symbol === closedData.symbol &&
+        (closedData.strike == null || Number(p.strike) === Number(closedData.strike)) &&
+        (closedData.right == null || nrFn(p.right) === nrFn(closedData.right)) &&
+        (closedData.expiry == null || closedData.expiry === "" || normExp(p.expiry) === normExp(closedData.expiry))
+    );
+    if (pos) {
+      store.addClosedPosition({ ...pos, ...closedData });
+      store.removePosition(
+        closedData.symbol,
+        closedData.strike != null ? Number(closedData.strike) : undefined,
+        closedData.right != null ? String(closedData.right) : undefined,
+        closedData.expiry != null ? String(closedData.expiry) : undefined
+      );
+    }
   });
 
   // ---- Sidecar process terminated ----

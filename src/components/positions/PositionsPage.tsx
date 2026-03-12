@@ -45,12 +45,8 @@ export const PositionsPage = memo(function PositionsPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
-    const refresh = async () => {
-      await Promise.all([refreshPositions(), refreshStatus()]);
-    };
-    refresh();
-    const i = setInterval(refresh, 2000);
-    return () => clearInterval(i);
+    // Fetch once on mount; live updates come via position_update events (every 2s from engine)
+    Promise.all([refreshPositions(), refreshStatus()]);
   }, [refreshPositions, refreshStatus]);
 
   const toggleSort = useCallback(

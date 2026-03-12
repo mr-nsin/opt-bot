@@ -55,7 +55,7 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 2.0
+        self._positions_interval_sec: float = 1.0
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
