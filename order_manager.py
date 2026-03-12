@@ -60,8 +60,11 @@ class OrderManager:
         self.api_client = client
 
     def _option_key(self, order: OptionOrder) -> str:
-        """Composite key for option orders (symbol+expiry+right+strike) to support multiple positions per underlying."""
-        return getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
+        """Composite key for option orders (symbol+expiry+right+strike). Uses normalized expiry and right
+        so the same option never gets multiple cache entries when formats differ (e.g. 20260313 vs 2026-03-13)."""
+        exp = self._norm_expiry(order.expiration or "")
+        r = self._norm_right(order.right or "")
+        return f"{order.symbol}{exp}{r}{order.strike}"
 
     def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None, expiry: str = None, reason: str = "manual") -> None:
         """

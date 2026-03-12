@@ -258,7 +258,7 @@ export const PositionsPage = memo(function PositionsPage() {
                 </thead>
                 <tbody>
                   {sortedPositions.map((p) => (
-                    <PositionRow key={`${p.symbol}-${p.strike}-${p.right}`} position={p} />
+                    <PositionRow key={`${p.symbol}-${p.strike}-${p.right}-${(p.expiry ?? "").replace(/-/g, "")}`} position={p} />
                   ))}
                 </tbody>
               </table>

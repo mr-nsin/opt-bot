@@ -76,26 +76,26 @@ function SidebarInner() {
   return (
     <aside className="w-[260px] sidebar-pro flex flex-col border-r border-sidebar-border/20 shrink-0">
       {/* Brand */}
-      <div className="h-14 flex items-center gap-3 px-5 border-b border-sidebar-border/15">
+      <div className="h-16 flex items-center gap-3 px-5 border-b border-sidebar-border/15">
         <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-primary via-primary/85 to-cyan-500/70 flex items-center justify-center shadow-lg shadow-primary/25">
           <Activity className="h-4 w-4 text-white" />
         </div>
-        <div className="flex flex-col leading-tight">
-          <span className="text-base font-bold text-sidebar-foreground tracking-tight">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-base font-bold text-sidebar-foreground tracking-tight leading-none">
             QuantDrift
           </span>
-          <span className="text-xs text-sidebar-foreground/70 font-medium">
-            Trade Smarter. Not Harder.
+          <span className="text-[11px] text-sidebar-foreground/60 font-medium leading-none">
+            Trading Terminal
           </span>
         </div>
       </div>
 
       {/* Logo — bwquantDrift for dark theme, quantDriftw for light */}
-      <div className="flex justify-center items-center border-b border-sidebar-border/15 overflow-hidden h-[140px]">
+      <div className="flex justify-center items-center border-b border-sidebar-border/15 overflow-hidden h-[120px] mt-1">
         <img
           src={isDark ? LOGO_DARK : LOGO_LIGHT}
           alt="QuantDrift"
-          className="w-full h-auto object-contain scale-[1.35]"
+          className="w-full h-auto object-contain scale-[1.1] translate-y-2"
         />
       </div>
 

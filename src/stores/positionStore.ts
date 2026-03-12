@@ -2,6 +2,18 @@ import { create } from "zustand";
 import type { Position } from "@/lib/types";
 
 const nr = (r?: string) => (r === "CALL" ? "C" : r === "PUT" ? "P" : r);
+const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
+
+/** Deduplicate positions by (symbol, strike, right, expiry). Keep first occurrence. */
+function dedupePositions(positions: Position[]): Position[] {
+  const seen = new Set<string>();
+  return positions.filter((p) => {
+    const key = `${p.symbol}-${Number(p.strike ?? 0)}-${nr(p.right)}-${normExp(p.expiry)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 interface PositionState {
   positions: Position[];
@@ -21,7 +33,7 @@ export const usePositionStore = create<PositionState>((set) => ({
   closedPositions: [],
   loading: false,
 
-  setPositions: (positions) => set({ positions }),
+  setPositions: (positions) => set({ positions: dedupePositions(positions) }),
   updatePosition: (symbol, updates) =>
     set((state) => {
       const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();

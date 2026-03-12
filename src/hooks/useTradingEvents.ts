@@ -216,8 +216,13 @@ export function useTradingEvents() {
     // Immediately add to positionStore so Active Positions and Trade Blotter show at the same time
     const { positions, setPositions } = usePositionStore.getState();
     const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+    const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
     const alreadyExists = positions.some(
-      (p) => p.symbol === (data.symbol || "") && Number(p.strike) === Number(data.strike || 0) && nrFn(p.right) === nrFn(data.right)
+      (p) =>
+        p.symbol === (data.symbol || "") &&
+        Number(p.strike) === Number(data.strike || 0) &&
+        nrFn(p.right) === nrFn(data.right) &&
+        normExp(p.expiry) === normExp(data.expiry)
     );
     if (!alreadyExists) {
       setPositions([...positions, {
@@ -317,8 +322,13 @@ export function useTradingEvents() {
     const store = usePositionStore.getState();
     const current = store.positions;
     const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+    const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
     const existing = current.find(
-      (p) => p.symbol === data.symbol && Number(p.strike) === Number(data.strike) && nrFn(p.right) === nrFn(data.right)
+      (p) =>
+        p.symbol === data.symbol &&
+        Number(p.strike) === Number(data.strike) &&
+        nrFn(p.right) === nrFn(data.right) &&
+        normExp(p.expiry) === normExp(data.expiry)
     );
     if (existing) {
       store.updatePosition(data.symbol, data);

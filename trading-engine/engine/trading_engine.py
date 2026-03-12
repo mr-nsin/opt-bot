@@ -401,7 +401,32 @@ class TradingEngine:
                 if last_val not in (-1, None):
                     pos_data["last"] = round(last_val, 4)
                 positions.append(pos_data)
-        return positions
+
+        # Deduplicate by (symbol, strike, right, expiry) — TWS/fallback can produce duplicates
+        # when expiry format differs (e.g. 20260313 vs 2026-03-13) or multiple orders same option
+        return self._deduplicate_positions(positions)
+
+    def _deduplicate_positions(self, positions: list) -> list:
+        """Deduplicate positions by (symbol, strike, right, expiry). Keep first; prefer one with current_price if duplicate."""
+        if not positions:
+            return []
+        seen: dict[str, dict] = {}
+        norm_exp = lambda e: (e or "").replace("-", "").replace(" ", "").strip()
+        norm_right = lambda r: "C" if str(r or "").upper() in ("C", "CALL") else "P" if str(r or "").upper() in ("P", "PUT") else (str(r or "")[:1].upper() or "C")
+        for p in positions:
+            sym = str(p.get("symbol", "") or "").strip()
+            strike = float(p.get("strike", 0) or 0)
+            right = norm_right(p.get("right", ""))
+            expiry = norm_exp(p.get("expiry", "") or "")
+            key = f"{sym}_{strike:.4f}_{right}_{expiry}"
+            if key in seen:
+                # Duplicate: prefer the one with current_price > 0 for better P&L display
+                prev = seen[key]
+                if float(p.get("current_price", 0) or 0) > 0 and float(prev.get("current_price", 0) or 0) <= 0:
+                    seen[key] = dict(p)
+            else:
+                seen[key] = dict(p)
+        return list(seen.values())
 
     def simulate_demo(self, params: dict) -> dict:
         """Run a demo simulation that emits fake positions, trades, signals, and closes.

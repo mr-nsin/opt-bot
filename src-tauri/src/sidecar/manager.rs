@@ -355,6 +355,16 @@ async fn handle_sidecar_message(
                     if let Ok(pos) = serde_json::from_value::<Position>(event.data.clone()) {
                         let mut app = state.lock().await;
                         let norm_exp = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
+                        let norm_right = |r: &str| {
+                            let u = r.to_uppercase();
+                            if u.starts_with('C') {
+                                "C"
+                            } else if u.starts_with('P') {
+                                "P"
+                            } else {
+                                r
+                            }
+                        };
                         if let Some(existing) = app
                             .trading
                             .positions
@@ -362,7 +372,7 @@ async fn handle_sidecar_message(
                             .find(|p| {
                                 p.symbol == pos.symbol
                                     && (p.strike - pos.strike).abs() < 0.01
-                                    && p.right == pos.right
+                                    && norm_right(&p.right) == norm_right(&pos.right)
                                     && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
                             })
                         {

@@ -89,3 +89,30 @@ When the same symbol+right+expiry signal fires again after an exit, the cooldown
 
 ### Pattern
 - **App-level event listeners** — Position and trade events must be handled at the app root, not in page-specific hooks that unmount when navigating away.
+
+---
+
+## Duplicate Positions in Active Positions Tab (2026-03-12)
+
+### Problem
+Multiple rows for the same trade (same symbol, strike, right, expiry) appeared in the Active Positions tab — e.g. 3x MSFT CALL 487.5 20260313, 3x AMZN CALL 212.5, 5x SPY CALL 671.
+
+### Root Causes
+1. **Missing expiry in match logic** — React `position_update` and `trade_executed` handlers matched by symbol+strike+right only; expiry was ignored, causing wrong matches and duplicate adds.
+2. **Backend could return duplicates** — TWS/fallback paths could produce duplicate entries when expiry format differed (e.g. `20260313` vs `2026-03-13`) or when multiple orders existed for the same option.
+3. **Rust `right` string mismatch** — `p.right == pos.right` failed when Python sent "C" and existing had "CALL", so Rust pushed instead of updating.
+4. **No safety deduplication** — `setPositions` did not deduplicate when replacing positions.
+
+### Fixes
+1. **Python `get_positions`** — Added `_deduplicate_positions()` to merge duplicates by (symbol, strike, right, expiry); prefer entry with `current_price > 0`.
+2. **React handlers** — Added `normExp` and include expiry in `alreadyExists` (trade_executed) and `existing` find (position_update).
+3. **Rust `position_update`** — Added `norm_right` to match C/CALL and P/PUT consistently.
+4. **positionStore** — Added `dedupePositions()` in `setPositions` as a safety net.
+5. **PositionRow key** — Include expiry in React key to avoid duplicate-key warnings.
+
+### Tests
+- 8 tests in `tests/test_position_deduplication.py` covering empty, single, duplicates, expiry/right normalization, and distinct positions.
+
+### Pattern
+- **Match on full identity** — For options, always match by (symbol, strike, right, expiry). Normalize expiry (strip dashes/spaces) and right (C/CALL, P/PUT) across the pipeline.
+- **Defense in depth** — Deduplicate at source (backend) and at sink (store) to handle edge cases.
