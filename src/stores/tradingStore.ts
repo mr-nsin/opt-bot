@@ -25,6 +25,8 @@ interface TradingState {
   isSignalScanning: boolean;
   /** Timestamp of the last signal-scan heartbeat from the engine */
   lastSignalScanTime: string | null;
+  /** Signal DataFrame: candle signals per stock (from initial scan after data feed starts) */
+  signalData: { signals: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number; signal: string }>; system_started_at: string; timestamp: string } | null;
 
   // Actions
   setStatus: (status: TradingStatus) => void;
@@ -43,6 +45,7 @@ interface TradingState {
   setAccountMetrics: (metrics: AccountMetrics | null) => void;
   /** Mark the engine as actively signal-scanning (called when heartbeat log is received) */
   setSignalScanning: (scanning: boolean, timestamp?: string) => void;
+  setSignalData: (data: { signals: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number; signal: string }>; system_started_at: string; timestamp: string } | null) => void;
   reset: () => void;
   /** Mark all open trades as closed (emergency stop; PnL unknown) */
   markOpenTradesClosedOnEmergency: () => void;
@@ -67,6 +70,7 @@ const initialState = {
   accountMetrics: null as AccountMetrics | null,
   isSignalScanning: false,
   lastSignalScanTime: null as string | null,
+  signalData: null as { signals: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number; signal: string }>; system_started_at: string; timestamp: string } | null,
 };
 
 export const useTradingStore = create<TradingState>((set) => ({
@@ -111,10 +115,12 @@ export const useTradingStore = create<TradingState>((set) => ({
       isSignalScanning: scanning,
       lastSignalScanTime: timestamp ?? new Date().toISOString(),
     }),
+  setSignalData: (data) => set({ signalData: data }),
   reset: () =>
     set({
       ...initialState,
       signalsInSession: [] as SignalEvent[],
+      signalData: null,
     }),
   markOpenTradesClosedOnEmergency: () =>
     set((state) => ({

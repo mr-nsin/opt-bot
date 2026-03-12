@@ -10,6 +10,7 @@ import { useConfigStore } from "@/stores/configStore";
 export function useTradingEngine() {
   const {
     status,
+    sidecarRunning,
     setStatus,
     setSidecarRunning,
     setConnectedToTws,
@@ -105,5 +106,7 @@ export function useTradingEngine() {
     refreshStatus,
     isRunning: status === "Running",
     isIdle: status === "Idle",
+    sidecarRunning,
+    canStop: status === "Running" || sidecarRunning,
   };
 }

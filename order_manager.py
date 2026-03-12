@@ -265,11 +265,22 @@ class OrderManager:
             if status == 'filled' and trade.contract is not None:
                 contract = trade.contract
                 logger.info(f"Untracked order {order_id} filled — emitting trade_closed for {contract.symbol}")
+                exp_raw = getattr(contract, 'lastTradeDateOrContractMonth', '') or ""
+                exp = str(exp_raw).replace("-", "").replace(" ", "").strip()
+                sym = contract.symbol or ""
+                rgt = getattr(contract, 'right', '') or ""
+                key = f"{sym}_{rgt}_{exp}" if exp else f"{sym}_{rgt}"
+                try:
+                    import BOT
+                    BOT.trade_time_dict[key] = datetime.datetime.now()
+                    logger.info(f"Cooldown recorded for {key} (untracked exit)")
+                except Exception:
+                    pass
                 _emit_trade_closed({
-                    "symbol": contract.symbol or "",
-                    "right": getattr(contract, 'right', '') or "",
+                    "symbol": sym,
+                    "right": rgt,
                     "strike": float(getattr(contract, 'strike', 0) or 0),
-                    "expiry": getattr(contract, 'lastTradeDateOrContractMonth', '') or "",
+                    "expiry": exp_raw,
                     "quantity": int(trade.executed_qty or 0),
                     "pnl": 0,
                     "entry_price": 0,
@@ -354,17 +365,21 @@ class OrderManager:
 
         # If this was an exit order, deactivate the corresponding entry order
         if order.exit_order == True:
-            # Assign last trade time
+            # Find the corresponding entry order first (needed for cooldown key with expiry)
+            entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
+
+            # Assign last trade time and record cooldown with symbol+right+expiry (matches BOT._cooldown_key)
             option_tick.last_trade_time = datetime.datetime.now()
-            key = f"{order.symbol}_{order.right}"
+            exp_raw = (entry_order.expiration if entry_order else None) or getattr(order, "expiration", None) or ""
+            exp = str(exp_raw).replace("-", "").replace(" ", "").strip()
+            key = f"{order.symbol}_{order.right}_{exp}" if exp else f"{order.symbol}_{order.right}"
             self.recent_trade_closures[key] = option_tick.last_trade_time
             logger.info(f"Cooldown recorded for {key} at {self.recent_trade_closures[key]}")
-            
+
             import BOT
             BOT.trade_time_dict[key] = option_tick.last_trade_time
 
-            # Find the corresponding entry order and deactivate it
-            entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
+            # entry_order already looked up above
             logger.info(f'EXIT Order ({order.id}) [{entry_order.id if entry_order else "?"}] {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
             # Calculate P&L for the closed trade
             entry_avg = entry_order.average_price if entry_order else 0

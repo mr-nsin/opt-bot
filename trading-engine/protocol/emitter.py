@@ -190,3 +190,16 @@ def emit_data_status(
         "stock_ticks_sample": stock_ticks,
         "history_bars_count": bar_count,
     })
+
+
+def emit_signal_data(signals: list, system_started_at: str):
+    """
+    Emit signal DataFrame (list of rows) for current and previous candles per stock.
+    Each row: symbol, date, open, high, low, close, volume, signal.
+    system_started_at: ISO timestamp when the system/trading engine started.
+    """
+    send_event("signal_data", {
+        "signals": signals,
+        "system_started_at": system_started_at,
+        "timestamp": datetime.now().isoformat(),
+    })

@@ -61,9 +61,11 @@ pub async fn stop_trading(
     app_handle: AppHandle,
     state: tauri::State<'_, Arc<Mutex<AppState>>>,
 ) -> Result<String, String> {
+    // Allow stop when sidecar is actually running, even if status got out of sync
+    // (e.g. engine emitted Idle on error, or demo mode left sidecar alive)
+    let sidecar_actually_running = manager::is_running().await;
     let mut app = state.lock().await;
-
-    if !matches!(app.trading.status, TradingStatus::Running) {
+    if !sidecar_actually_running && !app.sidecar_running {
         return Err("Trading is not running".into());
     }
 
@@ -152,7 +154,12 @@ pub async fn get_trading_status(
 ) -> Result<serde_json::Value, String> {
     let app = state.lock().await;
 
-    let open_trades = app.trading.positions.len() as i32;
+    let open_trades = app
+        .trading
+        .trades_today
+        .iter()
+        .filter(|t| t.status == "open" || t.status.is_empty())
+        .count() as i32;
     let closed_trades = app.trading.winning_trades + app.trading.losing_trades;
 
     Ok(serde_json::json!({
@@ -196,4 +203,12 @@ pub async fn get_account_metrics(
 ) -> Result<Option<serde_json::Value>, String> {
     let app = state.lock().await;
     Ok(app.trading.account_metrics.clone())
+}
+
+#[tauri::command]
+pub async fn get_signal_data(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Option<serde_json::Value>, String> {
+    let app = state.lock().await;
+    Ok(app.trading.signal_data.clone())
 }

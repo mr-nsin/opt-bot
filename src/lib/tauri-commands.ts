@@ -53,7 +53,20 @@ export const trading = {
       }>;
     }>("get_trading_status"),
   getAccountMetrics: () => invoke<Record<string, number> | null>("get_account_metrics"),
+  getSignalData: () =>
+    invoke<{ signals: SignalRow[]; system_started_at: string; timestamp: string } | null>("get_signal_data"),
   simulateDemo: () => invoke<string>("simulate_demo"),
+};
+
+export type SignalRow = {
+  symbol: string;
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  signal: string;
 };
 
 /** Positions: getAll, close(symbol), closeAll, closeCalls, closePuts */

@@ -30,6 +30,7 @@ export function useTradingEvents() {
     setDataStatus,
     setAccountMetrics,
     setSignalScanning,
+    setSignalData,
   } = useTradingStore();
   const { settings } = useConfigStore();
   const { addLogsBatch } = useLogStore();
@@ -256,6 +257,17 @@ export function useTradingEvents() {
         title: "Trade Closed",
         message: `${data.symbol || ""} P&L: $${Number(pnl).toFixed(2)}`,
         type: pnl >= 0 ? "success" : "error",
+      });
+    }
+  });
+
+  // ---- Signal data (DataFrame of candle signals from initial scan) ----
+  useTauriEvent("trading:signal_data", (data: any) => {
+    if (data && Array.isArray(data.signals)) {
+      setSignalData({
+        signals: data.signals,
+        system_started_at: data.system_started_at ?? "",
+        timestamp: data.timestamp ?? new Date().toISOString(),
       });
     }
   });

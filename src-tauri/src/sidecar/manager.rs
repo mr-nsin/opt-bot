@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 
 use super::protocol::{SidecarMessage, SidecarRequest};
 use crate::commands::logs::{push_log, LogEntry};
@@ -285,6 +286,27 @@ pub async fn is_running() -> bool {
     SIDECAR_CHILD.lock().await.is_some()
 }
 
+/// Pending request-response: request_id -> oneshot sender for result
+static PENDING_REQUESTS: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Send request to sidecar and wait for response (with 5s timeout).
+/// Returns the result from the sidecar, or error if timeout/sidecar not running.
+pub async fn send_request_and_wait(request: &SidecarRequest) -> Result<serde_json::Value, String> {
+    let (tx, rx) = oneshot::channel();
+    {
+        let mut pending = PENDING_REQUESTS.lock().map_err(|e| e.to_string())?;
+        pending.insert(request.id.clone(), tx);
+    }
+
+    send_request(request).await?;
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "Timeout waiting for sidecar response".to_string())?
+        .map_err(|_| "Sidecar response channel closed".to_string())?
+}
+
 /// Handle incoming messages from the sidecar.
 /// Updates the Rust AppState and forwards events to the React frontend.
 async fn handle_sidecar_message(
@@ -382,9 +404,10 @@ async fn handle_sidecar_message(
                     if let Some(pnl_val) = pnl {
                         if pnl_val > 0.0 {
                             app.trading.winning_trades += 1;
-                        } else {
+                        } else if pnl_val < 0.0 {
                             app.trading.losing_trades += 1;
                         }
+                        // pnl == 0: break-even, don't count as win or loss
                     }
 
                     // Update matching open trade in trades_today with pnl so hydration returns complete data
@@ -451,6 +474,11 @@ async fn handle_sidecar_message(
                     app.trading.last_signal = Some(signal_str);
                     app.trading.last_signal_time =
                         Some(chrono::Utc::now().to_rfc3339());
+                }
+
+                "signal_data" => {
+                    let mut app = state.lock().await;
+                    app.trading.signal_data = Some(event.data.clone());
                 }
 
                 "account_metrics" => {
@@ -549,6 +577,16 @@ async fn handle_sidecar_message(
         }
 
         SidecarMessage::Response(response) => {
+            // Complete any pending request waiting for this response
+            if let Ok(mut pending) = PENDING_REQUESTS.lock() {
+                if let Some(tx) = pending.remove(&response.id) {
+                    let result = match &response.error {
+                        Some(err) => Err(err.message.clone()),
+                        None => Ok(response.result.clone().unwrap_or(serde_json::Value::Array(vec![]))),
+                    };
+                    let _ = tx.send(result);
+                }
+            }
             // Forward responses with a consistent event name
             if let Err(e) = handle.emit("sidecar:response", &response) {
                 log::error!("Failed to emit response: {}", e);

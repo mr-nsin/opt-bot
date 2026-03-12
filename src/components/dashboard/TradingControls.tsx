@@ -10,7 +10,7 @@ import { trading as tradingApi } from "@/lib/tauri-commands";
 import { cn } from "@/lib/utils";
 
 export function TradingControls() {
-  const { status, isRunning, isIdle, startTrading, stopTrading, emergencyStop } =
+  const { status, isRunning, isIdle, canStop, startTrading, stopTrading, emergencyStop } =
     useTradingEngine();
   const tradingConfig = useConfigStore((s) => s.tradingConfig);
   const [showEmergencyConfirm, setShowEmergencyConfirm] = useState(false);
@@ -101,7 +101,7 @@ export function TradingControls() {
 
           <Button
             onClick={handleStop}
-            disabled={!isRunning || isStopping}
+            disabled={!canStop || isStopping}
             className="w-full h-10 text-sm font-semibold"
             variant="outline"
           >

@@ -58,22 +58,32 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        <td>
+        <td className="text-center">
           <Badge variant={position.right === "C" || position.right === "CALL" ? "success" : "danger"} className="text-xs font-bold px-1.5 py-0">
             {position.right === "C" || position.right === "CALL" ? "CALL" : "PUT"}
           </Badge>
         </td>
 
-        <td className="font-mono tabular-nums text-xs">${position.strike?.toFixed(1)}</td>
+        <td className="font-mono tabular-nums text-xs text-right">${position.strike?.toFixed(1)}</td>
         <td className="text-muted-foreground/70 text-xs">{position.expiry}</td>
-        <td className="font-mono tabular-nums text-xs">{position.quantity}</td>
-        <td className="font-mono tabular-nums text-muted-foreground/70 text-xs">${position.avg_price?.toFixed(2)}</td>
-        <td className="font-mono tabular-nums font-medium text-xs">${position.current_price?.toFixed(2)}</td>
+        <td className="font-mono tabular-nums text-xs text-right">{position.quantity}</td>
+
+        {/* Entry / Current — stacked like Bid/Ask */}
+        <td className="text-xs font-mono tabular-nums text-right">
+          <span className="flex flex-col gap-0.5 items-end">
+            <span className="text-muted-foreground/80" title="Entry (avg cost)">
+              ${position.avg_price?.toFixed(2)}
+            </span>
+            <span className="font-medium" title="Current market price">
+              ${position.current_price?.toFixed(2)}
+            </span>
+          </span>
+        </td>
 
         {/* Bid / Ask — visible in main row when available */}
-        <td className="text-xs font-mono tabular-nums">
+        <td className="text-xs font-mono tabular-nums text-right">
           {(position.bid != null && position.bid > 0) || (position.ask != null && position.ask > 0) ? (
-            <span className="flex flex-col gap-0.5">
+            <span className="flex flex-col gap-0.5 items-end">
               {position.bid != null && position.bid > 0 && <span>${Number(position.bid).toFixed(2)}</span>}
               {position.ask != null && position.ask > 0 && <span className="text-muted-foreground/80">${Number(position.ask).toFixed(2)}</span>}
             </span>
@@ -83,9 +93,9 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         </td>
 
         {/* TP | SL — visible in main row when set */}
-        <td className="text-xs">
+        <td className="text-xs text-right">
           {(position.profit_price != null && position.profit_price > 0) || (position.stoploss_price != null && position.stoploss_price > 0) ? (
-            <span className="flex flex-col gap-0.5">
+            <span className="flex flex-col gap-0.5 items-end">
               {position.profit_price != null && position.profit_price > 0 && (
                 <span className="text-emerald-500/90 font-mono tabular-nums" title="Take Profit">
                   TP ${Number(position.profit_price).toFixed(2)}{position.trailing_active ? " ↺" : ""}
@@ -103,9 +113,9 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         </td>
 
         {/* P&L with gauge */}
-        <td>
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-1">
+        <td className="text-right">
+          <div className="space-y-0.5 inline-block text-right">
+            <div className="flex items-center gap-1 justify-end">
               <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
                 {formatCurrency(pnl)}
               </span>
@@ -113,7 +123,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                 ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
               </span>
             </div>
-            <div className="pnl-gauge w-14">
+            <div className="pnl-gauge w-14 ml-auto">
               <div
                 className={cn("pnl-gauge-fill", isProfit ? "bg-emerald-500" : "bg-red-500")}
                 style={{ width: `${gaugePct}%` }}
@@ -122,7 +132,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        <td>
+        <td className="text-right">
           <Button
             variant="ghost"
             size="sm"

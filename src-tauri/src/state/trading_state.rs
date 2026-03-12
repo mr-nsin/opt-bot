@@ -85,6 +85,8 @@ pub struct TradingState {
     pub last_signal_time: Option<String>,
     /// Last IBKR account summary (NetLiquidation, BuyingPower, etc.); tag -> value.
     pub account_metrics: Option<serde_json::Value>,
+    /// Signal DataFrame: list of {symbol, date, open, high, low, close, volume, signal} per candle.
+    pub signal_data: Option<serde_json::Value>,
 }
 
 impl Default for TradingState {
@@ -104,6 +106,7 @@ impl Default for TradingState {
             last_signal: None,
             last_signal_time: None,
             account_metrics: None,
+            signal_data: None,
         }
     }
 }

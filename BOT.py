@@ -30,7 +30,7 @@ import datetime
 import pytz
 # import MySQLdb
 from datetime import datetime, timedelta
-from threading import Thread
+from threading import Thread, Lock
 from queue import Queue, Empty
 from common import OptionOrder, logger, Tick, getExpiry
 from tws_api_client import TwsApiClient
@@ -233,6 +233,19 @@ def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
     return f"{symbol}_{right}"
 
 
+# Per-key locks to prevent race: multiple event processors placing same symbol+right+expiry
+_entry_placement_locks: dict = {}
+_entry_placement_locks_guard = Lock()
+
+
+def _get_entry_placement_lock(key: str) -> Lock:
+    """Get or create a lock for the given cooldown key (symbol_right_expiry)."""
+    with _entry_placement_locks_guard:
+        if key not in _entry_placement_locks:
+            _entry_placement_locks[key] = Lock()
+        return _entry_placement_locks[key]
+
+
 def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, expiry: str = None) -> bool:
     """
     Check if cooldown is still active for symbol+right+expiry.
@@ -309,7 +322,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
     logger.info("Order Data 1 ")
     
     if not (closing_order or is_sqare_off):
-        open_order = order_mgr.get_entry_order(symbol=symbol, right=right)
+        open_order = order_mgr.get_entry_order(symbol=symbol, right=right, expiry=expiry)
         norm_right = right[0].upper() if right else right
         if open_order is not None and open_order.active and (open_order.right or "")[0:1].upper() == norm_right:
             logger.info(f"Order already present for Stock TTT = {symbol} Get Right is = {right} and open_order right is = {open_order.right}")
@@ -437,17 +450,18 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
     if options_tick is None:
         logger.error("placeAndVerifyOrder: options_tick is required")
         return "error"
-    if options_tick.locked:
-        return "optionsTickLocked"
 
-    options_tick.locked = True
+    # Per-key lock serializes placement for same symbol+right+expiry; no need for options_tick.locked
+    # (options_tick.locked caused spurious "optionsTickLocked" when multiple event processors contended)
+    key = _cooldown_key(symbol, right, expiry)
+    entry_lock = _get_entry_placement_lock(key)
+    entry_lock.acquire()
     logger.info("Creating Orders")
     
     try:
         if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
             return "orderAlreadyPresent"
         
-        key = _cooldown_key(symbol, right, expiry)
         last_trade_time = trade_time_dict.get(key)
     
         if last_trade_time:
@@ -479,7 +493,84 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
         logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
         return "error"
     finally:
-        options_tick.locked = False
+        entry_lock.release()
+
+def get_signal_dataframe_for_stock(stock, limit=21, indicator="supertrend"):
+    """
+    Get a pandas DataFrame with signals for current and previous candles for a stock.
+    Returns DataFrame with columns: symbol, date, open, high, low, close, volume, signal (ST_BUY_SELL).
+    Returns None if insufficient data.
+    """
+    if client is None:
+        return None
+    getCandlesData = client.get_bars(stock=stock, barSize=candleTime, limit=limit)
+    if getCandlesData is None or len(getCandlesData) < limit:
+        return None
+    if indicator != "supertrend":
+        return None
+    new_dict = {
+        "Date": [x.date for x in getCandlesData],
+        "Open": [getattr(x, "open", x.close) for x in getCandlesData],
+        "High": [x.high for x in getCandlesData],
+        "Low": [x.low for x in getCandlesData],
+        "Close": [x.close for x in getCandlesData],
+        "Volume": [getattr(x, "volume", 0) for x in getCandlesData],
+    }
+    new_df = pd.DataFrame(new_dict)
+    super_trend_signal = indi.BOTSingal(new_df)
+    result = super_trend_signal[["Date", "Open", "High", "Low", "Close", "Volume", "ST_BUY_SELL"]].copy()
+    result.rename(columns={"ST_BUY_SELL": "signal"}, inplace=True)
+    result["symbol"] = stock
+    result["date"] = result["Date"].apply(lambda x: x.isoformat() if hasattr(x, "isoformat") else str(x))
+    return result[["symbol", "date", "Open", "High", "Low", "Close", "Volume", "signal"]]
+
+
+def scan_all_stocks_signals(system_start_time=None, limit=21):
+    """
+    Scan each stock in stockList and return a combined list of signal rows (JSON-serializable).
+    Each row: symbol, date, open, high, low, close, volume, signal.
+    If system_start_time is set, only includes candles with date >= system_start_time
+    (signals from the time system started, including current candle at start).
+    """
+    rows = []
+    for stock in (stockList or []):
+        try:
+            df = get_signal_dataframe_for_stock(stock, limit=limit)
+            if df is None or df.empty:
+                continue
+            for _, r in df.iterrows():
+                candle_date = r.get("Date") or r.get("date")
+                if candle_date is None:
+                    continue
+                if system_start_time is not None:
+                    try:
+                        if hasattr(candle_date, "timestamp"):
+                            ts = candle_date.timestamp()
+                        elif hasattr(candle_date, "replace") and hasattr(candle_date, "tzinfo"):
+                            ts = candle_date.timestamp()
+                        else:
+                            ts = 0
+                        start_ts = system_start_time.timestamp() if hasattr(system_start_time, "timestamp") else float(system_start_time or 0)
+                        if ts < start_ts:
+                            continue
+                    except Exception:
+                        pass
+                date_str = candle_date.isoformat() if hasattr(candle_date, "isoformat") else str(candle_date)
+                rows.append({
+                    "symbol": stock,
+                    "date": date_str,
+                    "open": float(r.get("Open", 0)),
+                    "high": float(r.get("High", 0)),
+                    "low": float(r.get("Low", 0)),
+                    "close": float(r.get("Close", 0)),
+                    "volume": int(r.get("Volume", 0)),
+                    "signal": str(r.get("signal", "NA")),
+                })
+        except Exception as ex:
+            logger.warning(f"scan_all_stocks_signals: {stock} failed: {ex}")
+            continue
+    return rows
+
 
 def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
     from datetime import datetime
@@ -1123,6 +1214,8 @@ def updateStockMapper(stockName, value):
         f2.write(f"{updateVal}")
 
 def checkConditionsAndTrade(dataValueSet, stock_tick):
+    if globals().get("STOP_TRADING", False):
+        return "stopped"
     #global tradeExpiry
     logger.info(f"Stock {dataValueSet[0][2].upper()} checkConditionsAndTrade - start")
     
@@ -2029,12 +2122,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                             options_tick=options_tick,
                             stock_tick=stock_tick)
 
-        logger.info("\nupdating new time for last trade\n")
-        trade_key = _cooldown_key(stock_symbol, right, expiry)
-        trade_time_dict.update({trade_key: datetime.now()})
-        logger.info(f"Cooldown recorded for {trade_key} — next trade for same symbol+right+expiry in {TRADE_COOLDOWN_SECONDS}s")
-        
-        #options_tick.last_trade_time = datetime.now()
+        # Cooldown is recorded in order_manager.process_fill when exit order fills (not on placement)
         logger.info(f"currentOrderId is = {currentOrderId}")
         return "orderPlaced"
     else:
@@ -2192,11 +2280,16 @@ def event_processor(event_queue: Queue, count: int) -> None:
     Returns:
         None
     """
+    global STOP_TRADING
     logger.info(f"Starting event processor #{count + 1}")
     _emit_log(f"Event processor #{count + 1} started — scanning for signals", "INFO", "signal")
     tries = 0
     keep_running = True
     while keep_running:
+        if STOP_TRADING:
+            logger.info(f"Event processor #{count + 1} stopping (STOP_TRADING)")
+            keep_running = False
+            break
         try:
             # Get the event data from the queue
             event_data = event_queue.get(block=False, timeout=0.20)
@@ -2266,7 +2359,9 @@ def event_processor(event_queue: Queue, count: int) -> None:
             # Mark the event as processed
             event_queue.task_done()
         except Empty:
-            if client is not None and not client.isConnected():
+            if STOP_TRADING:
+                keep_running = False
+            elif client is not None and not client.isConnected():
                 logger.error("TWS is disconnected — engine loop handles reconnect")
                 _emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
                 time.sleep(5.0)

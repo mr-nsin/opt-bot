@@ -56,6 +56,13 @@ def build():
     # - multiprocessing: BOT uses Process, Pool
     # - shutil: trading_engine copies expiryStrike.json when frozen
     hidden_imports = [
+        "engine",
+        "engine.trading_engine",
+        "engine.models",
+        "protocol",
+        "protocol.handler",
+        "protocol.emitter",
+        "protocol.messages",
         "loguru",
         "logging",
         "ibapi",
@@ -115,6 +122,9 @@ def build():
 
     for imp in hidden_imports:
         cmd.extend(["--hidden-import", imp])
+
+    # Ensure PyInstaller finds engine/protocol when analyzing (packaged exe runs from different cwd)
+    cmd.extend(["--paths", SCRIPT_DIR])
 
     # Collect full packages so behavior matches Mac (all submodules available)
     cmd.extend(["--collect-submodules", "logging"])

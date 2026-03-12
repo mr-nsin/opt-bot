@@ -1,9 +1,9 @@
-import { memo, useMemo, useState } from "react";
+import React, { memo, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useTradingStore } from "@/stores/tradingStore";
 import { cn, formatCurrency, formatTime, pnlColor } from "@/lib/utils";
-import { ArrowUpDown, ArrowUp, ArrowDown, ClipboardList } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown, ClipboardList, Clock, Tag, Target, Calendar, Hash, BarChart3, DollarSign, CheckCircle } from "lucide-react";
 
 type SortField = "time" | "symbol" | "pnl" | "side";
 type SortDir = "asc" | "desc";
@@ -83,17 +83,46 @@ export const TradeBlotter = memo(function TradeBlotter() {
             <table className="w-full table-pro min-w-max">
               <thead>
                 <tr>
-                  <SortTh field="time" label="Time" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                  <SortTh field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                  <th>Type</th>
-                  <th>Strike</th>
-                  <th>Expiry</th>
-                  <SortTh field="side" label="Side" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                  <th>Qty</th>
-                  <th>Entry</th>
-                  <th>Exit</th>
-                  <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                  <th>Status</th>
+                  <SortTh field="time" label="Time" sort={sortField} dir={sortDir} onClick={toggleSort} align="left" icon={Clock} />
+                  <SortTh field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} align="left" icon={Tag} />
+                  <th className="text-center">
+                    <span className="flex items-center justify-center gap-1">
+                      <ClipboardList className="h-3 w-3 opacity-60" />
+                      Type
+                    </span>
+                  </th>
+                  <th className="text-right">
+                    <span className="flex items-center justify-end gap-1">
+                      <Target className="h-3 w-3 opacity-60" />
+                      Strike
+                    </span>
+                  </th>
+                  <th className="text-left">
+                    <span className="flex items-center gap-1">
+                      <Calendar className="h-3 w-3 opacity-60" />
+                      Expiry
+                    </span>
+                  </th>
+                  <SortTh field="side" label="Side" sort={sortField} dir={sortDir} onClick={toggleSort} align="left" />
+                  <th className="text-right">
+                    <span className="flex items-center justify-end gap-1">
+                      <Hash className="h-3 w-3 opacity-60" />
+                      Qty
+                    </span>
+                  </th>
+                  <th className="text-right" title="Entry / Exit price">
+                    <span className="flex items-center justify-end gap-1">
+                      <BarChart3 className="h-3 w-3 opacity-60" />
+                      Entry / Exit
+                    </span>
+                  </th>
+                  <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} align="right" icon={DollarSign} />
+                  <th className="text-left">
+                    <span className="flex items-center gap-1">
+                      <CheckCircle className="h-3 w-3 opacity-60" />
+                      Status
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -108,7 +137,7 @@ export const TradeBlotter = memo(function TradeBlotter() {
                         {t.timestamp ? formatTime(t.timestamp as string) : "—"}
                       </td>
                       <td className="font-mono font-bold text-xs">{t.symbol}</td>
-                      <td>
+                      <td className="text-center">
                         <Badge
                           variant={(t.right as string) === "CALL" || (t.right as string) === "C" ? "success" : "danger"}
                           className="text-xs font-bold px-1.5 py-0"
@@ -116,11 +145,11 @@ export const TradeBlotter = memo(function TradeBlotter() {
                           {(t.right as string) === "C" || (t.right as string) === "CALL" ? "CALL" : "PUT"}
                         </Badge>
                       </td>
-                      <td className="font-mono tabular-nums text-xs">
+                      <td className="font-mono tabular-nums text-xs text-right">
                         ${Number(t.strike ?? 0).toFixed(1)}
                       </td>
                       <td className="text-muted-foreground/70 text-xs">{t.expiry as string}</td>
-                      <td>
+                      <td className="text-center">
                         <Badge
                           variant={(t.side as string) === "BUY" ? "success" : "danger"}
                           className="text-xs px-1.5 py-0"
@@ -128,18 +157,20 @@ export const TradeBlotter = memo(function TradeBlotter() {
                           {t.side as string}
                         </Badge>
                       </td>
-                      <td className="font-mono tabular-nums text-xs">{t.quantity as number}</td>
-                      <td className="font-mono tabular-nums text-xs">
-                        ${Number(t.entry_price ?? 0).toFixed(2)}
+                      <td className="font-mono tabular-nums text-xs text-right">{t.quantity as number}</td>
+                      <td className="text-xs font-mono tabular-nums text-right">
+                        <span className="flex flex-col gap-0.5 items-end">
+                          <span className="text-muted-foreground/80" title="Entry price">
+                            ${Number(t.entry_price ?? 0).toFixed(2)}
+                          </span>
+                          <span title="Exit price">
+                            {isClosed && t.exit_price != null
+                              ? `$${Number(t.exit_price).toFixed(2)}`
+                              : "—"}
+                          </span>
+                        </span>
                       </td>
-                      <td className="font-mono tabular-nums text-xs">
-                        {isClosed
-                          ? t.exit_price != null
-                            ? `$${Number(t.exit_price).toFixed(2)}`
-                            : "—"
-                          : "—"}
-                      </td>
-                      <td>
+                      <td className="text-right">
                         {isClosed ? (
                           pnlKnown ? (
                             <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
@@ -154,10 +185,28 @@ export const TradeBlotter = memo(function TradeBlotter() {
                       </td>
                       <td>
                         <Badge
-                          variant={isClosed ? (pnlKnown ? (pnl >= 0 ? "success" : "danger") : "secondary") : "secondary"}
+                          variant={
+                            isClosed
+                              ? pnlKnown
+                                ? pnl > 0
+                                  ? "success"
+                                  : pnl < 0
+                                    ? "danger"
+                                    : "secondary"
+                                : "secondary"
+                              : "secondary"
+                          }
                           className="text-xs px-1.5 py-0"
                         >
-                          {isClosed ? (pnlKnown ? (pnl >= 0 ? "WIN" : "LOSS") : "CLOSED") : "OPEN"}
+                          {isClosed
+                            ? pnlKnown
+                              ? pnl > 0
+                                ? "WIN"
+                                : pnl < 0
+                                  ? "LOSS"
+                                  : "BE"
+                              : "CLOSED"
+                            : "OPEN"}
                         </Badge>
                       </td>
                     </tr>
@@ -178,29 +227,37 @@ function SortTh({
   sort,
   dir,
   onClick,
+  align = "left",
+  icon: Icon,
 }: {
   field: SortField;
   label: string;
   sort: SortField;
   dir: SortDir;
   onClick: (f: SortField) => void;
+  align?: "left" | "right";
+  icon?: React.ComponentType<{ className?: string }>;
 }) {
   const isActive = sort === field;
   return (
     <th
       className={cn(
         "cursor-pointer select-none transition-colors",
+        align === "right" ? "text-right" : "text-left",
         isActive ? "!text-primary" : "hover:!text-foreground/70"
       )}
       onClick={() => onClick(field)}
     >
-      <div className="flex items-center gap-0.5">
-        {label}
-        {isActive ? (
-          dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
-        ) : (
-          <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
-        )}
+      <div className={cn("flex items-center gap-1", align === "right" && "justify-end")}>
+        {Icon && <Icon className="h-3 w-3 opacity-60 shrink-0" />}
+        <span className="flex items-center gap-0.5">
+          {label}
+          {isActive ? (
+            dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
+          ) : (
+            <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
+          )}
+        </span>
       </div>
     </th>
   );

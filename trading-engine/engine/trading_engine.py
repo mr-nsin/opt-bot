@@ -25,7 +25,7 @@ from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
     emit_pnl, emit_position, emit_signal, emit_trade_executed,
     emit_trade_closed, emit_order_update, emit_error,
-    emit_data_status, emit_account_metrics,
+    emit_data_status, emit_account_metrics, emit_signal_data,
 )
 from engine.models import TradingConfig
 
@@ -243,14 +243,17 @@ class TradingEngine:
         }
 
     def get_positions(self) -> list:
-        """Get current positions with live price and P&L from tick cache and order manager."""
+        """Get current positions with live price and P&L from tick cache and order manager.
+        Uses TWS client.positions first; falls back to order_manager.entry_orders_cache when
+        TWS positions are empty but we have open trades (e.g. TWS sync delay or account mismatch).
+        """
         if not self._client:
             return []
 
         positions = []
         account_filter = (self.config.account_id or "").strip() if self.config else ""
         if hasattr(self._client, 'positions'):
-            for key, pos in self._client.positions.items():
+            for key, pos in list((self._client.positions or {}).items()):
                 qty = getattr(pos, 'position', 0)
                 if qty == 0:
                     continue
@@ -332,6 +335,71 @@ class TradingEngine:
                 if exit_price_used > 0:
                     pos_data["exit_price_used"] = round(exit_price_used, 4)
                     pos_data["exit_price_source"] = exit_price_source
+                positions.append(pos_data)
+
+        # Fallback: when TWS positions empty but we have managed entry orders (e.g. TWS sync delay, account filter)
+        if not positions and self._order_mgr and hasattr(self._order_mgr, 'entry_orders_cache'):
+            try:
+                with self._order_mgr.order_lock:
+                    orders = list(self._order_mgr.entry_orders_cache.values())
+            except Exception:
+                orders = []
+            for order in orders:
+                if not order:
+                    continue
+                symbol = getattr(order, 'symbol', '') or ''
+                strike = float(getattr(order, 'strike', 0) or 0)
+                right = getattr(order, 'right', '') or ''
+                expiry = getattr(order, 'expiration', '') or getattr(order, 'expiry', '') or ''
+                qty = int(getattr(order, 'executed_qty', 0) or getattr(order, 'order_qty', 0) or 0)
+                if qty <= 0:
+                    continue
+                avg_price = float(getattr(order, 'average_price', 0) or 0)
+                current_price = 0.0
+                tick = self._order_mgr.order_id_tick_lookup.get(order.id) if hasattr(order, 'id') else None
+                fallback_tick = None
+                if tick and getattr(tick, 'last', 0) > 0:
+                    current_price = tick.last
+                elif tick and getattr(tick, 'bid', 0) > 0:
+                    current_price = tick.bid
+                elif self._client and hasattr(self._client, 'get_options_data'):
+                    try:
+                        r = "C" if str(right or "").upper() in ("C", "CALL") else "P"
+                        fallback_tick = self._client.get_options_data(symbol, str(expiry), r, strike)
+                        if fallback_tick and getattr(fallback_tick, 'last', 0) > 0:
+                            current_price = fallback_tick.last
+                        elif fallback_tick and getattr(fallback_tick, 'bid', 0) > 0:
+                            current_price = fallback_tick.bid
+                    except Exception:
+                        pass
+                pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
+                pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
+                pos_data = {
+                    "symbol": symbol,
+                    "strike": strike,
+                    "right": right,
+                    "expiry": expiry,
+                    "quantity": qty,
+                    "avg_price": round(avg_price, 4),
+                    "current_price": round(current_price, 4),
+                    "pnl": round(pnl, 2),
+                    "pnl_percent": round(pnl_pct, 2),
+                }
+                if getattr(order, 'stoploss_price', None):
+                    pos_data["stoploss_price"] = round(float(order.stoploss_price), 2)
+                if getattr(order, 'profit_price', None) or getattr(order, 'current_profit_price', None):
+                    pos_data["profit_price"] = round(float(order.current_profit_price or order.profit_price or 0), 2)
+                # Include bid/ask/last from tick; use fallback_tick when order_id_tick_lookup has no tick
+                price_tick = tick if tick else fallback_tick
+                bid_val = float(getattr(price_tick, 'bid', -1) or -1) if price_tick else -1
+                ask_val = float(getattr(price_tick, 'ask', -1) or -1) if price_tick else -1
+                last_val = float(getattr(price_tick, 'last', -1) or -1) if price_tick else -1
+                if bid_val not in (-1, None):
+                    pos_data["bid"] = round(bid_val, 4)
+                if ask_val not in (-1, None):
+                    pos_data["ask"] = round(ask_val, 4)
+                if last_val not in (-1, None):
+                    pos_data["last"] = round(last_val, 4)
                 positions.append(pos_data)
         return positions
 
@@ -813,6 +881,20 @@ class TradingEngine:
             self._data_feed_started = True
             self._last_signal_heartbeat_time = time.time()
             emit_log("Data feed and strategies started", "INFO", "system")
+
+            # Initial signal scan: get DataFrame of signals for current + previous candles per stock
+            # Returns signals from the time system started (current candle at start + previous candles)
+            self._signal_scan_start_time = datetime.now()
+            def _emit_initial_signal_data():
+                try:
+                    time.sleep(2.0)  # Allow bars to populate
+                    signals = BOT.scan_all_stocks_signals(system_start_time=None, limit=21)  # All candles; UI can filter by system_started_at
+                    emit_signal_data(signals, self._signal_scan_start_time.isoformat())
+                    emit_log(f"Initial signal scan: {len(signals)} candle signals for {len(stock_list)} stocks", "INFO", "signal")
+                except Exception as e:
+                    emit_log(f"Initial signal scan failed: {e}", "WARN", "signal")
+            threading.Thread(target=_emit_initial_signal_data, daemon=True).start()
+
             emit_log(
                 f"IBKR data + signal scanner started: monitoring {', '.join(stock_list)}. "
                 "Logs will show 'Signal scan', 'IBKR bars', 'Trade check', and 'IBKR data' (every 10s) when data is flowing.",
@@ -925,11 +1007,15 @@ class TradingEngine:
                     self._last_positions_time = now
                     self._emit_positions()
 
-                # Every 30s: heartbeat to show the engine is alive and scanning for signals
+                # Every 30s: re-scan signal DataFrame, emit to UI, and heartbeat log
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
                     self._last_signal_heartbeat_time = now
                     try:
-                        import BOT
+                        signals = BOT.scan_all_stocks_signals(system_start_time=None, limit=21)
+                        emit_signal_data(signals, getattr(self, "_signal_scan_start_time", datetime.now()).isoformat())
+                    except Exception as e:
+                        emit_log(f"Signal scan failed: {e}", "WARN", "signal")
+                    try:
                         stock_list = getattr(BOT, "stockList", []) or []
                         active_threads = len([t for t in self._event_processor_threads if t and t.is_alive()])
                         queue_size = self._event_queue.qsize() if self._event_queue else 0
@@ -940,13 +1026,13 @@ class TradingEngine:
                     except Exception:
                         emit_log("Signal scanner active", "INFO", "signal")
 
-                # Every 30s: check end-of-day time and close all positions if past EOD
-                if self._data_feed_started and self.connected:
-                    if not hasattr(self, "_last_eod_check_time"):
-                        self._last_eod_check_time = 0.0
-                    if now - self._last_eod_check_time >= 30.0:
-                        self._last_eod_check_time = now
-                        self._check_eod_time()
+                    # Every 30s: check end-of-day time and close all positions if past EOD
+                    if self._data_feed_started and self.connected:
+                        if not hasattr(self, "_last_eod_check_time"):
+                            self._last_eod_check_time = 0.0
+                        if now - self._last_eod_check_time >= 30.0:
+                            self._last_eod_check_time = now
+                            self._check_eod_time()
 
                 time.sleep(0.05)  # 50ms loop
 

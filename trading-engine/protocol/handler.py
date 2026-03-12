@@ -3,12 +3,14 @@ JSON-RPC message handler.
 Reads requests from stdin, dispatches to the trading engine, sends responses.
 """
 
+import os
 import sys
 import json
 import threading
 from typing import Callable, Dict, Any
 
 from protocol.emitter import send_response, emit_log, emit_error
+from protocol import messages
 
 
 class MessageHandler:
@@ -54,6 +56,8 @@ class MessageHandler:
             method = request.get("method", "")
             params = request.get("params", {})
 
+            if method == messages.STOP_TRADING:
+                emit_log("Received STOP_TRADING — stopping engine and exiting", "INFO", "system")
             emit_log(f"Received request: {method} (id={request_id})", "DEBUG", "protocol")
 
             handler = self._handlers.get(method)
@@ -73,6 +77,10 @@ class MessageHandler:
         try:
             result = handler(params)
             send_response(request_id, result=result)
+            if method == messages.STOP_TRADING:
+                os._exit(0)
         except Exception as e:
             emit_error(f"Handler error for {method}: {e}")
             send_response(request_id, error=str(e))
+            if method == messages.STOP_TRADING:
+                os._exit(1)

@@ -18,6 +18,9 @@ import {
 import { cn, pnlColor } from "@/lib/utils";
 import { useTradingStore } from "@/stores/tradingStore";
 import { useConfigStore } from "@/stores/configStore";
+
+const LOGO_DARK = "/logo/bwquantDrift.png";
+const LOGO_LIGHT = "/logo/quantDriftw.png";
 import { useLogStore } from "@/stores/logStore";
 import { useLicense } from "@/hooks/useLicense";
 import { formatHotkey } from "@/hooks/useHotkeys";
@@ -59,6 +62,7 @@ function SidebarInner() {
   const logs = useLogStore((s) => s.logs);
   const { licenseStatus } = useLicense();
   const isRunning = status === "Running";
+  const isDark = settings.theme === "dark";
   const isLive = settings.trading_mode === "live";
   const daysLeft = licenseStatus?.valid ? licenseStatus.days_remaining : null;
 
@@ -86,7 +90,16 @@ function SidebarInner() {
         </div>
       </div>
 
-      {/* Navigation groups */}
+      {/* Logo — bwquantDrift for dark theme, quantDriftw for light */}
+      <div className="flex justify-center items-center py-4 px-4 border-b border-sidebar-border/15">
+        <img
+          src={isDark ? LOGO_DARK : LOGO_LIGHT}
+          alt="QuantDrift"
+          className="w-full max-w-full h-auto object-contain"
+        />
+      </div>
+
+      {/* Navigation groups — TRADING, ANALYSIS, SYSTEM below logo */}
       <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
         {navGroups.map((group) => (
           <div key={group.label}>

@@ -9,6 +9,7 @@ import { ConnectionConfig } from "./ConnectionConfig";
 import { StockList } from "./StockList";
 import { ActivityLog } from "./ActivityLog";
 import { SignalActivity } from "./SignalActivity";
+import { SignalDataTable } from "./SignalDataTable";
 import { MarketOverview } from "./MarketOverview";
 import { EngineActivity } from "./EngineActivity";
 import { PnLSparkline } from "./PnLSparkline";
@@ -125,6 +126,7 @@ function DashboardPageInner() {
           <div className="space-y-3 mt-3">
             <MarketOverview />
             <SignalActivity />
+            <SignalDataTable />
           </div>
         </TabsContent>
 
