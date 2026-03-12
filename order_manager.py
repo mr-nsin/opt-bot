@@ -269,9 +269,9 @@ class OrderManager:
                 exp = str(exp_raw).replace("-", "").replace(" ", "").strip()
                 sym = contract.symbol or ""
                 rgt = getattr(contract, 'right', '') or ""
-                key = f"{sym}_{rgt}_{exp}" if exp else f"{sym}_{rgt}"
                 try:
                     import BOT
+                    key = BOT._cooldown_key(sym, rgt, exp)
                     BOT.trade_time_dict[key] = datetime.datetime.now()
                     logger.info(f"Cooldown recorded for {key} (untracked exit)")
                 except Exception:
@@ -369,15 +369,14 @@ class OrderManager:
             # Find the corresponding entry order first (needed for cooldown key with expiry)
             entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
 
-            # Assign last trade time and record cooldown with symbol+right+expiry (matches BOT._cooldown_key)
             option_tick.last_trade_time = datetime.datetime.now()
             exp_raw = (entry_order.expiration if entry_order else None) or getattr(order, "expiration", None) or ""
             exp = str(exp_raw).replace("-", "").replace(" ", "").strip()
-            key = f"{order.symbol}_{order.right}_{exp}" if exp else f"{order.symbol}_{order.right}"
+            import BOT
+            key = BOT._cooldown_key(order.symbol, order.right, exp)
             self.recent_trade_closures[key] = option_tick.last_trade_time
             logger.info(f"Cooldown recorded for {key} at {self.recent_trade_closures[key]}")
 
-            import BOT
             BOT.trade_time_dict[key] = option_tick.last_trade_time
 
             # entry_order already looked up above

@@ -226,11 +226,18 @@ def wwma(values, n):
     return values.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
 
 def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
-    """Normalized key for symbol+right+expiry cooldown. Expiry normalized (2026-03-06 -> 20260306)."""
+    """Normalized key for symbol+right+expiry cooldown.
+    Right is normalized: CALL/C → C, PUT/P → P (IB uses C/P, BOT uses CALL/PUT).
+    Expiry normalized: 2026-03-06 → 20260306."""
+    r = (right or "").strip().upper()
+    if r.startswith("C"):
+        r = "C"
+    elif r.startswith("P"):
+        r = "P"
     norm_exp = (expiry or "").replace("-", "").replace(" ", "").strip()
     if norm_exp:
-        return f"{symbol}_{right}_{norm_exp}"
-    return f"{symbol}_{right}"
+        return f"{symbol}_{r}_{norm_exp}"
+    return f"{symbol}_{r}"
 
 
 # Per-key locks to prevent race: multiple event processors placing same symbol+right+expiry
