@@ -2362,11 +2362,15 @@ def event_processor(event_queue: Queue, count: int) -> None:
             if STOP_TRADING:
                 keep_running = False
             elif client is not None and not client.isConnected():
-                logger.error("TWS is disconnected — engine loop handles reconnect")
-                _emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
-                time.sleep(5.0)
-                if getattr(client, "connection_closed", False):
+                # Re-check STOP_TRADING to avoid logging during shutdown (race with engine.stop)
+                if STOP_TRADING:
                     keep_running = False
+                else:
+                    logger.error("TWS is disconnected — engine loop handles reconnect")
+                    _emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
+                    time.sleep(5.0)
+                    if getattr(client, "connection_closed", False):
+                        keep_running = False
         except Exception as ex:
             logger.error(f"Event processor error: {ex}", exc_info=True)
             _emit_log(f"Event processor error: {ex}", "ERROR", "trading")

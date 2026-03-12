@@ -24,6 +24,11 @@
 - Ask yourself: "Would a staff engineer approve this?"
 - Run tests, check logs, demonstrate correctness
 
+### 4b. Bug Fix Workflow (see `.cursor/rules/fix-and-test.mdc`)
+- **Create a test** for every fix — test fails before, passes after
+- **Run tests first** — never mark done until tests pass
+- **Verify no regressions** — run broader suite; check related functionality
+
 ### 5. Demand Elegance (Balanced)
 - For non-trivial changes: pause and ask "is there a more elegant way?"
 - If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"

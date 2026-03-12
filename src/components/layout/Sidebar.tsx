@@ -85,17 +85,17 @@ function SidebarInner() {
             QuantDrift
           </span>
           <span className="text-xs text-sidebar-foreground/70 font-medium">
-            Trading Terminal
+            Trade Smarter. Not Harder.
           </span>
         </div>
       </div>
 
       {/* Logo — bwquantDrift for dark theme, quantDriftw for light */}
-      <div className="flex justify-center items-center py-4 px-4 border-b border-sidebar-border/15">
+      <div className="flex justify-center items-center border-b border-sidebar-border/15 overflow-hidden h-[140px]">
         <img
           src={isDark ? LOGO_DARK : LOGO_LIGHT}
           alt="QuantDrift"
-          className="w-full max-w-full h-auto object-contain"
+          className="w-full h-auto object-contain scale-[1.35]"
         />
       </div>
 

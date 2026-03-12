@@ -1,5 +1,18 @@
 # Lessons Learned
 
+## Bug Fix Workflow (2026-03-12)
+
+### Rule: Test Every Fix
+
+When fixing any issue:
+1. **Create a test case** for every fix — test should fail before fix, pass after
+2. **Run tests first** — do not mark done until tests pass locally
+3. **Verify no regressions** — run broader test suite; manually check related functionality if no tests exist
+
+See `.cursor/rules/fix-and-test.mdc` for the full rule.
+
+---
+
 ## Stop Trading / Sidecar Not Stopping (2026-03-12)
 
 ### Problem
@@ -19,3 +32,18 @@
 ### Pattern
 - **Background loops must check stop flags** — Any long-running loop (event_processor, watchdog) must periodically check a stop flag. Relying only on "connection closed" or similar is fragile.
 - **Gate entry points** — Functions that trigger side effects (checkConditionsAndTrade, takeTrade) should check STOP_TRADING at entry to avoid work during shutdown.
+
+---
+
+## Signal Scan & Stop Trading Log Noise (2026-03-12)
+
+### Issues
+1. **Signal scan failed: name 'BOT' is not defined** — Engine loop used `BOT.scan_all_stocks_signals()` without importing BOT first (sidecar process).
+2. **Order 22217 not found / Code 202** — During reqGlobalCancel, TWS sends error 202 for orders already filled/cancelled; untracked orders log as ERROR.
+3. **TWS disconnected — waiting for engine reconnect** (x4) — Event processors could log during shutdown race.
+
+### Fixes
+1. Add `import BOT` before signal scan in trading_engine engine loop.
+2. Add IB error code 202 to `warning_codes` (tws_api_client) so it logs as WARN.
+3. Downgrade "Order not found" to WARNING in tws_api_client and order_manager (expected during cancel).
+4. Re-check STOP_TRADING in event_processor Empty branch before logging "TWS disconnected" to avoid shutdown race.

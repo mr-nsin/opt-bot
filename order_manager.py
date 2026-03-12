@@ -288,7 +288,8 @@ class OrderManager:
                     "timestamp": datetime.datetime.now().isoformat(),
                 })
             else:
-                logger.error(f"Order: {order_id} not found")
+                # Untracked order (e.g. from reqGlobalCancel or previous session)
+                logger.warning(f"Order: {order_id} not found in orders cache (untracked or already closed)")
             return
 
         logger.info(f"{status} - {order_id} - {order}")

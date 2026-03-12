@@ -561,7 +561,8 @@ class TwsApiClient(EWrapper, EClient):
     # def error(self, reqId: TickerId, errorCode: int, errorString: str):
     def error(self, reqId: TickerId, errorCode: int, errorString: str, advancedOrderRejectJson = ""):
         info_codes = {2104, 2106, 2107, 2108, 2119, 2158}
-        warning_codes = {2100, 2103, 2105, 2137, 10167, 10185}
+        # 202 = No such order (expected during reqGlobalCancel when order already filled/cancelled)
+        warning_codes = {202, 2100, 2103, 2105, 2137, 10167, 10185}
         if errorCode in info_codes:
             logger.info(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
         elif errorCode in warning_codes:
@@ -730,7 +731,8 @@ class TwsApiClient(EWrapper, EClient):
         trade: Trade = self.trades_cache.get(orderId, None)
 
         if trade is None:
-            logger.error(f'OrderId {orderId} not found.')
+            # Untracked order (e.g. from previous session, or TWS callback during reqGlobalCancel)
+            logger.warning(f'OrderId {orderId} not found in trades cache (untracked or already closed).')
             return
 
         #status = status.lower()

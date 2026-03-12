@@ -1011,6 +1011,7 @@ class TradingEngine:
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
                     self._last_signal_heartbeat_time = now
                     try:
+                        import BOT
                         signals = BOT.scan_all_stocks_signals(system_start_time=None, limit=21)
                         emit_signal_data(signals, getattr(self, "_signal_scan_start_time", datetime.now()).isoformat())
                     except Exception as e:

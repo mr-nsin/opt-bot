@@ -1,0 +1,38 @@
+---
+description: When fixing bugs, always add tests and verify no regressions
+alwaysApply: true
+---
+
+# Bug Fix Workflow
+
+When fixing any issue, follow this workflow:
+
+## 1. Create a Test for Every Fix
+
+- **Add a test case** that reproduces the bug or asserts the fixed behavior
+- Place tests in the appropriate test directory:
+  - Python: `trading-engine/tests/` or `tests/`
+  - Rust: `src-tauri/src/` with `#[cfg(test)]`
+  - Frontend: `src/**/*.test.ts(x)` or `__tests__/`
+- The test should **fail before the fix** and **pass after the fix**
+
+## 2. Run Tests Before Marking Done
+
+- Execute the new test(s) to confirm they pass
+- Run the full test suite for the affected area
+- Do not mark a fix complete until tests pass locally
+
+## 3. Verify Other Functionality Is Not Broken
+
+- Run broader tests (e.g. `pytest`, `cargo test`, `npm test`)
+- If no automated tests exist for related code, manually verify:
+  - Adjacent features still work
+  - No new errors in logs
+  - Happy-path flows still succeed
+
+## Checklist Before Completing a Fix
+
+- [ ] Test case added that covers the fix
+- [ ] New test(s) pass
+- [ ] Existing tests still pass
+- [ ] Related functionality verified (manual or automated)
