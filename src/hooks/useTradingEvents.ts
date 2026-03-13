@@ -6,7 +6,7 @@ import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useNotificationStore } from "@/stores/notificationStore";
 
-const PNL_THROTTLE_MS = 1000;
+const PNL_THROTTLE_MS = 500;  // Flush P&L every 500ms for more responsive display
 const LOG_BATCH_MS = 150;
 
 /**

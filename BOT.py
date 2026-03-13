@@ -2816,8 +2816,8 @@ def main_call(data):
         init_data_feed()
         # Fetch all the strike expiries for all stocks
         dataStrike = fetch_all_strike_expiries()
-        # synchronize positions to be monitored for closing.
-        #synchronize_positions()
+        # synchronize positions to be monitored for closing (required for TP/SL on pre-existing TWS positions)
+        synchronize_positions()
         # synchronize previous days open orders
         synchronize_orders()
 

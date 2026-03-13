@@ -198,6 +198,19 @@ class OrderManager:
             )
             return
         option_tick = self.order_id_tick_lookup.get(entry_order.id)
+        # Fallback: when no tick in lookup (e.g. after restart, tick never stored), try get_options_data
+        if option_tick is None and self.api_client and hasattr(self.api_client, "get_options_data"):
+            try:
+                exp = self._norm_expiry(expiry or "")
+                r = self._norm_right(right or "")
+                if exp and r:
+                    option_tick = self.api_client.get_options_data(symbol, exp, r, float(strike or 0))
+                    if option_tick:
+                        # Store for future lookups so we don't re-fetch every 0.1s
+                        self.order_id_tick_lookup[entry_order.id] = option_tick
+                        logger.info(f"Position {symbol} {strike} {right}: using get_options_data fallback tick for TP/SL")
+            except Exception as e:
+                logger.debug(f"get_options_data fallback failed for {symbol} {strike}: {e}")
         if option_tick is None:
             logger.debug(f"Position {symbol} {strike} {right}: matched order but NO TICK")
             return
@@ -279,6 +292,10 @@ class OrderManager:
                     logger.info(f"Cooldown recorded for {key} (untracked exit)")
                 except Exception:
                     pass
+                # Clean up entry cache so we don't show ghost positions when TWS has none
+                entry_order = self._find_entry_order(sym, strike=float(getattr(contract, 'strike', 0) or 0), right=rgt, expiry=exp)
+                if entry_order:
+                    self.del_entry_order(entry_order, self.order_id_tick_lookup.get(entry_order.id))
                 _emit_trade_closed({
                     "symbol": sym,
                     "right": rgt,
@@ -395,6 +412,10 @@ class OrderManager:
             if entry_order is not None:
                 option_tick.active_order = None
                 entry_order.active = False
+
+                # Clean up caches so we don't show ghost positions when TWS has none
+                self.del_entry_order(entry_order, option_tick)
+                self.del_exit_order(order, option_tick)
 
                 # Notify UI that position was closed (trade_closed). Use underlying symbol to match UI positions.
                 _emit_trade_closed({

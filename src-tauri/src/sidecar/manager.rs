@@ -355,14 +355,14 @@ async fn handle_sidecar_message(
                     if let Ok(pos) = serde_json::from_value::<Position>(event.data.clone()) {
                         let mut app = state.lock().await;
                         let norm_exp = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
-                        let norm_right = |r: &str| {
+                        let norm_right = |r: &str| -> String {
                             let u = r.to_uppercase();
                             if u.starts_with('C') {
-                                "C"
+                                "C".to_string()
                             } else if u.starts_with('P') {
-                                "P"
+                                "P".to_string()
                             } else {
-                                r
+                                r.to_string()
                             }
                         };
                         if let Some(existing) = app

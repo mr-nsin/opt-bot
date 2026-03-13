@@ -55,11 +55,11 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 1.0
+        self._positions_interval_sec: float = 0.5  # Faster position/price updates
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
-        self._pnl_throttle_sec: float = 1.0  # Emit PnL at most once per second (~95% less IPC)
+        self._pnl_throttle_sec: float = 0.5  # Emit PnL at most twice per second
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -278,6 +278,9 @@ class TradingEngine:
                 if self._order_mgr:
                     entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
                     if entry_order:
+                        # Fallback: use entry_order.average_price when TWS avg_cost is 0
+                        if avg_price <= 0 and getattr(entry_order, 'average_price', 0) > 0:
+                            avg_price = float(entry_order.average_price)
                         tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
                         if tick and hasattr(tick, 'last') and tick.last > 0:
                             current_price = tick.last
@@ -337,72 +340,12 @@ class TradingEngine:
                     pos_data["exit_price_source"] = exit_price_source
                 positions.append(pos_data)
 
-        # Fallback: when TWS positions empty but we have managed entry orders (e.g. TWS sync delay, account filter)
-        if not positions and self._order_mgr and hasattr(self._order_mgr, 'entry_orders_cache'):
-            try:
-                with self._order_mgr.order_lock:
-                    orders = list(self._order_mgr.entry_orders_cache.values())
-            except Exception:
-                orders = []
-            for order in orders:
-                if not order:
-                    continue
-                symbol = getattr(order, 'symbol', '') or ''
-                strike = float(getattr(order, 'strike', 0) or 0)
-                right = getattr(order, 'right', '') or ''
-                expiry = getattr(order, 'expiration', '') or getattr(order, 'expiry', '') or ''
-                qty = int(getattr(order, 'executed_qty', 0) or getattr(order, 'order_qty', 0) or 0)
-                if qty <= 0:
-                    continue
-                avg_price = float(getattr(order, 'average_price', 0) or 0)
-                current_price = 0.0
-                tick = self._order_mgr.order_id_tick_lookup.get(order.id) if hasattr(order, 'id') else None
-                fallback_tick = None
-                if tick and getattr(tick, 'last', 0) > 0:
-                    current_price = tick.last
-                elif tick and getattr(tick, 'bid', 0) > 0:
-                    current_price = tick.bid
-                elif self._client and hasattr(self._client, 'get_options_data'):
-                    try:
-                        r = "C" if str(right or "").upper() in ("C", "CALL") else "P"
-                        fallback_tick = self._client.get_options_data(symbol, str(expiry), r, strike)
-                        if fallback_tick and getattr(fallback_tick, 'last', 0) > 0:
-                            current_price = fallback_tick.last
-                        elif fallback_tick and getattr(fallback_tick, 'bid', 0) > 0:
-                            current_price = fallback_tick.bid
-                    except Exception:
-                        pass
-                pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
-                pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
-                pos_data = {
-                    "symbol": symbol,
-                    "strike": strike,
-                    "right": right,
-                    "expiry": expiry,
-                    "quantity": qty,
-                    "avg_price": round(avg_price, 4),
-                    "current_price": round(current_price, 4),
-                    "pnl": round(pnl, 2),
-                    "pnl_percent": round(pnl_pct, 2),
-                }
-                if getattr(order, 'stoploss_price', None):
-                    pos_data["stoploss_price"] = round(float(order.stoploss_price), 2)
-                if getattr(order, 'profit_price', None) or getattr(order, 'current_profit_price', None):
-                    pos_data["profit_price"] = round(float(order.current_profit_price or order.profit_price or 0), 2)
-                # Include bid/ask/last from tick; use fallback_tick when order_id_tick_lookup has no tick
-                price_tick = tick if tick else fallback_tick
-                bid_val = float(getattr(price_tick, 'bid', -1) or -1) if price_tick else -1
-                ask_val = float(getattr(price_tick, 'ask', -1) or -1) if price_tick else -1
-                last_val = float(getattr(price_tick, 'last', -1) or -1) if price_tick else -1
-                if bid_val not in (-1, None):
-                    pos_data["bid"] = round(bid_val, 4)
-                if ask_val not in (-1, None):
-                    pos_data["ask"] = round(ask_val, 4)
-                if last_val not in (-1, None):
-                    pos_data["last"] = round(last_val, 4)
-                positions.append(pos_data)
+        # Do NOT fallback to entry_orders_cache when TWS positions are empty.
+        # TWS is the source of truth: if IBKR shows POS: 0, we show no positions.
+        # The old fallback caused "ghost positions" (13 active when IBKR had 0) because
+        # entry_orders_cache was not cleaned when positions closed via square-off or manual exit.
 
-        # Deduplicate by (symbol, strike, right, expiry) — TWS/fallback can produce duplicates
+        # Deduplicate by (symbol, strike, right, expiry) — TWS can produce duplicates
         # when expiry format differs (e.g. 20260313 vs 2026-03-13) or multiple orders same option
         return self._deduplicate_positions(positions)
 

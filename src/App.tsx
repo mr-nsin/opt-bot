@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import { useEffect, useState, useCallback } from "react";
 import { AppShell } from "@/components/layout/AppShell";
@@ -14,22 +14,11 @@ import { useHotkeys } from "@/hooks/useHotkeys";
 import { CommandPalette } from "@/components/common/CommandPalette";
 import { config, logs as logsApi, app as appApi } from "@/lib/tauri-commands";
 import { listen } from "@tauri-apps/api/event";
-
-const DashboardPage = lazy(() =>
-  import("@/components/dashboard/DashboardPage").then((m) => ({ default: m.DashboardPage }))
-);
-const AnalyticsPage = lazy(() =>
-  import("@/components/analytics/AnalyticsPage").then((m) => ({ default: m.AnalyticsPage }))
-);
-const PositionsPage = lazy(() =>
-  import("@/components/positions/PositionsPage").then((m) => ({ default: m.PositionsPage }))
-);
-const LogsPage = lazy(() =>
-  import("@/components/logs/LogsPage").then((m) => ({ default: m.LogsPage }))
-);
-const SettingsPage = lazy(() =>
-  import("@/components/settings/SettingsPage").then((m) => ({ default: m.SettingsPage }))
-);
+import { DashboardPage } from "@/components/dashboard/DashboardPage";
+import { AnalyticsPage } from "@/components/analytics/AnalyticsPage";
+import { PositionsPage } from "@/components/positions/PositionsPage";
+import { LogsPage } from "@/components/logs/LogsPage";
+import { SettingsPage } from "@/components/settings/SettingsPage";
 
 function AppContent() {
   const { setTradingConfig, setSettings, settings } = useConfigStore();
