@@ -668,23 +668,6 @@ class OrderManager:
             logger.warning(f"Invalid exit price for {order.option_symbol}: bid={bid_val}, ask={ask_val}, last={last_val}")
             return
 
-        # 10% profit target: close when profit >= 10% of investment (whichever comes first: 10% or ATR trailing)
-        try:
-            inv_amount = float(order.average_price or 0) * float(order.executed_qty or 0) * 100.0
-            if inv_amount > 0:
-                if order_side == "BUY":
-                    unrealized_profit = (exit_price - float(order.average_price or 0)) * float(order.executed_qty or 0) * 100.0
-                else:
-                    unrealized_profit = (float(order.average_price or 0) - exit_price) * float(order.executed_qty or 0) * 100.0
-                profit_target_10pct = inv_amount * 0.10
-                if unrealized_profit >= profit_target_10pct:
-                    logger.info(f"✓ HIT 10% PROFIT TARGET: {order.option_symbol} — profit ${unrealized_profit:.2f} >= 10% of ${inv_amount:.2f}")
-                    _emit_log(f"HIT 10% PROFIT: {order.option_symbol} — ${unrealized_profit:.2f} profit (≥10% of ${inv_amount:.2f}) — CLOSING", "INFO", "order")
-                    self.close_position(order=order, option_tick=option_tick)
-                    return
-        except (TypeError, ValueError) as e:
-            logger.debug(f"10% profit calc skipped for {order.option_symbol}: {e}")
-
         # Validate prices (Long: bid/last; Short: ask/last)
         if is_long and (option_tick.last == -1 or option_tick.bid == -1):
             logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
