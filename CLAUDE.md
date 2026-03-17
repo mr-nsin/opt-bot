@@ -80,11 +80,21 @@ This is a **Tauri + React + Python** desktop trading application for options tra
 | `docs/` | ROADMAP.md, design docs, analysis docs |
 
 ### Running the App (macOS)
+**Dev mode:**
 ```bash
-cd /Users/nitinsinghal/Documents/project/treetech/OPT_BOT
+./run-with-registry.sh
+# or manually:
 export REGISTRY_URL="https://drive.google.com/uc?export=download&id=1_d6-xEbniM2MNqZu1JQtAxrUCsV8-rae"
 export REGISTRY_LICENSE_PUBLIC_KEY_HEX="5a838c50f67a4abbf6c1136f1acf1e8ee630b25c62fa87cd4c16953cb552a821"
 npm run tauri:dev
+```
+**Build runnable .app (equivalent to exe on Windows):**
+```bash
+npm run build:mac
+# Output: src-tauri/target/release/bundle/macos/QuantDrift.app
+open src-tauri/target/release/bundle/macos/QuantDrift.app
+# Or run with registry env vars:
+./run-built-mac.sh
 ```
 If port 1420 is in use: `lsof -ti:1420 | xargs kill -9`
 

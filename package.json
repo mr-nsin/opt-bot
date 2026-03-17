@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "python trading-engine/build.py",
+    "prebuild": "node scripts/prebuild-trading-engine.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "build:exe": "npx tauri build --no-bundle",
+    "build:mac": "bash build-mac.sh",
     "build:strict": "tsc && vite build"
   },
   "dependencies": {

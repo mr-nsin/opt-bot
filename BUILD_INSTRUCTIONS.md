@@ -1,11 +1,11 @@
-# QuantDrift - Complete EXE Build Instructions
+# QuantDrift - Build Instructions
 
 This document describes how to build a **standalone executable** with all dependencies embedded.
 
 ## Architecture
 
-- **Tauri app**: Rust + React frontend → produces `QuantDrift.exe`
-- **Trading engine sidecar**: Python (PyInstaller) → produces `trading-engine-x86_64-pc-windows-msvc.exe`
+- **Tauri app**: Rust + React frontend → produces `QuantDrift.exe` (Windows) or `QuantDrift.app` (macOS)
+- **Trading engine sidecar**: Python (PyInstaller) → produces `trading-engine-{target}.exe` (Windows) or `trading-engine-{target}` (macOS)
 - Both are bundled together; the Tauri app spawns the Python engine as a subprocess.
 
 ## Prerequisites
@@ -136,3 +136,39 @@ Logs rotate at 50 MB and retain 2 files. The in-app Logs tab shows the same cont
 ### Tauri build fails
 - Ensure WebView2 is installed (Windows 10/11 usually has it)
 - Run `rustup update` if Rust errors occur
+
+---
+
+## macOS Build (Runnable .app — equivalent to exe on Windows)
+
+### Prerequisites
+- Xcode Command Line Tools: `xcode-select --install`
+- Node.js (v18+), Rust (`rustup.rs`), Python 3.12
+- Create venv: `cd trading-engine && python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+
+### One-command build
+```bash
+cd /path/to/OPT_BOT
+npm install
+npm run build:mac
+```
+
+### Output
+```
+src-tauri/target/release/bundle/macos/
+└── QuantDrift.app        # Double-click to run, or: open QuantDrift.app
+```
+
+### Run with license registry env vars
+```bash
+./run-built-mac.sh         # Uses built .app with REGISTRY_URL and REGISTRY_LICENSE_PUBLIC_KEY_HEX
+```
+
+### Dev mode (with registry)
+```bash
+./run-with-registry.sh    # npm run tauri:dev with env vars set
+```
+
+### Notes
+- Prebuild uses `trading-engine/.venv` Python when available (pandas_ta needs 3.12)
+- Trading-engine binary: `src-tauri/binaries/trading-engine-aarch64-apple-darwin` (Apple Silicon) or `trading-engine-x86_64-apple-darwin` (Intel)
