@@ -579,13 +579,77 @@ def scan_all_stocks_signals(system_start_time=None, limit=21):
     return rows
 
 
-def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
+def _check_engulfing_patterns(getCandlesData, stock):
+    """
+    Check for bullish/bearish engulfing patterns. Returns (matched, right, strength) or (False, None, None).
+    Used by getCallPutEngulfCheck for combined SuperTrend+Engulfing mode.
+    """
+    if getCandlesData is None or len(getCandlesData) < 8:
+        return (False, None, None)
+    last2Candles = getCandlesData[1:8]
+    candle_0, candle_1, candle_2, candle_3, candle_4, candle_5, candle_6 = (
+        last2Candles[0], last2Candles[1], last2Candles[2], last2Candles[3],
+        last2Candles[4], last2Candles[5], last2Candles[6])
+    candle_0_vol = int(candle_0.volume)
+    candle_1_vol = int(candle_1.volume)
+    candle_2_vol = int(candle_2.volume)
+    candle_3_vol = int(candle_3.volume)
+    candle_4_vol = int(candle_4.volume)
+    candle_5_vol = int(candle_5.volume)
+    candle_6_vol = int(candle_6.volume)
+    candle_0_close = float(candle_0.close)
+    candle_1_close = float(candle_1.close)
+    candle_2_close = float(candle_2.close)
+    candle_3_close = float(candle_3.close)
+    candle_4_close = float(candle_4.close)
+    candle_5_close = float(candle_5.close)
+    candle_6_close = float(candle_6.close)
+    candle_0_open = float(candle_0.open)
+    candle_1_open = float(candle_1.open)
+    candle_3_open = float(candle_3.open)
+    candle_4_open = float(candle_4.open)
+    candle_5_open = float(candle_5.open)
+    candle_6_open = float(candle_6.open)
+    candle_1_high, candle_1_low = float(candle_1.high), float(candle_1.low)
+    candle_3_high, candle_3_low = float(candle_3.high), float(candle_3.low)
+    candle_4_high, candle_4_low = float(candle_4.high), float(candle_4.low)
+    candle_5_high, candle_5_low = float(candle_5.high), float(candle_5.low)
+    candle_6_high, candle_6_low = float(candle_6.high), float(candle_6.low)
+    # Bullish (CALL) patterns
+    if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_6_vol >= candle_5_vol*0.65 and candle_5_vol >= candle_4_vol*0.65:
+        return (True, "CALL", "strongBuy")
+    if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_5_vol >= candle_4_vol*0.65 and (candle_6_vol >= candle_5_vol*1.2 or candle_6_vol >= candle_4_vol*1.2):
+        return (True, "CALL", "heavyBuy")
+    if (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*0.65:
+        return (True, "CALL", "strongBuy")
+    if (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*1.25:
+        return (True, "CALL", "heavyBuy")
+    if candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= (candle_5_close-candle_5_open)*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and (candle_6_vol >= candle_5_vol*0.65 and candle_5_vol >= candle_4_vol*0.85):
+        return (True, "CALL", "strongBuy")
+    if candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= (candle_5_close-candle_5_open)*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and candle_5_vol >= candle_4_vol*1.05 and candle_6_vol >= candle_5_vol*0.55:
+        return (True, "CALL", "heavyBuy")
+    if (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and candle_4_open >= candle_4_close and (candle_5_vol >= candle_4_vol*0.65 and candle_6_vol >= candle_5_vol*0.55 and candle_6_vol >= candle_4_vol*0.5):
+        return (True, "CALL", "normalBuy")
+    if (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and candle_4_open >= candle_4_close and (candle_5_vol > candle_4_vol*0.55 and candle_6_vol >= candle_4_vol*0.52 and candle_6_vol >= candle_5_vol*0.55):
+        return (True, "CALL", "mediumBuy")
+    if (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and candle_3_open >= candle_3_close and (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and (candle_6_vol >= candle_3_vol*0.6 and candle_4_vol >= candle_3_vol*0.55 and candle_5_vol <= candle_3_vol*0.6):
+        return (True, "CALL", "mediumBuy")
+    # Bearish (PUT) patterns
+    if candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol >= candle_4_vol*0.8:
+        return (True, "PUT", "mediumSell")
+    if candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol <= candle_5_vol*1.25:
+        return (True, "PUT", "strongSell")
+    if candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and candle_6_vol >= candle_5_vol*0.8:
+        return (True, "PUT", "mediumSell")
+    if (candle_2_close <= candle_3_close or candle_2_close > candle_3_close) and (candle_1_close >= candle_2_close or candle_1_close < candle_2_close) and (candle_0_open >= candle_1_close or candle_0_open < candle_1_close) and (candle_0_close < candle_1_low) and candle_1_vol >= candle_0_vol*0.8:
+        return (True, "PUT", "normalSell")
+    return (False, None, None)
+
+
+def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
     from datetime import datetime
     logger.info(f"Checking BEARISH OR BULLISH Engulf Data for stock = {stock}")
     _emit_log(f"Signal check: {stock} (need {limit} bars, indicator={indicator})", "DEBUG", "signal")
-
-    # NOTE: commented by Saif
-    # getCandlesData = getCurrentUndPrice(stock)
 
     getCandlesData = client.get_bars(stock=stock, barSize=candleTime, limit=limit)
     n_bars = len(getCandlesData) if getCandlesData else 0
@@ -640,6 +704,35 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
             right = "PUT"
         _emit_log(f"Signal result: {stock} → {right} ({indicator} OK)", "INFO", "signal")
         return True, right,  stock, "strongBuy"
+    elif indicator == "both":
+        # Combined: SuperTrend for direction + Engulfing as filter. Signal only when BOTH agree.
+        if getCandlesData is None or len(getCandlesData) < limit:
+            return False, "None", stock, "notrade"
+        if stock not in signal_dict:
+            signal_dict[stock] = {"last_signal": "", "current_signal": ""}
+        new_dict = {
+            "Date": [x.date for x in getCandlesData],
+            "Close": [x.close for x in getCandlesData],
+            "High": [x.high for x in getCandlesData],
+            "Low": [x.low for x in getCandlesData],
+        }
+        new_df = pd.DataFrame(new_dict)
+        super_trend_signal = indi.BOTSingal(new_df)[["Date", "Close", "ST_BUY_SELL"]]
+        signal_dict[stock]["last_signal"] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[1]
+        signal_dict[stock]["current_signal"] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[0]
+        current_sig = signal_dict[stock]["current_signal"]
+        last_sig = signal_dict[stock]["last_signal"]
+        if last_sig != current_sig:
+            st_right = "CALL" if current_sig.lower() != "sell" else "PUT"
+            engulf_matched, engulf_right, engulf_strength = _check_engulfing_patterns(getCandlesData, stock)
+            if engulf_matched and engulf_right == st_right:
+                _emit_log(f"SuperTrend+Engulfing CONFIRMED: {stock} → {st_right} ({engulf_strength})", "INFO", "signal")
+                return True, st_right, stock, engulf_strength or "strongBuy"
+            else:
+                _emit_log(f"SuperTrend flip {stock} → {st_right} but engulfing {'no match' if not engulf_matched else f'says {engulf_right}'} — skipping", "DEBUG", "signal")
+                return False, "None", stock, "notrade"
+        _emit_log(f"SuperTrend: {stock} signal={current_sig} (no change)", "DEBUG", "signal")
+        return False, "None", stock, "notrade"
     else:
         if getCandlesData is None:
             return False, "None", stock, "notrade"
@@ -2006,7 +2099,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
                 except (ValueError, TypeError):
                     pass  # fallback: allow scan if time parsing fails
                 # Get the result of the call/put engulf check
-                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick received → SuperTrend + Engulfing)", "DEBUG", "signal")
+                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick → SuperTrend+Engulfing combined)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
                 logger.info(f"\n dataEngulf = {dataEngulf}\n")
                 if dataEngulf[0]:
@@ -2042,7 +2135,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     elif isinstance(result, str) and result != "None":
                         _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
                 else:
-                    _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged)", "DEBUG", "signal")
+                    _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged or engulfing no match)", "DEBUG", "signal")
             
             # Mark the event as processed
             event_queue.task_done()
