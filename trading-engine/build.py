@@ -13,9 +13,15 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
 
 
-def get_target_triple():
+def get_target_triple(override: str | None = None) -> str:
     """Get the Tauri-compatible target triple for the current platform.
-    On Windows, PyInstaller will add .exe to the output name automatically."""
+    On Windows, PyInstaller will add .exe to the output name automatically.
+    Use TARGET_TRIPLE env var to override (e.g. for cross-build: x86_64-apple-darwin)."""
+    if override:
+        return override
+    env_triple = os.environ.get("TARGET_TRIPLE", "").strip()
+    if env_triple:
+        return env_triple
     machine = platform.machine().lower()
     system = platform.system().lower()
 

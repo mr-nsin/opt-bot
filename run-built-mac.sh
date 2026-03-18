@@ -3,7 +3,12 @@
 # Build first: npm run build:mac
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP="$ROOT/src-tauri/target/release/bundle/macos/QuantDrift.app"
+# Universal build uses different output path
+if [[ -d "$ROOT/src-tauri/target/universal-apple-darwin/release/bundle/macos" ]]; then
+  APP="$ROOT/src-tauri/target/universal-apple-darwin/release/bundle/macos/QuantDrift.app"
+else
+  APP="$ROOT/src-tauri/target/release/bundle/macos/QuantDrift.app"
+fi
 BIN="$APP/Contents/MacOS/QuantDrift"
 
 if [[ ! -x "$BIN" ]]; then

@@ -172,3 +172,11 @@ src-tauri/target/release/bundle/macos/
 ### Notes
 - Prebuild uses `trading-engine/.venv` Python when available (pandas_ta needs 3.12)
 - Trading-engine binary: `src-tauri/binaries/trading-engine-aarch64-apple-darwin` (Apple Silicon) or `trading-engine-x86_64-apple-darwin` (Intel)
+
+### Universal build (Intel + Apple Silicon)
+```bash
+npm run build:mac:universal
+```
+- Produces one app that runs on both Intel and Apple Silicon
+- Requires x86_64 Python (python.org universal or Intel Homebrew). Creates `trading-engine/.venv_x64` with x86_64 packages on first run.
+- Output: `src-tauri/target/universal-apple-darwin/release/bundle/macos/QuantDrift.app`

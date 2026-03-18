@@ -15,6 +15,11 @@ BUNDLE="$ROOT/src-tauri/target/release/bundle/macos"
 APP="$BUNDLE/QuantDrift.app"
 BINARY="$ROOT/src-tauri/target/release/opt-bot"
 
+# Ensure binaries are executable (prevents "can't be opened" when app is zipped/transferred)
+if [[ -d "$APP" ]]; then
+  chmod +x "$APP/Contents/MacOS/opt-bot" "$APP/Contents/MacOS/trading-engine" 2>/dev/null || true
+fi
+
 echo ""
 echo "Build complete."
 if [[ -d "$APP" ]]; then

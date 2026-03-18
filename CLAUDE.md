@@ -90,7 +90,8 @@ npm run tauri:dev
 ```
 **Build runnable .app (equivalent to exe on Windows):**
 ```bash
-npm run build:mac
+npm run build:mac                    # Apple Silicon only
+npm run build:mac:universal         # Intel + Apple Silicon (universal)
 # Output: src-tauri/target/release/bundle/macos/QuantDrift.app
 open src-tauri/target/release/bundle/macos/QuantDrift.app
 # Or run with registry env vars:

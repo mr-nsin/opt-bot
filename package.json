@@ -13,6 +13,7 @@
     "tauri:build": "tauri build",
     "build:exe": "npx tauri build --no-bundle",
     "build:mac": "bash build-mac.sh",
+    "build:mac:universal": "bash build-mac-universal.sh",
     "build:strict": "tsc && vite build"
   },
   "dependencies": {
