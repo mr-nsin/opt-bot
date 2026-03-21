@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useTauriEvent } from "./useTauri";
 import { useTradingStore } from "@/stores/tradingStore";
-import { usePositionStore } from "@/stores/positionStore";
+import { usePositionStore, normRight, normExpiry } from "@/stores/positionStore";
 import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useNotificationStore } from "@/stores/notificationStore";
@@ -215,14 +215,12 @@ export function useTradingEvents() {
 
     // Immediately add to positionStore so Active Positions and Trade Blotter show at the same time
     const { positions, setPositions } = usePositionStore.getState();
-    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
-    const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
     const alreadyExists = positions.some(
       (p) =>
         p.symbol === (data.symbol || "") &&
         Number(p.strike) === Number(data.strike || 0) &&
-        nrFn(p.right) === nrFn(data.right) &&
-        normExp(p.expiry) === normExp(data.expiry)
+        normRight(p.right) === normRight(data.right) &&
+        normExpiry(p.expiry) === normExpiry(data.expiry)
     );
     if (!alreadyExists) {
       setPositions([...positions, {
@@ -321,14 +319,12 @@ export function useTradingEvents() {
   useTauriEvent("trading:position_update", (data: any) => {
     const store = usePositionStore.getState();
     const current = store.positions;
-    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
-    const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
     const existing = current.find(
       (p) =>
         p.symbol === data.symbol &&
         Number(p.strike) === Number(data.strike) &&
-        nrFn(p.right) === nrFn(data.right) &&
-        normExp(p.expiry) === normExp(data.expiry)
+        normRight(p.right) === normRight(data.right) &&
+        normExpiry(p.expiry) === normExpiry(data.expiry)
     );
     if (existing) {
       store.updatePosition(data.symbol, data);
@@ -342,14 +338,14 @@ export function useTradingEvents() {
     if (!closedData.symbol) return;
     const store = usePositionStore.getState();
     const current = store.positions;
-    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
-    const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
     const pos = current.find(
       (p) =>
         p.symbol === closedData.symbol &&
         (closedData.strike == null || Number(p.strike) === Number(closedData.strike)) &&
-        (closedData.right == null || nrFn(p.right) === nrFn(closedData.right)) &&
-        (closedData.expiry == null || closedData.expiry === "" || normExp(p.expiry) === normExp(closedData.expiry))
+        (closedData.right == null || normRight(p.right) === normRight(closedData.right)) &&
+        (closedData.expiry == null ||
+          closedData.expiry === "" ||
+          normExpiry(p.expiry) === normExpiry(closedData.expiry))
     );
     if (pos) {
       store.addClosedPosition({ ...pos, ...closedData });

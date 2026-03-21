@@ -1,3 +1,4 @@
+import io
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -145,6 +146,80 @@ def wwma(values, n):
     return values.ewm(alpha=1/n, min_periods=n, adjust=False).mean()
 
 
+def _float_eq(a, b, rtol=1e-9, atol=1e-12):
+    """Robust float compare for SuperTrend band transitions (avoids strict == on floats)."""
+    try:
+        return bool(np.isclose(float(a), float(b), rtol=rtol, atol=atol))
+    except (TypeError, ValueError):
+        return False
+
+
+def _supertrend_numpy_on_df(data: pd.DataFrame, multiplier: float) -> pd.DataFrame:
+    """
+    SuperTrend (same rules as legacy iterrows BOTSingal) via NumPy loops.
+    Requires columns High, Low, Close, TR. Sets ATR, BUB, BLB, FUB, FLB, ST, ST_BUY_SELL.
+    """
+    n = len(data)
+    if n == 0:
+        return data
+    tr = np.asarray(data["TR"].values, dtype=np.float64)
+    close = np.asarray(data["Close"].values, dtype=np.float64)
+    high = np.asarray(data["High"].values, dtype=np.float64)
+    low = np.asarray(data["Low"].values, dtype=np.float64)
+
+    atr = np.zeros(n, dtype=np.float64)
+    for i in range(1, n):
+        atr[i] = (atr[i - 1] * 13.0 + tr[i]) / 14.0
+
+    hl2 = (high + low) / 2.0
+    bub = np.round(hl2 + multiplier * atr, 2)
+    blb = np.round(hl2 - multiplier * atr, 2)
+
+    fub = np.zeros(n, dtype=np.float64)
+    flb = np.zeros(n, dtype=np.float64)
+    st = np.zeros(n, dtype=np.float64)
+
+    for i in range(1, n):
+        if (bub[i] < fub[i - 1]) or (close[i - 1] > fub[i - 1]):
+            fub[i] = bub[i]
+        else:
+            fub[i] = fub[i - 1]
+
+    for i in range(1, n):
+        if (blb[i] > flb[i - 1]) or (close[i - 1] < flb[i - 1]):
+            flb[i] = blb[i]
+        else:
+            flb[i] = flb[i - 1]
+
+    for i in range(1, n):
+        if _float_eq(st[i - 1], fub[i - 1]) and close[i] <= fub[i]:
+            st[i] = fub[i]
+        elif _float_eq(st[i - 1], fub[i - 1]) and close[i] > fub[i]:
+            st[i] = flb[i]
+        elif _float_eq(st[i - 1], flb[i - 1]) and close[i] >= flb[i]:
+            st[i] = flb[i]
+        elif _float_eq(st[i - 1], flb[i - 1]) and close[i] < flb[i]:
+            st[i] = fub[i]
+
+    st_buy_sell = np.array(["SELL"] * n, dtype=object)
+    st_buy_sell[0] = "NA"
+    for i in range(1, n):
+        if st[i] < close[i]:
+            st_buy_sell[i] = "BUY"
+        else:
+            st_buy_sell[i] = "SELL"
+
+    out = data.copy()
+    out["ATR"] = atr
+    out["BUB"] = bub
+    out["BLB"] = blb
+    out["FUB"] = fub
+    out["FLB"] = flb
+    out["ST"] = st
+    out["ST_BUY_SELL"] = st_buy_sell
+    return out
+
+
 def ATR(stock, start='2020-01-01', end='2021-01-01', numDays=10):
     df = yf.download(stock, start, end)
     data=df.copy()
@@ -183,72 +258,13 @@ def fibonacci(stock, start='2020-01-01', end='2021-01-01'):
     
     
 def BOTSingal(data, multiplier=1.0):
-    multiplier = multiplier
-    data['tr0'] = abs(data["High"] - data["Low"])
-    data['tr1'] = abs(data["High"] - data["Close"].shift(1))
-    data['tr2'] = abs(data["Low"] - data["Close"].shift(1))
-    data["TR"] = round(data[['tr0', 'tr1', 'tr2']].max(axis=1), 2)
-    data["ATR"] = 0.00
-    data['BUB'] = 0.00
-    data["BLB"] = 0.00
-    data["FUB"] = 0.00
-    data["FLB"] = 0.00
-    data["ST"] = 0.00
-
-    # Calculating ATR
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, 'ATR'] = 0.00
-        else:
-            data.loc[i, 'ATR'] = (
-                (data.loc[i-1, 'ATR'] * 13) + data.loc[i, 'TR']) / 14
-
-    data['BUB'] = round(
-        ((data["High"] + data["Low"]) / 2) + (multiplier * data["ATR"]), 2)
-    data['BLB'] = round(
-        ((data["High"] + data["Low"]) / 2) - (multiplier * data["ATR"]), 2)
-
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, "FUB"] = 0.00
-        else:
-            if (data.loc[i, "BUB"] < data.loc[i-1, "FUB"]) or (data.loc[i-1, "Close"] > data.loc[i-1, "FUB"]):
-                data.loc[i, "FUB"] = data.loc[i, "BUB"]
-            else:
-                data.loc[i, "FUB"] = data.loc[i-1, "FUB"]
-
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, "FLB"] = 0.00
-        else:
-            if (data.loc[i, "BLB"] > data.loc[i-1, "FLB"]) | (data.loc[i-1, "Close"] < data.loc[i-1, "FLB"]):
-                data.loc[i, "FLB"] = data.loc[i, "BLB"]
-            else:
-                data.loc[i, "FLB"] = data.loc[i-1, "FLB"]
-
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, "ST"] = 0.00
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FUB"]) & (data.loc[i, "Close"] <= data.loc[i, "FUB"]):
-            data.loc[i, "ST"] = data.loc[i, "FUB"]
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FUB"]) & (data.loc[i, "Close"] > data.loc[i, "FUB"]):
-            data.loc[i, "ST"] = data.loc[i, "FLB"]
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FLB"]) & (data.loc[i, "Close"] >= data.loc[i, "FLB"]):
-            data.loc[i, "ST"] = data.loc[i, "FLB"]
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FLB"]) & (data.loc[i, "Close"] < data.loc[i, "FLB"]):
-            data.loc[i, "ST"] = data.loc[i, "FUB"]
-
-    # Buy Sell Indicator
-    for i, row in data.iterrows():
-        if i == 0:
-            data["ST_BUY_SELL"] = "NA"
-        elif (data.loc[i, "ST"] < data.loc[i, "Close"]):
-            data.loc[i, "ST_BUY_SELL"] = "BUY"
-        else:
-            data.loc[i, "ST_BUY_SELL"] = "SELL"
-    print("Value of signal is = {}".format(data))
-
-    return data
+    """SuperTrend signal; uses NumPy loops instead of pandas iterrows (hot path)."""
+    df = data.copy()
+    df["tr0"] = abs(df["High"] - df["Low"])
+    df["tr1"] = abs(df["High"] - df["Close"].shift(1))
+    df["tr2"] = abs(df["Low"] - df["Close"].shift(1))
+    df["TR"] = round(df[["tr0", "tr1", "tr2"]].max(axis=1), 2)
+    return _supertrend_numpy_on_df(df, multiplier)
     
     
 def alphaTrend(stock, dataSet=None, period="5d", interval="5m"):
@@ -262,69 +278,11 @@ def alphaTrend(stock, dataSet=None, period="5d", interval="5m"):
         data_df = io.StringIO(totalCandleString)
         data = pd.read_csv(data_df, sep=",")
     
-    data['tr0'] = abs(data["High"] - data["Low"])
-    data['tr1'] = abs(data["High"] - data["Close"].shift(1))
-    data['tr2'] = abs(data["Low"] - data["Close"].shift(1))
-    data["TR"] = round(data[['tr0', 'tr1', 'tr2']].max(axis=1), 2)
-    data["ATR"] = 0.00
-    data['BUB'] = 0.00
-    data["BLB"] = 0.00
-    data["FUB"] = 0.00
-    data["FLB"] = 0.00
-    data["ST"] = 0.00
-
-    # Calculating ATR
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, 'ATR'] = 0.00
-        else:
-            data.loc[i, 'ATR'] = (
-                (data.loc[i-1, 'ATR'] * 13) + data.loc[i, 'TR']) / 14
-
-    data['BUB'] = round(
-        ((data["High"] + data["Low"]) / 2) + (multiplier * data["ATR"]), 2)
-    data['BLB'] = round(
-        ((data["High"] + data["Low"]) / 2) - (multiplier * data["ATR"]), 2)
-
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, "FUB"] = 0.00
-        else:
-            if (data.loc[i, "BUB"] < data.loc[i-1, "FUB"]) or (data.loc[i-1, "Close"] > data.loc[i-1, "FUB"]):
-                data.loc[i, "FUB"] = data.loc[i, "BUB"]
-            else:
-                data.loc[i, "FUB"] = data.loc[i-1, "FUB"]
-
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, "FLB"] = 0.00
-        else:
-            if (data.loc[i, "BLB"] > data.loc[i-1, "FLB"]) | (data.loc[i-1, "Close"] < data.loc[i-1, "FLB"]):
-                data.loc[i, "FLB"] = data.loc[i, "BLB"]
-            else:
-                data.loc[i, "FLB"] = data.loc[i-1, "FLB"]
-
-    for i, row in data.iterrows():
-        if i == 0:
-            data.loc[i, "ST"] = 0.00
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FUB"]) & (data.loc[i, "Close"] <= data.loc[i, "FUB"]):
-            data.loc[i, "ST"] = data.loc[i, "FUB"]
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FUB"]) & (data.loc[i, "Close"] > data.loc[i, "FUB"]):
-            data.loc[i, "ST"] = data.loc[i, "FLB"]
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FLB"]) & (data.loc[i, "Close"] >= data.loc[i, "FLB"]):
-            data.loc[i, "ST"] = data.loc[i, "FLB"]
-        elif (data.loc[i-1, "ST"] == data.loc[i-1, "FLB"]) & (data.loc[i, "Close"] < data.loc[i, "FLB"]):
-            data.loc[i, "ST"] = data.loc[i, "FUB"]
-
-    # Buy Sell Indicator
-    for i, row in data.iterrows():
-        if i == 0:
-            data["ST_BUY_SELL"] = "NA"
-        elif (data.loc[i, "ST"] < data.loc[i, "Close"]):
-            data.loc[i, "ST_BUY_SELL"] = "BUY"
-        else:
-            data.loc[i, "ST_BUY_SELL"] = "SELL"
-    return data
+    data["tr0"] = abs(data["High"] - data["Low"])
+    data["tr1"] = abs(data["High"] - data["Close"].shift(1))
+    data["tr2"] = abs(data["Low"] - data["Close"].shift(1))
+    data["TR"] = round(data[["tr0", "tr1", "tr2"]].max(axis=1), 2)
+    return _supertrend_numpy_on_df(data, multiplier)
 
 ############# TO-DO #########################################
 def getAllPrices(stock, period, interval):

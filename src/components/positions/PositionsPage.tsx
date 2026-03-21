@@ -45,7 +45,7 @@ export const PositionsPage = memo(function PositionsPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
-    // Fetch once on mount; live updates come via position_update events (every 2s from engine)
+    // Fetch once on mount; live updates via position_update (~1s poll + immediate on entry fill) and trade_executed
     Promise.all([refreshPositions(), refreshStatus()]);
   }, [refreshPositions, refreshStatus]);
 

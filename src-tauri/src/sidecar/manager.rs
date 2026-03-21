@@ -406,6 +406,7 @@ async fn handle_sidecar_message(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .replace('-', "")
+                        .replace(' ', "")
                         .trim()
                         .to_string();
 
@@ -441,7 +442,7 @@ async fn handle_sidecar_message(
                             || norm_right(&t.right) == norm_right(closed_right)
                             || t.right == closed_right;
                         let expiry_ok = closed_expiry.is_empty()
-                            || t.expiry.replace('-', "").trim() == closed_expiry;
+                            || t.expiry.replace('-', "").replace(' ', "").trim() == closed_expiry;
                         if symbol_ok && strike_ok && right_ok && expiry_ok {
                             t.status = "closed".to_string();
                             t.exit_price = exit_price;
@@ -450,8 +451,21 @@ async fn handle_sidecar_message(
                         }
                     }
 
-                    // Remove matching position (by symbol + strike + right for options)
+                    // Remove matching position (symbol + strike + right + expiry; same rules as frontend)
                     if !closed_symbol.is_empty() {
+                        fn norm_pos_exp(e: &str) -> String {
+                            e.replace('-', "").replace(' ', "").trim().to_string()
+                        }
+                        fn norm_pos_right(r: &str) -> String {
+                            let u = r.to_uppercase();
+                            if u.starts_with('C') {
+                                "C".into()
+                            } else if u.starts_with('P') {
+                                "P".into()
+                            } else {
+                                r.to_string()
+                            }
+                        }
                         app.trading.positions.retain(|p| {
                             if p.symbol != closed_symbol {
                                 return true;
@@ -461,7 +475,12 @@ async fn handle_sidecar_message(
                                     return true;
                                 }
                             }
-                            if !closed_right.is_empty() && p.right != closed_right {
+                            if !closed_right.is_empty()
+                                && norm_pos_right(&p.right) != norm_pos_right(closed_right)
+                            {
+                                return true;
+                            }
+                            if !closed_expiry.is_empty() && norm_pos_exp(&p.expiry) != closed_expiry {
                                 return true;
                             }
                             false

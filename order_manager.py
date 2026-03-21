@@ -13,6 +13,7 @@ try:
         emit_order_update as _emit_order_update,
         emit_trade_executed as _emit_trade_executed,
         emit_trade_closed as _emit_trade_closed,
+        emit_position as _emit_position,
     )
 except ImportError:
     def _emit_log(message, level="INFO", category="trading"):
@@ -22,6 +23,8 @@ except ImportError:
     def _emit_trade_executed(*args, **kwargs):
         pass
     def _emit_trade_closed(*args, **kwargs):
+        pass
+    def _emit_position(*args, **kwargs):
         pass
 
 
@@ -454,6 +457,32 @@ class OrderManager:
                 "status": "open",
                 "timestamp": datetime.datetime.now().isoformat(),
             })
+            # Same-tick position_update so Rust AppState + UI match before next engine poll (TWS positions can lag).
+            avg_px = float(order.average_price or 0)
+            qty = int(order.executed_qty or 0)
+            pos_payload = {
+                "symbol": order.symbol or "",
+                "strike": float(order.strike or 0),
+                "right": order.right or "",
+                "expiry": order.expiration or "",
+                "quantity": qty,
+                "qty": qty,
+                "avg_price": avg_px,
+                "current_price": avg_px,
+                "pnl": 0.0,
+                "pnl_percent": 0.0,
+            }
+            try:
+                if getattr(order, "stoploss_price", None) is not None and float(order.stoploss_price or 0) > 0:
+                    pos_payload["stoploss_price"] = float(order.stoploss_price)
+                prof = float(getattr(order, "current_profit_price", 0) or 0) or float(
+                    getattr(order, "profit_price", 0) or 0
+                )
+                if prof > 0:
+                    pos_payload["profit_price"] = prof
+            except (TypeError, ValueError):
+                pass
+            _emit_position(pos_payload)
 
 
     def close_position(self, order: OptionOrder, option_tick: Tick) -> None:

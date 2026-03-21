@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { positions as positionsApi } from "@/lib/tauri-commands";
-import { usePositionStore } from "@/stores/positionStore";
+import { usePositionStore, positionRowKey } from "@/stores/positionStore";
 import type { Position } from "@/lib/types";
 
 export function usePositions() {
@@ -13,8 +13,16 @@ export function usePositions() {
   const refreshPositions = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await positionsApi.getAll();
-      setPositions(result as Position[]);
+      const result = (await positionsApi.getAll()) as Position[];
+      const apiList = Array.isArray(result) ? result : [];
+      const local = usePositionStore.getState().positions;
+      // TWS can lag behind entry fills. API may omit a row that trade_executed already added.
+      // Merge: prefer API for each key; keep local open rows whose keys are missing from API.
+      const apiKeys = new Set(apiList.map((p) => positionRowKey(p)));
+      const orphans = local.filter(
+        (p) => (p.quantity ?? 0) > 0 && !apiKeys.has(positionRowKey(p))
+      );
+      setPositions([...apiList, ...orphans]);
     } catch (err) {
       console.error("Failed to fetch positions:", err);
     } finally {

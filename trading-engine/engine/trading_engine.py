@@ -55,11 +55,11 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 0.5  # Faster position/price updates
+        self._positions_interval_sec: float = 1.0  # Balance UX vs IPC (aligned with PnL throttle)
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
-        self._pnl_throttle_sec: float = 0.5  # Emit PnL at most twice per second
+        self._pnl_throttle_sec: float = 1.0  # Align with UI throttle (~1/s); cuts IPC vs 50ms engine loop
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""

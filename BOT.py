@@ -1935,6 +1935,83 @@ def init_order_requests():
     except Exception as ex:
         logger.error(f"init_order_requests: {ex}", exc_info=True)
 
+
+def _wait_underlying_ticks_ready(client, stock_contracts, timeout_sec=3.0, poll_interval=0.05):
+    """
+    Poll market data until STK underlyings have a usable last price, or timeout.
+    Replaces a fixed sleep so startup can finish earlier when TWS is fast.
+    """
+    stk_contracts = [c for c in stock_contracts if getattr(c, "secType", "") == "STK"]
+    fut_contracts = [c for c in stock_contracts if getattr(c, "secType", "") != "STK"]
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if stk_contracts:
+            all_ok = True
+            for c in stk_contracts:
+                md = client.get_data(contract=c)
+                if md is None:
+                    all_ok = False
+                    break
+                last = getattr(md, "last", -1)
+                if last is None or last <= 0 or last == -1:
+                    all_ok = False
+                    break
+            if all_ok:
+                return
+        elif fut_contracts:
+            for c in fut_contracts:
+                md = client.get_data(contract=c)
+                if md is not None:
+                    last = getattr(md, "last", -1)
+                    if last is not None and last > 0 and last != -1:
+                        return
+        else:
+            return
+        time.sleep(poll_interval)
+    logger.info(
+        "init_data_feed: underlying tick wait %.1fs timeout — continuing",
+        timeout_sec,
+    )
+
+
+def _wait_option_snapshots_ready(client, options_contracts, timeout_sec=10.0, poll_interval=0.15):
+    """
+    Poll option snapshot ticks until enough contracts have bid/ask/last, or timeout.
+    """
+    if not options_contracts:
+        return
+    n = len(options_contracts)
+    need = max(1, min(n, int(n * 0.4)))
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        good = 0
+        for contract in options_contracts:
+            md = client.get_data(contract=contract)
+            if not md:
+                continue
+            last = getattr(md, "last", -1)
+            bid = getattr(md, "bid", -1)
+            ask = getattr(md, "ask", -1)
+            try:
+                if (last is not None and float(last) > 0) or (bid is not None and float(bid) > 0) or (ask is not None and float(ask) > 0):
+                    good += 1
+            except (TypeError, ValueError):
+                continue
+        if good >= need:
+            logger.info(
+                "init_data_feed: option snapshots %s/%s ready — continuing",
+                good,
+                n,
+            )
+            return
+        time.sleep(poll_interval)
+    logger.info(
+        "init_data_feed: option snapshot wait %.1fs timeout — continuing (%s OPT)",
+        timeout_sec,
+        n,
+    )
+
+
 def init_data_feed():
     """
     Initializes the data feed by connecting to the TWS, subscribing to the stocks in `stockList`, and
@@ -1981,7 +2058,7 @@ def init_data_feed():
         for stock_contract in stock_contracts:
             client.subscribe(contract=stock_contract)
             client.subscribe_historical_data(contract=stock_contract, fetchValue=fetchValue, barSize=candleTime)
-        time.sleep(3.0)
+        _wait_underlying_ticks_ready(client, stock_contracts, timeout_sec=3.0, poll_interval=0.05)
 
         # Build strikes_map only for stocks (options chain); futures have no options in this flow
         stock_only_list = [c.symbol for c in stock_contracts if getattr(c, "secType", "") == "STK"]
@@ -2015,7 +2092,7 @@ def init_data_feed():
                 client.subscribe(contract=put_option, snapshot=True)
                 options_contracts.extend((call_option, put_option))
 
-        time.sleep(10)
+        _wait_option_snapshots_ready(client, options_contracts, timeout_sec=10.0, poll_interval=0.15)
         for contract in options_contracts:
             client.subscribe(contract=contract)
     except Exception as ex:
@@ -2073,7 +2150,8 @@ def event_processor(event_queue: Queue, count: int) -> None:
             break
         try:
             # Get the event data from the queue
-            event_data = event_queue.get(block=False, timeout=0.20)
+            # block=True respects timeout; block=False ignores timeout (busy-spin). Use blocking wait to reduce CPU.
+            event_data = event_queue.get(block=True, timeout=0.25)
             tick: Tick = event_data["tick"]
             sym = getattr(tick.contract, "symbol", "") or getattr(tick.contract, "localSymbol", "") or getattr(tick, "symbol", "")
             sec_type = getattr(tick.contract, "secType", "")
