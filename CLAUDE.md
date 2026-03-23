@@ -78,6 +78,7 @@ This is a **Tauri + React + Python** desktop trading application for options tra
 | `config.json` | Trading config (IP, port, symbols, risk params) |
 | `config/settings.json` | UI settings |
 | `docs/` | ROADMAP.md, design docs, analysis docs |
+| `logs/trade_open_context.jsonl` | Entry-order audit: full signal OHLCV + SuperTrend DF + engulf window, algo bars, execution (queued async — see `trade_placement_audit.py`) |
 
 ### Running the App (macOS)
 **Dev mode:**

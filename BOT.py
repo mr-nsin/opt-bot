@@ -36,6 +36,7 @@ from common import OptionOrder, logger, Tick, getExpiry
 from tws_api_client import TwsApiClient
 from order_manager import OrderManager
 from data_access import DAL
+from trade_placement_audit import log_open_trade_context
 
 # ---- Frontend log emitter (sends logs to Tauri UI via JSON-RPC stdout) ----
 # Imported conditionally because BOT.py can run standalone (legacy) or inside the sidecar.
@@ -316,7 +317,8 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                 totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                 profitPrice=0, conIdDetails=None, legPrices=None, 
                 options_tick: Tick = None,
-                stock_tick:Tick = None, closing_order: bool = False, is_sqare_off=False):
+                stock_tick:Tick = None, placement_context=None,
+                closing_order: bool = False, is_sqare_off=False):
                     
     if DAY_LOCKED and CLOSE_ALL_ORDERS and not (closing_order or is_sqare_off):
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
@@ -422,6 +424,26 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
             )
             _emit_signal(symbol, right or "", float(strike or 0), float(lmtPrice or 0),
                          f"{action} {orderType} — TP=${profitPrice:.2f} SL=${auxPrice:.2f}")
+            try:
+                audit = {
+                    "event": "open_order_placed",
+                    "order_id": order.orderId,
+                    "symbol": symbol,
+                    "expiry": expiry,
+                    "strike": strike,
+                    "right": right,
+                    "action": action,
+                    "quantity": int(totalQuantity),
+                    "order_type": orderType,
+                    "limit_price": float(lmtPrice) if lmtPrice is not None else None,
+                    "take_profit_price": float(profitPrice) if profitPrice is not None else None,
+                    "stop_loss_price": float(auxPrice) if auxPrice is not None else None,
+                }
+                if placement_context is not None:
+                    audit["placement_context"] = placement_context
+                log_open_trade_context(audit)
+            except Exception:
+                pass
         elif closing_order:
             _emit_log(f"EXIT ORDER: {symbol} {right} {strike} {action} {totalQuantity}x @ MKT", "INFO", "order")
         
@@ -448,7 +470,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=None,
                         totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                         profitPrice=0, conIdDetails=None, legPrices=None, options_tick: Tick=None,
-                        stock_tick: Tick=None):
+                        stock_tick: Tick=None, placement_context=None):
                             
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
@@ -494,7 +516,8 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
                         conIdDetails=conIdDetails,
                         legPrices=legPrices, 
                         options_tick=options_tick,
-                        stock_tick=stock_tick)
+                        stock_tick=stock_tick,
+                        placement_context=placement_context)
         return result
     except Exception as ex:
         logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
@@ -581,11 +604,13 @@ def scan_all_stocks_signals(system_start_time=None, limit=21):
 
 def _check_engulfing_patterns(getCandlesData, stock):
     """
-    Check for bullish/bearish engulfing patterns. Returns (matched, right, strength) or (False, None, None).
+    Check for bullish/bearish engulfing patterns.
+    Returns (matched, right, strength, pattern_id) or (False, None, None, None).
     Used by getCallPutEngulfCheck for combined SuperTrend+Engulfing mode.
+    pattern_id matches the engulf-only branch labels in getCallPutEngulfCheck (for audit logs).
     """
     if getCandlesData is None or len(getCandlesData) < 8:
-        return (False, None, None)
+        return (False, None, None, None)
     last2Candles = getCandlesData[1:8]
     candle_0, candle_1, candle_2, candle_3, candle_4, candle_5, candle_6 = (
         last2Candles[0], last2Candles[1], last2Candles[2], last2Candles[3],
@@ -617,33 +642,33 @@ def _check_engulfing_patterns(getCandlesData, stock):
     candle_6_high, candle_6_low = float(candle_6.high), float(candle_6.low)
     # Bullish (CALL) patterns
     if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_6_vol >= candle_5_vol*0.65 and candle_5_vol >= candle_4_vol*0.65:
-        return (True, "CALL", "strongBuy")
+        return (True, "CALL", "strongBuy", "engulf_CALL_3c_pure_bullish_A_strongBuy")
     if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_5_vol >= candle_4_vol*0.65 and (candle_6_vol >= candle_5_vol*1.2 or candle_6_vol >= candle_4_vol*1.2):
-        return (True, "CALL", "heavyBuy")
+        return (True, "CALL", "heavyBuy", "engulf_CALL_3c_pure_bullish_A_heavyBuy")
     if (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*0.65:
-        return (True, "CALL", "strongBuy")
+        return (True, "CALL", "strongBuy", "engulf_CALL_4c_pure_bullish_B_strongBuy")
     if (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*1.25:
-        return (True, "CALL", "heavyBuy")
+        return (True, "CALL", "heavyBuy", "engulf_CALL_4c_pure_bullish_B_heavyBuy")
     if candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= (candle_5_close-candle_5_open)*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and (candle_6_vol >= candle_5_vol*0.65 and candle_5_vol >= candle_4_vol*0.85):
-        return (True, "CALL", "strongBuy")
+        return (True, "CALL", "strongBuy", "engulf_CALL_3c_hammer_C_strongBuy")
     if candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= (candle_5_close-candle_5_open)*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and candle_5_vol >= candle_4_vol*1.05 and candle_6_vol >= candle_5_vol*0.55:
-        return (True, "CALL", "heavyBuy")
+        return (True, "CALL", "heavyBuy", "engulf_CALL_3c_hammer_C_heavyBuy")
     if (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and candle_4_open >= candle_4_close and (candle_5_vol >= candle_4_vol*0.65 and candle_6_vol >= candle_5_vol*0.55 and candle_6_vol >= candle_4_vol*0.5):
-        return (True, "CALL", "normalBuy")
+        return (True, "CALL", "normalBuy", "engulf_CALL_D_normalBuy")
     if (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and candle_4_open >= candle_4_close and (candle_5_vol > candle_4_vol*0.55 and candle_6_vol >= candle_4_vol*0.52 and candle_6_vol >= candle_5_vol*0.55):
-        return (True, "CALL", "mediumBuy")
+        return (True, "CALL", "mediumBuy", "engulf_CALL_D_hvy_vol_mediumBuy")
     if (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and candle_3_open >= candle_3_close and (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and (candle_6_vol >= candle_3_vol*0.6 and candle_4_vol >= candle_3_vol*0.55 and candle_5_vol <= candle_3_vol*0.6):
-        return (True, "CALL", "mediumBuy")
+        return (True, "CALL", "mediumBuy", "engulf_CALL_E_mediumBuy")
     # Bearish (PUT) patterns
     if candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol >= candle_4_vol*0.8:
-        return (True, "PUT", "mediumSell")
+        return (True, "PUT", "mediumSell", "engulf_PUT_A_mediumSell")
     if candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol <= candle_5_vol*1.25:
-        return (True, "PUT", "strongSell")
+        return (True, "PUT", "strongSell", "engulf_PUT_B_strongSell")
     if candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and candle_6_vol >= candle_5_vol*0.8:
-        return (True, "PUT", "mediumSell")
+        return (True, "PUT", "mediumSell", "engulf_PUT_B_hvy_vol_mediumSell")
     if (candle_2_close <= candle_3_close or candle_2_close > candle_3_close) and (candle_1_close >= candle_2_close or candle_1_close < candle_2_close) and (candle_0_open >= candle_1_close or candle_0_open < candle_1_close) and (candle_0_close < candle_1_low) and candle_1_vol >= candle_0_vol*0.8:
-        return (True, "PUT", "normalSell")
-    return (False, None, None)
+        return (True, "PUT", "normalSell", "engulf_PUT_chain_normalSell")
+    return (False, None, None, None)
 
 
 def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
@@ -662,12 +687,12 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
     #############################################################################################################################################################################
     if indicator == "supertrend":
         if getCandlesData is None:
-            return False, "None", stock, "notrade"
-        
+            return False, "None", stock, "notrade", None
+
         if len(getCandlesData) < limit:
             logger.info(f"{stock} not enough candles.")
             logger.info(f"\n Received Candles for stocks= {stock} are = {getCandlesData}\n")
-            return False, "None", stock, "notrade"
+            return False, "None", stock, "notrade", None
             
         new_dict = {
             "Date":[x.date for x in getCandlesData],
@@ -703,11 +728,29 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
         if current_sig.lower() == "sell":
             right = "PUT"
         _emit_log(f"Signal result: {stock} → {right} ({indicator} OK)", "INFO", "signal")
-        return True, right,  stock, "strongBuy"
+        st_rows = _super_trend_signal_df_to_records(super_trend_signal)
+        audit = _signal_path_audit_bundle(
+            stock, indicator, limit, getCandlesData,
+            extra={
+                "mode": "supertrend_only",
+                "super_trend_dataframe": st_rows,
+                "botsignal_input_columns": {
+                    "Date": [str(x) for x in new_dict["Date"]],
+                    "Close": [float(x) for x in new_dict["Close"]],
+                    "High": [float(x) for x in new_dict["High"]],
+                    "Low": [float(x) for x in new_dict["Low"]],
+                },
+                "signal_dict_last": str(last_sig),
+                "signal_dict_current": str(current_sig),
+                "supertrend_flip": bool(last_sig != current_sig),
+                "note": "indicator=supertrend: no engulf filter in this branch",
+            },
+        )
+        return True, right, stock, "strongBuy", audit
     elif indicator == "both":
         # Combined: SuperTrend for direction + Engulfing as filter. Signal only when BOTH agree.
         if getCandlesData is None or len(getCandlesData) < limit:
-            return False, "None", stock, "notrade"
+            return False, "None", stock, "notrade", None
         if stock not in signal_dict:
             signal_dict[stock] = {"last_signal": "", "current_signal": ""}
         new_dict = {
@@ -724,24 +767,45 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
         last_sig = signal_dict[stock]["last_signal"]
         if last_sig != current_sig:
             st_right = "CALL" if current_sig.lower() != "sell" else "PUT"
-            engulf_matched, engulf_right, engulf_strength = _check_engulfing_patterns(getCandlesData, stock)
+            engulf_matched, engulf_right, engulf_strength, engulf_pattern_id = _check_engulfing_patterns(getCandlesData, stock)
             if engulf_matched and engulf_right == st_right:
                 _emit_log(f"SuperTrend+Engulfing CONFIRMED: {stock} → {st_right} ({engulf_strength})", "INFO", "signal")
-                return True, st_right, stock, engulf_strength or "strongBuy"
+                st_rows = _super_trend_signal_df_to_records(super_trend_signal)
+                audit = _signal_path_audit_bundle(
+                    stock, indicator, limit, getCandlesData,
+                    extra={
+                        "mode": "supertrend_plus_engulfing",
+                        "super_trend_dataframe": st_rows,
+                        "botsignal_input_columns": {
+                            "Date": [str(x) for x in new_dict["Date"]],
+                            "Close": [float(x) for x in new_dict["Close"]],
+                            "High": [float(x) for x in new_dict["High"]],
+                            "Low": [float(x) for x in new_dict["Low"]],
+                        },
+                        "signal_dict_last": str(last_sig),
+                        "signal_dict_current": str(current_sig),
+                        "supertrend_derived_right": st_right,
+                        "engulfing_matched": True,
+                        "engulfing_pattern_id": engulf_pattern_id,
+                        "engulfing_right": engulf_right,
+                        "engulfing_strength": engulf_strength,
+                    },
+                )
+                return True, st_right, stock, engulf_strength or "strongBuy", audit
             else:
                 _emit_log(f"SuperTrend flip {stock} → {st_right} but engulfing {'no match' if not engulf_matched else f'says {engulf_right}'} — skipping", "DEBUG", "signal")
-                return False, "None", stock, "notrade"
+                return False, "None", stock, "notrade", None
         _emit_log(f"SuperTrend: {stock} signal={current_sig} (no change)", "DEBUG", "signal")
-        return False, "None", stock, "notrade"
+        return False, "None", stock, "notrade", None
     else:
         if getCandlesData is None:
-            return False, "None", stock, "notrade"
-        
+            return False, "None", stock, "notrade", None
+
         if len(getCandlesData) < 8:
             logger.info(f"{stock} not enough candles.")
             logger.info(f"\n Received Candles for stocks= {stock} are = {getCandlesData}\n")
             _emit_log(f"IBKR bars: {stock} received {len(getCandlesData) if getCandlesData else 0} bars (need 8 for engulfing)", "INFO", "data")
-            return False, "None", stock, "notrade"
+            return False, "None", stock, "notrade", None
         
         last2Candles = getCandlesData[1:8]
         logger.info(f"Last 7 candles data 1st is = {last2Candles}")
@@ -797,7 +861,19 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
         candle_4_low = float(candle_4.low)
         candle_5_low = float(candle_5.low)
         candle_6_low = float(candle_6.low)
-        
+
+        def _ret_engulf_true(right_side, strength_key, pattern_id):
+            audit = _signal_path_audit_bundle(
+                stock, indicator, limit, getCandlesData,
+                extra={
+                    "mode": "engulf_only_multibar",
+                    "engulfing_pattern_id": pattern_id,
+                    "engulfing_right": right_side,
+                    "returned_strength": strength_key,
+                },
+            )
+            return True, right_side, stock, strength_key, audit
+
         #AI_function() # match the pattern
         if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
             candle_6_vol>= candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.65:
@@ -805,28 +881,28 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "strongBuy"
+            return _ret_engulf_true("CALL", "strongBuy", "engulf_only_CALL_AAAA_strongBuy")
         elif candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
             candle_5_vol >=candle_4_vol*0.65 and (candle_6_vol >=candle_5_vol*1.2 or candle_6_vol >=candle_4_vol*1.2):
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-AAAAA_HVY_VOL-StrongBUY>> meet. Return TRUE \
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "heavyBuy"
+            return _ret_engulf_true("CALL", "heavyBuy", "engulf_only_CALL_AAAA_hvy_vol_strongBuy")
         elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2<= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2<= candle_3_close) and \
             candle_6_vol >=candle_5_vol*0.65:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 4 candles Pure Bullish Engulf Condition <<<CALL-BBBBB-StrongBUY>> meet. Return TRUE \
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "strongBuy"
+            return _ret_engulf_true("CALL", "strongBuy", "engulf_only_CALL_BBBB_strongBuy")
         elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2<= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2<= candle_3_close) and \
             candle_6_vol >=candle_5_vol*1.25:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 4 candles Pure Bullish Engulf Condition <<<CALL-BBBBB_HVY_VOL_StrongBUY>> meet. Return TRUE \
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "heavyBuy"
+            return _ret_engulf_true("CALL", "heavyBuy", "engulf_only_CALL_BBBB_hvy_vol_strongBuy")
         elif candle_6_close >= candle_5_close and candle_5_close>=candle_5_open and (candle_5_open-candle_5_low>=candle_5_close-candle_5_open*2) and \
             (candle_5_high-candle_5_open<=candle_5_close-candle_5_open) and \
             (candle_6_vol >=candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.85):
@@ -834,7 +910,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "strongBuy"
+            return _ret_engulf_true("CALL", "strongBuy", "engulf_only_CALL_CCCC_strongBuy")
         elif candle_6_close >= candle_5_close and candle_5_close>=candle_5_open and (candle_5_open-candle_5_low>=candle_5_close-candle_5_open*2) and \
             (candle_5_high-candle_5_open<=candle_5_close-candle_5_open) and \
             candle_5_vol >=candle_4_vol*1.05 and candle_6_vol >=candle_5_vol*0.55:
@@ -842,7 +918,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "heavyBuy"
+            return _ret_engulf_true("CALL", "heavyBuy", "engulf_only_CALL_CCCC_hvy_vol_strongBuy")
         elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and \
             candle_4_open >= candle_4_close and \
             (candle_5_vol >= candle_4_vol*0.65 and candle_6_vol >= candle_5_vol*0.55 and candle_6_vol >=candle_4_vol*0.5):
@@ -850,7 +926,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "normalBuy"
+            return _ret_engulf_true("CALL", "normalBuy", "engulf_only_CALL_DDDD_normalBuy")
         elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and \
             candle_4_open >= candle_4_close and \
             (candle_5_vol > candle_4_vol*0.55 and candle_6_vol >=candle_4_vol*0.52 and candle_6_vol >=candle_5_vol*0.55):
@@ -858,7 +934,7 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "mediumBuy"
+            return _ret_engulf_true("CALL", "mediumBuy", "engulf_only_CALL_DDDD_hvy_vol_mediumBuy")
         elif (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and \
             candle_3_open >= candle_3_close and \
             (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and \
@@ -867,28 +943,28 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
-            return True, "CALL", stock, "mediumBuy"
+            return _ret_engulf_true("CALL", "mediumBuy", "engulf_only_CALL_EEEE_mediumBuy")
         elif candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_4_open and \
             candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol * 0.85 and candle_6_vol >= candle_4_vol * 0.8:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-AAAAA_MediumSELL>> meet. Return TRUE \
                         candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "mediumSell"
+            return _ret_engulf_true("PUT", "mediumSell", "engulf_only_PUT_AAAA_mediumSell")
         elif candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and \
             candle_6_vol >= candle_5_vol * 0.85 and candle_6_vol <= candle_5_vol * 1.25:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-BBBBB_StrongSELL>> meet. Return TRUE \
                         candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "strongSell"
+            return _ret_engulf_true("PUT", "strongSell", "engulf_only_PUT_BBBB_strongSell")
         elif candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and \
             candle_6_vol >= candle_5_vol * 0.8:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-BBBBB_HVY_VOL_StrongSELL>> meet. Return TRUE \
                         candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "mediumSell"
+            return _ret_engulf_true("PUT", "mediumSell", "engulf_only_PUT_BBBB_hvy_vol_mediumSell")
         elif (candle_2_close <= candle_3_close or candle_2_close > candle_3_close) and \
                 (candle_1_close >= candle_2_close or candle_1_close < candle_2_close) and \
                 (candle_0_open >= candle_1_close or candle_0_open < candle_1_close) and \
@@ -898,14 +974,14 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
                         candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
                 stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return True, "PUT", stock, "normalSell"
+            return _ret_engulf_true("PUT", "normalSell", "engulf_only_PUT_chain_normalSell")
         else:
             logger.info("\n\n*********************************** <<<<Stock = {} >>>>> NO CONDITION MEET. Return FALSE \
                         candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
                         4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}. \
                         ********************************** STOCK CHECK END ********************************************\n\n".format(
                 stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
-            return False, "None", stock, "notrade"
+            return False, "None", stock, "notrade", None
 
 def checkVWAPValue(stock, Right, candlesData):
     # from datetime import datetime
@@ -1177,12 +1253,115 @@ def get_delta_volume(stock, strike, right, expiry):
     deltaVolData.append(market_data)
     return deltaVolData
 
+
+def _bars_ohlcv_for_audit(getCandlesData):
+    """OHLCV rows for the same bar list used by checkAlgoAndTrade (IBKR history order: index 0 = oldest in window)."""
+    rows = []
+    if not getCandlesData:
+        return rows
+    for o in getCandlesData:
+        try:
+            rows.append({
+                "date": str(getattr(o, "date", "")),
+                "open": float(o.open),
+                "high": float(o.high),
+                "low": float(o.low),
+                "close": float(o.close),
+                "volume": float(getattr(o, "volume", 0) or 0),
+            })
+        except Exception:
+            rows.append({"date": str(getattr(o, "date", "")), "parse_error": True, "repr": repr(o)})
+    return rows
+
+
+def _ohlcv_columns_from_bars(getCandlesData):
+    """Column-oriented OHLCV (rebuild with pd.DataFrame(bundle)). Same bar order as row list."""
+    empty = {"date": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
+    if not getCandlesData:
+        return empty
+    try:
+        return {
+            "date": [str(getattr(o, "date", "")) for o in getCandlesData],
+            "open": [float(o.open) for o in getCandlesData],
+            "high": [float(o.high) for o in getCandlesData],
+            "low": [float(o.low) for o in getCandlesData],
+            "close": [float(o.close) for o in getCandlesData],
+            "volume": [float(getattr(o, "volume", 0) or 0) for o in getCandlesData],
+        }
+    except Exception:
+        return empty
+
+
+def _super_trend_signal_df_to_records(super_trend_signal_df):
+    """BOTSingal output columns Date, Close, ST_BUY_SELL → JSON-safe list of rows (full series used for signal)."""
+    try:
+        df = super_trend_signal_df.copy()
+        df["Date"] = df["Date"].astype(str)
+        return df.to_dict(orient="records")
+    except Exception:
+        return []
+
+
+def _signal_path_audit_bundle(stock, indicator_setting, limit_requested, getCandlesData, *, extra=None):
+    """
+    Complete bar payload + optional SuperTrend/engulf metadata for trade-open audit.
+    """
+    bundle = {
+        "source_function": "getCallPutEngulfCheck",
+        "stock": stock,
+        "indicator_setting": indicator_setting,
+        "bar_size": candleTime,
+        "limit_requested": limit_requested,
+        "bar_count_actual": len(getCandlesData) if getCandlesData else 0,
+        "full_ohlcv_all_bars": _bars_ohlcv_for_audit(getCandlesData),
+        "full_ohlcv_columns_dataframe_shape": _ohlcv_columns_from_bars(getCandlesData),
+    }
+    if getCandlesData and len(getCandlesData) >= 8:
+        win = getCandlesData[1:8]
+        bundle["engulfing_multibar_window_slice_1_to_7_ohlcv"] = _bars_ohlcv_for_audit(win)
+        bundle["engulfing_window_ohlcv_columns_dataframe_shape"] = _ohlcv_columns_from_bars(win)
+        bundle["engulfing_indexing_note"] = (
+            "Slice getCandlesData[1:8] = 7 bars; in _check_engulfing_patterns these are candle_0 (oldest) … candle_6 (newest in window)."
+        )
+    if extra:
+        bundle.update(extra)
+    return bundle
+
+
+def _vwap_snapshot_for_audit(getCandlesData):
+    """Same VWAP level as checkVWAPValue (volume-weighted HLC/3); index-0 open/close = running candle there."""
+    if not getCandlesData:
+        return None
+    try:
+        curt_cum = []
+        curt_vol = []
+        for candle in getCandlesData:
+            v = int(candle.volume) * 100
+            typ = (float(candle.high) + float(candle.low) + float(candle.close)) / 3.0
+            curt_cum.append(typ * v)
+            curt_vol.append(v)
+        sv = sum(curt_vol)
+        if sv == 0:
+            return None
+        intraday = sum(curt_cum) / sv
+        running = getCandlesData[0]
+        return {
+            "intraday_vwap": round(float(intraday), 6),
+            "running_bar_index0_open": float(running.open),
+            "running_bar_index0_close": float(running.close),
+        }
+    except Exception:
+        return None
+
+
 def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
+    """Returns (toTrade, atrVal, ema_S, algo_audit_dict). algo_audit_dict includes OHLCV bars and gate outcomes."""
+    _z = ([0], [0], [0])
+
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
-        return (False, 0.0, ([0], [0], [0]))
+        return (False, 0.0, _z, {"failure_reason": "day_locked"})
 
-    isPreviousNeutralCandles = False
     # Use globals so sidecar (trading_engine) can set these; fallback if run as library without main_call
     _profit = globals().get("profit_amount_day", 200.0)
     _loss = globals().get("loss_amount_day", 200.0)
@@ -1190,12 +1369,13 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     # When running as sidecar (Tauri app), do not exit process; just skip trading
     if timeCheck:
         logger.warning("Time/PnL check: skipping trade (day end or PnL limit); not exiting process")
-        return (False, 0.0, ([0], [0], [0]))
+        return (False, 0.0, _z, {"failure_reason": "time_or_pnl_halt"})
+
     from datetime import datetime
     toTrade = False
     logger.info("Current NewYork Trade Time is = {}".format(
         datetime.today().astimezone(NY_TZ).strftime("%Y-%m-%d-%H-%M-%S")))
-    
+
     getCandlesData = client.get_bars(stock=Stock, barSize=candleTime, limit=21)
     logger.info("candle Data is = {}".format(getCandlesData))
     n_candles = len(getCandlesData) if getCandlesData else 0
@@ -1203,7 +1383,28 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     if not getCandlesData or len(getCandlesData) < 2:
         logger.warning(f"No/insufficient candle data for {Stock}; skipping algo check (historical data may not be ready)")
         _emit_log(f"Algo: {Stock} insufficient bars ({n_candles}) — skipping trade check", "INFO", "signal")
-        return (False, 0.0, ([0], [0], [0]))
+        return (False, 0.0, _z, {
+            "failure_reason": "insufficient_bars",
+            "stock": Stock,
+            "right_requested": Right,
+            "bar_size": candleTime,
+            "bar_count": n_candles,
+            "ohlcv_bars_used": _bars_ohlcv_for_audit(getCandlesData or []),
+        })
+
+    ohlcv_rows = _bars_ohlcv_for_audit(getCandlesData)
+    algo_audit = {
+        "failure_reason": None,
+        "stock": Stock,
+        "right_requested": Right,
+        "bar_size": candleTime,
+        "bar_count": len(getCandlesData),
+        "bar_limit_requested": 21,
+        "ny_time_at_algo": datetime.today().astimezone(NY_TZ).isoformat(),
+        "ohlcv_bars_used": ohlcv_rows,
+        "ohlcv_columns_dataframe_shape": _ohlcv_columns_from_bars(getCandlesData),
+        "bar_order_note": "Index 0 = oldest bar in window; same ordering as get_bars(..., limit=21) and checkVWAPValue running candle.",
+    }
 
     df_candles = client.to_df(getCandlesData)
 
@@ -1212,63 +1413,118 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     if adx_on:
         adx_threshold = float(globals().get("ADX_THRESHOLD", 25))
         adx_val = indi.getADX(df_candles, period=14) if hasattr(indi, "getADX") else None
+        passed = adx_val is None or adx_val >= adx_threshold
+        algo_audit["adx_filter"] = {
+            "enabled": True,
+            "value": float(adx_val) if adx_val is not None else None,
+            "threshold": adx_threshold,
+            "passed": passed,
+            "condition": "trade_only_if_ADX>=threshold (skip sideways)",
+        }
         if adx_val is not None and adx_val < adx_threshold:
             logger.info(f"ADX={adx_val:.1f} < {adx_threshold} (sideways market) — skipping {Stock}")
             _emit_log(f"ADX: {Stock} sideway market (ADX={adx_val:.1f}) — no trade", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0])) if onlyAtrCheck == "no" else (False, 0.0, ([0], [0], [0]))  # noqa: E501
-        elif adx_val is not None:
+            algo_audit["failure_reason"] = "adx_too_low"
+            return (False, 0.0, _z, algo_audit) if onlyAtrCheck == "no" else (False, 0.0, _z, algo_audit)  # noqa: E501
+        if adx_val is not None:
             _emit_log(f"ADX: {Stock} ADX={adx_val:.1f} ≥ {adx_threshold} ✓", "DEBUG", "signal")
+    else:
+        algo_audit["adx_filter"] = {"enabled": False, "condition": "OFF — not applied"}
 
     # RSI divergence: must align with signal (CALL needs bullish or none, PUT needs bearish or none)
     rsi_div_on = str(globals().get("RSI_DIVERGENCE_ON_OFF", "OFF")).lower() == "on"
     if rsi_div_on == "on" and onlyAtrCheck == "no":
         rsi_div = indi.checkRSIDivergence(df_candles, rsi_period=14, lookback=5) if hasattr(indi, "checkRSIDivergence") else None
+        algo_audit["rsi_divergence"] = {
+            "enabled": True,
+            "signal": rsi_div,
+            "condition": "block CALL if bearish div; block PUT if bullish div",
+        }
         if rsi_div == "bearish" and Right.upper() in ("CALL", "C"):
             logger.info(f"RSI bearish divergence — skip CALL for {Stock}")
             _emit_log(f"RSI divergence: {Stock} bearish — skip CALL", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
+            algo_audit["failure_reason"] = "rsi_divergence_blocks_call"
+            return (False, 0.0, _z, algo_audit)
         if rsi_div == "bullish" and Right.upper() in ("PUT", "P"):
             logger.info(f"RSI bullish divergence — skip PUT for {Stock}")
             _emit_log(f"RSI divergence: {Stock} bullish — skip PUT", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
+            algo_audit["failure_reason"] = "rsi_divergence_blocks_put"
+            return (False, 0.0, _z, algo_audit)
+    else:
+        algo_audit["rsi_divergence"] = {"enabled": False, "condition": "OFF — not applied"}
 
     # Volume divergence: must align with signal
     vol_div_on = str(globals().get("VOLUME_DIVERGENCE_ON_OFF", "OFF")).lower() == "on"
     if vol_div_on == "on" and onlyAtrCheck == "no":
         vol_div = indi.checkVolumeDivergence(df_candles, lookback=5) if hasattr(indi, "checkVolumeDivergence") else None
+        algo_audit["volume_divergence"] = {
+            "enabled": True,
+            "signal": vol_div,
+            "condition": "block CALL if bearish vol div; block PUT if bullish vol div",
+        }
         if vol_div == "bearish" and Right.upper() in ("CALL", "C"):
             logger.info(f"Volume bearish divergence — skip CALL for {Stock}")
             _emit_log(f"Volume divergence: {Stock} bearish — skip CALL", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
+            algo_audit["failure_reason"] = "volume_divergence_blocks_call"
+            return (False, 0.0, _z, algo_audit)
         if vol_div == "bullish" and Right.upper() in ("PUT", "P"):
             logger.info(f"Volume bullish divergence — skip PUT for {Stock}")
             _emit_log(f"Volume divergence: {Stock} bullish — skip PUT", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
+            algo_audit["failure_reason"] = "volume_divergence_blocks_put"
+            return (False, 0.0, _z, algo_audit)
+    else:
+        algo_audit["volume_divergence"] = {"enabled": False, "condition": "OFF — not applied"}
 
     # Liquidity swap pattern: sweep and reversal — must align with signal (CALL needs bullish, PUT needs bearish)
     liq_swap_on = str(globals().get("LIQUIDITY_SWAP_ON_OFF", "OFF")).lower() == "on"
     if liq_swap_on == "on" and onlyAtrCheck == "no":
         liq_swap = indi.checkLiquiditySwapPattern(df_candles, lookback=5) if hasattr(indi, "checkLiquiditySwapPattern") else None
+        algo_audit["liquidity_swap"] = {
+            "enabled": True,
+            "signal": liq_swap,
+            "condition": "block CALL if bearish swap; block PUT if bullish swap",
+        }
         if liq_swap == "bearish" and Right.upper() in ("CALL", "C"):
             logger.info(f"Liquidity swap bearish — skip CALL for {Stock}")
             _emit_log(f"Liquidity swap: {Stock} bearish sweep — skip CALL", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
+            algo_audit["failure_reason"] = "liquidity_swap_blocks_call"
+            return (False, 0.0, _z, algo_audit)
         if liq_swap == "bullish" and Right.upper() in ("PUT", "P"):
             logger.info(f"Liquidity swap bullish — skip PUT for {Stock}")
             _emit_log(f"Liquidity swap: {Stock} bullish sweep — skip PUT", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
+            algo_audit["failure_reason"] = "liquidity_swap_blocks_put"
+            return (False, 0.0, _z, algo_audit)
+    else:
+        algo_audit["liquidity_swap"] = {"enabled": False, "condition": "OFF — not applied"}
 
     logger.info("\nVWAP_ON_OFF => {}\n".format(VWAP_ON_OFF))
     if onlyAtrCheck == "no":
         atrVal = float(getATRValue(Stock, getCandlesData))
-        if VWAP_ON_OFF.lower()=="on":
+        vwap_snap = _vwap_snapshot_for_audit(getCandlesData)
+        if VWAP_ON_OFF.lower() == "on":
             vwapVal = checkVWAPValue(Stock, Right, getCandlesData)
             logger.info("vwapVal Data Return for stock = {} is = {}".format(Stock, vwapVal))
             toTrade = vwapVal
+            ru = Right.upper()
+            algo_audit["vwap_filter"] = {
+                "enabled": True,
+                "gate_passed": bool(vwapVal),
+                "condition_call": "last>=vwap and open>=vwap on running bar (index 0)",
+                "condition_put": "last<vwap on running bar (index 0)",
+                **(vwap_snap or {}),
+            }
         else:
             toTrade = True
+            algo_audit["vwap_filter"] = {
+                "enabled": False,
+                "gate_passed": None,
+                "skipped": True,
+                "intraday_vwap_reference": (vwap_snap or {}).get("intraday_vwap"),
+                "condition": "VWAP filter OFF — not gating trade",
+            }
 
-        if atrVal >= ATR_CHECKS:
+        atr_passed = atrVal >= ATR_CHECKS
+        if atr_passed:
             logger.info("ATR_CHECKS Meet the ATR value")
             _emit_log(f"{Stock}: ATR={atrVal:.4f} ≥ {ATR_CHECKS} ✓ (passed)", "DEBUG", "signal")
             toTrade = toTrade and True
@@ -1277,25 +1533,30 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
             _emit_log(f"{Stock}: ATR={atrVal:.4f} < {ATR_CHECKS} ✗ (failed — too low volatility)", "INFO", "signal")
             toTrade = toTrade and False
 
-        # FOR SCLAP
-        if candleTime == "3 mins":
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        elif candleTime == "1 min":
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        elif candleTime == "5 mins":
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        else:
-            ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        # FOR INTRADAY
+        algo_audit["atr_gate"] = {
+            "atr": float(atrVal),
+            "threshold": float(ATR_CHECKS) if ATR_CHECKS is not None else None,
+            "passed": bool(atr_passed),
+            "condition": "toTrade requires ATR >= ATR_CHECKS (combined with VWAP when ON)",
+        }
+        algo_audit["composite_algo_to_trade"] = bool(toTrade)
 
-        return toTrade, atrVal, ema_S
-    elif onlyAtrCheck == "yes":
+        ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
+        algo_audit["ema_series_note"] = "Final EMA8/13/21 values appear in placement_context (ema_8, ema_13, ema_21) from same bars."
+
+        return toTrade, atrVal, ema_S, algo_audit
+    if onlyAtrCheck == "yes":
         atrVal = getATRValue(Stock, getCandlesData)
         ema_S = indi.EMA_8_13_21(client.to_df(getCandlesData))
-        return toTrade, atrVal, ema_S
-    else:
-        logger.error("checkAlgoAndTrade: invalid onlyAtrCheck value — returning no-trade")
-        return (False, 0.0, ([0], [0], [0]))
+        algo_audit["only_atr_check"] = True
+        algo_audit["atr_gate"] = {
+            "atr": float(atrVal) if atrVal is not None else None,
+            "note": "onlyAtrCheck=yes — VWAP/ATR gate branch skipped",
+        }
+        return toTrade, atrVal, ema_S, algo_audit
+
+    logger.error("checkAlgoAndTrade: invalid onlyAtrCheck value — returning no-trade")
+    return (False, 0.0, _z, {"failure_reason": "invalid_onlyAtrCheck", **{k: v for k, v in algo_audit.items() if k in ("ohlcv_bars_used", "stock", "right_requested", "bar_size")}})
 
 def updateStockMapper(stockName, value):
     logger.info(f"\n updateStockMapper for stock = {stockName}\n")
@@ -1312,6 +1573,77 @@ def updateStockMapper(stockName, value):
 
     with open(f"{stockName}.txt", "w",  encoding="utf-8") as f2:
         f2.write(f"{updateVal}")
+
+
+def _signal_entry_context(
+    *,
+    decision_path: str,
+    stock_name: str,
+    right_match: str,
+    strike: float,
+    trade_expiry: str,
+    signal_strength: str,
+    delta_value: float,
+    volume: float,
+    delta_threshold: float,
+    volume_threshold: float,
+    to_trade: bool,
+    atr_value: float,
+    ema_8: float,
+    ema_13: float,
+    ema_21: float,
+    algo_audit: Optional[dict] = None,
+    supertrend_engulf_gate_passed: Optional[bool] = None,
+    signal_path_audit: Optional[dict] = None,
+) -> dict:
+    """Serializable dict: why the bot allowed an entry (pre–option-tick execution details)."""
+    out = {
+        "decision_path": decision_path,
+        "decision_path_human": {
+            "CALL_heavy_or_strong_signal": "CALL + delta/vol OK + checkAlgo passed + signal heavy/strong",
+            "CALL_scalp_ema_conditions": "CALL + delta/vol OK + checkAlgo passed + scalp EMA band / EMA8>13 rules",
+            "CALL_intraday_ema_conditions": "CALL + delta/vol OK + checkAlgo passed + intraday EMA alignment",
+            "PUT_heavy_or_strong_signal": "PUT + delta/vol OK + checkAlgo passed + signal heavy/strong",
+            "PUT_scalp_ema_conditions": "PUT + delta/vol OK + checkAlgo passed + scalp EMA rules",
+            "PUT_intraday_ema_conditions": "PUT + delta/vol OK + checkAlgo passed + intraday EMA rules",
+        }.get(decision_path, decision_path),
+        "signal_strength": signal_strength,
+        "stock": stock_name,
+        "option_right": right_match,
+        "strike": float(strike),
+        "expiry": str(trade_expiry),
+        "delta": float(delta_value),
+        "delta_threshold": float(delta_threshold),
+        "delta_condition": "CALL: delta >= CALL_DELTA_CHECK; PUT: delta <= PUT_DELTA_CHECK",
+        "option_volume_db": float(volume),
+        "volume_threshold": float(volume_threshold),
+        "volume_condition": "volume >= VOLUME_CHECK",
+        "to_trade_algo": bool(to_trade),
+        "atr": float(atr_value),
+        "ema_8": float(ema_8),
+        "ema_13": float(ema_13),
+        "ema_21": float(ema_21),
+        "config_snapshot": {
+            "candleTime": candleTime,
+            "ATR_CHECKS": float(ATR_CHECKS) if ATR_CHECKS is not None else None,
+            "ATR_VALUE": float(ATR_VALUE) if ATR_VALUE is not None else None,
+            "VWAP_ON_OFF": str(VWAP_ON_OFF),
+            "MAX_CONTRACT_AMOUNT": float(MAX_CONTRACT_AMOUNT) if MAX_CONTRACT_AMOUNT is not None else None,
+            "PROFIT_INCREMENT": float(PROFIT_INCREMENT) if PROFIT_INCREMENT is not None else None,
+            "TRADE_COOLDOWN_SECONDS": float(TRADE_COOLDOWN_SECONDS) if TRADE_COOLDOWN_SECONDS is not None else None,
+            "CALL_DELTA_CHECK": float(CALL_DELTA_CHECK) if CALL_DELTA_CHECK is not None else None,
+            "PUT_DELTA_CHECK": float(PUT_DELTA_CHECK) if PUT_DELTA_CHECK is not None else None,
+            "VOLUME_CHECK": float(VOLUME_CHECK) if VOLUME_CHECK is not None else None,
+        },
+    }
+    if supertrend_engulf_gate_passed is not None:
+        out["supertrend_engulf_gate_passed"] = bool(supertrend_engulf_gate_passed)
+    if algo_audit is not None:
+        out["bars_and_algo_conditions"] = algo_audit
+    if signal_path_audit is not None:
+        out["signal_generation_full"] = signal_path_audit
+    return out
+
 
 def checkConditionsAndTrade(dataValueSet, stock_tick):
     if globals().get("STOP_TRADING", False):
@@ -1330,6 +1662,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
     rightMatch = stockData[1].upper()
     stockName = stockData[2].upper()
     signalStrength = stockData[3].lower()
+    signal_path_audit = stockData[4] if len(stockData) >= 5 else None
     _emit_log(f"Trade check: {stockName} {rightMatch} (strength={signalStrength})", "INFO", "signal")
 
     dataReturn = "None"
@@ -1408,7 +1741,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                             #atrValue = float(getATRValue(stockName, getCandlesData))
                             #toTrade = True
                             # -----------
-                            toTrade, atrValue, ema_S = checkAlgoAndTrade(stockName, "CALL")                            
+                            toTrade, atrValue, ema_S, algo_audit = checkAlgoAndTrade(stockName, "CALL")                            
                             logger.info("\n EMA_S Values for 8D, 13D, and 21D are = {}\n".format(ema_S))
 
                             ema_S_8 = ema_S[0][len(ema_S[0])-1]
@@ -1417,13 +1750,34 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                             
                             if toTrade and ("heavy" in signalStrength.lower() or "strong" in signalStrength.lower()):
                                 ###### SCLAP HIT
+                                _pc = _signal_entry_context(
+                                    decision_path="CALL_heavy_or_strong_signal",
+                                    stock_name=stockName,
+                                    right_match=rightMatch,
+                                    strike=eachStrike,
+                                    trade_expiry=tradeExpiry,
+                                    signal_strength=signalStrength,
+                                    delta_value=deltaValue,
+                                    volume=volumes,
+                                    delta_threshold=CALL_DELTA_CHECK,
+                                    volume_threshold=VOLUME_CHECK,
+                                    to_trade=toTrade,
+                                    atr_value=atrValue,
+                                    ema_8=ema_S_8,
+                                    ema_13=ema_S_13,
+                                    ema_21=ema_S_21,
+                                    algo_audit=algo_audit,
+                                    supertrend_engulf_gate_passed=conditionMatch,
+                                    signal_path_audit=signal_path_audit,
+                                )
                                 orderData = takeTrade(atrVale=atrValue, 
                                                         stock_symbol=stockName,
                                                         strike=eachStrike, 
                                                         right="CALL",
                                                         expiry=tradeExpiry,
                                                         options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
+                                                        stock_tick=stock_tick,
+                                                        placement_context=_pc)
                                 
                                 if orderData == "orderPlaced":
                                     # stockMapperDict[stockName].update({"trade":1})
@@ -1436,13 +1790,34 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                                     continue
                             elif toTrade and ((ema_S_21 - ema_S_8 >= atrValue/2) and (ema_S_21 - ema_S_8 <= atrValue*0.85)) or (ema_S_8 > ema_S_13-(atrValue/1.3) or (ema_S_8 > ema_S_13 and ema_S_13 > ema_S_21)):
                                 ###### SCLAP HIT
+                                _pc = _signal_entry_context(
+                                    decision_path="CALL_scalp_ema_conditions",
+                                    stock_name=stockName,
+                                    right_match=rightMatch,
+                                    strike=eachStrike,
+                                    trade_expiry=tradeExpiry,
+                                    signal_strength=signalStrength,
+                                    delta_value=deltaValue,
+                                    volume=volumes,
+                                    delta_threshold=CALL_DELTA_CHECK,
+                                    volume_threshold=VOLUME_CHECK,
+                                    to_trade=toTrade,
+                                    atr_value=atrValue,
+                                    ema_8=ema_S_8,
+                                    ema_13=ema_S_13,
+                                    ema_21=ema_S_21,
+                                    algo_audit=algo_audit,
+                                    supertrend_engulf_gate_passed=conditionMatch,
+                                    signal_path_audit=signal_path_audit,
+                                )
                                 orderData = takeTrade(atrVale=atrValue, 
                                                         stock_symbol=stockName,
                                                         strike=eachStrike, 
                                                         right="CALL",
                                                         expiry=tradeExpiry,
                                                         options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
+                                                        stock_tick=stock_tick,
+                                                        placement_context=_pc)
                                 
                                 if orderData == "orderPlaced":
                                     # stockMapperDict[stockName].update({"trade":1})
@@ -1455,13 +1830,34 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                                     continue
                             elif toTrade and (ema_S_21 >= ema_S_13 and ema_S_8 >= ema_S_13) or (ema_S_8 > ema_S_13 and ema_S_13 > ema_S_21 and (ema_S_8-ema_S_13 < atrValue*0.85)):
                                 ###### INTRADAY HIT
+                                _pc = _signal_entry_context(
+                                    decision_path="CALL_intraday_ema_conditions",
+                                    stock_name=stockName,
+                                    right_match=rightMatch,
+                                    strike=eachStrike,
+                                    trade_expiry=tradeExpiry,
+                                    signal_strength=signalStrength,
+                                    delta_value=deltaValue,
+                                    volume=volumes,
+                                    delta_threshold=CALL_DELTA_CHECK,
+                                    volume_threshold=VOLUME_CHECK,
+                                    to_trade=toTrade,
+                                    atr_value=atrValue,
+                                    ema_8=ema_S_8,
+                                    ema_13=ema_S_13,
+                                    ema_21=ema_S_21,
+                                    algo_audit=algo_audit,
+                                    supertrend_engulf_gate_passed=conditionMatch,
+                                    signal_path_audit=signal_path_audit,
+                                )
                                 orderData = takeTrade(atrVale=atrValue, 
                                                         stock_symbol=stockName,
                                                         strike=eachStrike, 
                                                         right="CALL",
                                                         expiry=tradeExpiry,
                                                         options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
+                                                        stock_tick=stock_tick,
+                                                        placement_context=_pc)
                                 if orderData == "orderPlaced":
                                     dataReturn = "orderPlaced"
                                     break
@@ -1510,7 +1906,7 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                             #toTrade = True
                             # -----------
                             
-                            toTrade, atrValue, ema_S  = checkAlgoAndTrade(stockName, "PUT")
+                            toTrade, atrValue, ema_S, algo_audit = checkAlgoAndTrade(stockName, "PUT")
                             logger.info("\n EMA_S Values for 8D, 13D, and 21D are = {}\n".format(ema_S))
 
                             ema_S_8 = ema_S[0][len(ema_S[0])-1]
@@ -1519,13 +1915,34 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                             
                             # SCLAP HIT
                             if toTrade and ("heavy" in signalStrength.lower() or "strong" in signalStrength.lower()):
+                                _pc = _signal_entry_context(
+                                    decision_path="PUT_heavy_or_strong_signal",
+                                    stock_name=stockName,
+                                    right_match=rightMatch,
+                                    strike=eachStrike,
+                                    trade_expiry=tradeExpiry,
+                                    signal_strength=signalStrength,
+                                    delta_value=deltaValue,
+                                    volume=volumes,
+                                    delta_threshold=PUT_DELTA_CHECK,
+                                    volume_threshold=VOLUME_CHECK,
+                                    to_trade=toTrade,
+                                    atr_value=atrValue,
+                                    ema_8=ema_S_8,
+                                    ema_13=ema_S_13,
+                                    ema_21=ema_S_21,
+                                    algo_audit=algo_audit,
+                                    supertrend_engulf_gate_passed=conditionMatch,
+                                    signal_path_audit=signal_path_audit,
+                                )
                                 orderData = takeTrade(atrVale=atrValue, 
                                                         stock_symbol=stockName,
                                                         strike=eachStrike, 
                                                         right="PUT",
                                                         expiry=tradeExpiry,
                                                         options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
+                                                        stock_tick=stock_tick,
+                                                        placement_context=_pc)
                                 if orderData == "orderPlaced":
                                     dataReturn = "orderPlaced"
                                     break
@@ -1534,13 +1951,34 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                                     dataReturn = orderData
                                     continue
                             elif toTrade and ((ema_S_21>=ema_S_13 and ema_S_13<=ema_S_8) or ema_S_13>=ema_S_8 ):
+                                _pc = _signal_entry_context(
+                                    decision_path="PUT_scalp_ema_conditions",
+                                    stock_name=stockName,
+                                    right_match=rightMatch,
+                                    strike=eachStrike,
+                                    trade_expiry=tradeExpiry,
+                                    signal_strength=signalStrength,
+                                    delta_value=deltaValue,
+                                    volume=volumes,
+                                    delta_threshold=PUT_DELTA_CHECK,
+                                    volume_threshold=VOLUME_CHECK,
+                                    to_trade=toTrade,
+                                    atr_value=atrValue,
+                                    ema_8=ema_S_8,
+                                    ema_13=ema_S_13,
+                                    ema_21=ema_S_21,
+                                    algo_audit=algo_audit,
+                                    supertrend_engulf_gate_passed=conditionMatch,
+                                    signal_path_audit=signal_path_audit,
+                                )
                                 orderData = takeTrade(atrVale=atrValue, 
                                                         stock_symbol=stockName,
                                                         strike=eachStrike, 
                                                         right="PUT",
                                                         expiry=tradeExpiry,
                                                         options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
+                                                        stock_tick=stock_tick,
+                                                        placement_context=_pc)
                                 if orderData == "orderPlaced":
                                     dataReturn = "orderPlaced"
                                     break
@@ -1550,13 +1988,34 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                                     continue
                             elif toTrade and ((ema_S_21>=ema_S_13 and ema_S_13>=ema_S_8) or ema_S_21-ema_S_13 >= atrValue*0.77):
                                 ###### INTRADAY HIT
+                                _pc = _signal_entry_context(
+                                    decision_path="PUT_intraday_ema_conditions",
+                                    stock_name=stockName,
+                                    right_match=rightMatch,
+                                    strike=eachStrike,
+                                    trade_expiry=tradeExpiry,
+                                    signal_strength=signalStrength,
+                                    delta_value=deltaValue,
+                                    volume=volumes,
+                                    delta_threshold=PUT_DELTA_CHECK,
+                                    volume_threshold=VOLUME_CHECK,
+                                    to_trade=toTrade,
+                                    atr_value=atrValue,
+                                    ema_8=ema_S_8,
+                                    ema_13=ema_S_13,
+                                    ema_21=ema_S_21,
+                                    algo_audit=algo_audit,
+                                    supertrend_engulf_gate_passed=conditionMatch,
+                                    signal_path_audit=signal_path_audit,
+                                )
                                 orderData = takeTrade(atrVale=atrValue, 
                                                         stock_symbol=stockName,
                                                         strike=eachStrike, 
                                                         right="PUT",
                                                         expiry=tradeExpiry, 
                                                         options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
+                                                        stock_tick=stock_tick,
+                                                        placement_context=_pc)
                                 if orderData == "orderPlaced":
                                     dataReturn = "orderPlaced"
                                     break
@@ -1763,7 +2222,7 @@ def timeDecayDiff(expiryDate):
     
 
 
-def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick):
+def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick, placement_context=None):
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
@@ -1888,6 +2347,29 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
             "INFO", "order"
         )
 
+        execution_snapshot = {
+            "execution": {
+                "bid": float(bidPrice),
+                "ask": float(askPrice),
+                "last": float(lastPrice),
+                "option_tick_volume": float(activeVol) if activeVol is not None else None,
+                "mid_price": float(midPrice),
+                "spread_abs": float(askMinusBidPrice),
+                "order_type": ORDER_TYPE,
+                "trade_price": float(tradePrice),
+                "take_profit": float(profitPrice),
+                "stop_loss": float(auxPrice),
+                "atr_dist": float(atr_dist),
+                "quantity": int(totalQty),
+                "use_amount_usd": float(useAmount[stock_symbol]["amount"]),
+                "contract_notional_cents": float(lastPrice * 100),
+                "time_decay_dte": int(TimeDecayDiffVal),
+                "market_time_ny_hhmm_int": int(marketTimeInt),
+                "underlying_last": float(getattr(stock_tick, "last", 0) or 0) if stock_tick else None,
+            }
+        }
+        merged_context = {**(placement_context or {}), **execution_snapshot}
+
         # action = "BUY"
         currentOrderId = placeAndVerifyOrder(
                             symbol=stock_symbol, 
@@ -1901,7 +2383,8 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                             profitPrice=profitPrice,
                             auxPrice=auxPrice,
                             options_tick=options_tick,
-                            stock_tick=stock_tick)
+                            stock_tick=stock_tick,
+                            placement_context=merged_context)
 
         # Cooldown is recorded in order_manager.process_fill when exit order fills (not on placement)
         logger.info(f"currentOrderId is = {currentOrderId}")
