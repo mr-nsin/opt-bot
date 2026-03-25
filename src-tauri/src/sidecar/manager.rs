@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
@@ -15,9 +13,6 @@ use crate::state::trading_state::{Position, TradeRecord, TradingStatus};
 /// Enables single-exe distribution: extract and run when sidecar not found.
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 const EMBEDDED_ENGINE: &[u8] = include_bytes!("../../binaries/trading-engine-x86_64-pc-windows-msvc.exe");
-
-#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-const EMBEDDED_ENGINE: &[u8] = &[];
 
 /// Global sidecar child process handle
 static SIDECAR_CHILD: once_cell::sync::Lazy<
@@ -78,8 +73,11 @@ pub async fn init(_handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Extract embedded trading-engine to temp file and return path.
-fn extract_embedded_engine() -> Result<PathBuf, String> {
+/// Extract embedded trading-engine to temp file and return path (Windows x86_64 single-exe fallback only).
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+fn extract_embedded_engine() -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+
     if EMBEDDED_ENGINE.is_empty() {
         return Err("Embedded trading engine not available for this platform".into());
     }
@@ -256,7 +254,10 @@ pub fn set_expected_termination(expected: bool) {
 
 /// Kill the sidecar process and its entire process tree
 pub async fn kill_sidecar() -> Result<(), String> {
+    #[cfg(windows)]
     let pid = SIDECAR_PID.lock().await.take();
+    #[cfg(not(windows))]
+    let _ = SIDECAR_PID.lock().await.take();
 
     let mut child_lock = SIDECAR_CHILD.lock().await;
     if let Some(child) = child_lock.take() {

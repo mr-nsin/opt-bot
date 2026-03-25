@@ -15,6 +15,7 @@ import threading
 from queue import Queue
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
+from contextlib import contextmanager
 
 # Add parent directories to path for importing existing modules
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -61,6 +62,51 @@ class TradingEngine:
         self._last_pnl_emit_time: float = 0
         self._pnl_throttle_sec: float = 1.0  # Align with UI throttle (~1/s); cuts IPC vs 50ms engine loop
         self._close_all_thread: Optional[threading.Thread] = None
+
+    @contextmanager
+    def _cwd_for_first_bot_import(self):
+        """BOT.py reads config.json at module import time. Sidecar CWD is often not the project root.
+        If TWS never connected, ``_start_data_feed_and_strategies`` never ran and BOT was never imported;
+        a later ``import BOT`` (e.g. Stop Trading) would then fail with [Errno 2] config.json.
+        Temporarily chdir and ensure config.json exists for that first import only."""
+        import tempfile
+
+        orig = os.getcwd()
+        frozen = getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")
+        try:
+            if frozen:
+                d = tempfile.mkdtemp(prefix="optbot_botimport_")
+                path = os.path.join(d, "config.json")
+                if self.config:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(self.config.to_bot_config_dict(), f, indent=2)
+                else:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump({}, f)
+                os.chdir(d)
+            else:
+                d = PARENT_DIR if os.path.isdir(PARENT_DIR) else orig
+                if self.config:
+                    path = os.path.join(d, "config.json")
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(self.config.to_bot_config_dict(), f, indent=2)
+                os.chdir(d)
+            yield
+        finally:
+            try:
+                os.chdir(orig)
+            except Exception:
+                pass
+
+    def _get_bot_module(self):
+        """Return the BOT module, ensuring config.json is visible on first import (see _cwd_for_first_bot_import)."""
+        mod = sys.modules.get("BOT")
+        if mod is not None:
+            return mod
+        with self._cwd_for_first_bot_import():
+            import BOT as _BOT
+
+            return _BOT
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -111,7 +157,7 @@ class TradingEngine:
     def _cancel_orders_only(self):
         """Cancel all open orders. Does NOT close positions (used by Stop Trading)."""
         try:
-            import BOT
+            BOT = self._get_bot_module()
             if self._client and self._client.isConnected():
                 emit_log("Cancelling all open orders...", "INFO", "system")
                 BOT.cancel_all_orders()
@@ -125,7 +171,7 @@ class TradingEngine:
         """Cancel all open orders and close all positions (used by Emergency Stop).
         Uses getAndBuyAfterMarketEnd which closes ALL TWS positions (each in its own try/except so one failure does not abort the rest)."""
         try:
-            import BOT
+            BOT = self._get_bot_module()
             if self._client and self._client.isConnected():
                 emit_log("Emergency stop: cancelling all open orders...", "INFO", "system")
                 BOT.cancel_all_orders()
@@ -148,7 +194,7 @@ class TradingEngine:
 
         # Signal BOT globals to stop trading loops
         try:
-            import BOT
+            BOT = self._get_bot_module()
             BOT.STOP_TRADING = True
         except Exception:
             pass
@@ -205,7 +251,7 @@ class TradingEngine:
 
         # Signal BOT globals to stop trading loops
         try:
-            import BOT
+            BOT = self._get_bot_module()
             BOT.STOP_TRADING = True
             BOT.CLOSE_ALL_ORDERS = True
         except Exception:
@@ -512,7 +558,7 @@ class TradingEngine:
                 return -1
 
         def run_close_all():
-            import BOT
+            BOT = self._get_bot_module()
 
             try:
                 BOT.CLOSE_ALL_IN_PROGRESS = True
@@ -581,7 +627,7 @@ class TradingEngine:
         config_data = params.get("config", {})
         self.config = TradingConfig.from_dict(config_data)
         try:
-            import BOT
+            BOT = self._get_bot_module()
             BOT.TRADE_COOLDOWN_SECONDS = int(getattr(self.config, "distance_between_trade", 610))
         except Exception:
             pass
@@ -646,20 +692,34 @@ class TradingEngine:
                 clientId=self.config.client_id,
             )
             self._order_mgr.set_client(client=self._client)
-            time.sleep(0.2)  # Brief pause for TWS to register connection (was 0.5s; reduced for faster startup)
+            # isConnected() often flips true only after connectAck + API thread start; 0.2s was too tight on some Macs/TWS loads.
+            deadline = time.time() + 8.0
+            while time.time() < deadline and not self._client.isConnected():
+                time.sleep(0.1)
 
             if self._client.isConnected():
                 self.connected = True
                 emit_connection_status(True, "Connected to TWS")
-                emit_log(f"Connected to TWS at {self.config.ip}:{self.config.port}", "INFO", "system")
+                emit_log(f"Connected to TWS at {self.config.ip}:{self.config.port} (clientId={self.config.client_id})", "INFO", "system")
             else:
                 self.connected = False
                 emit_connection_status(False, "Failed to connect to TWS")
-                emit_log("TWS connection failed", "WARN", "system")
+                emit_log(
+                    "TWS connection failed — socket/API did not become ready. "
+                    f"Using host={self.config.ip!r} port={self.config.port} clientId={self.config.client_id}. "
+                    "Confirm TWS or IB Gateway is running, “Enable ActiveX and Socket Clients” is on, and port matches "
+                    "(paper TWS often 7497, live 7496; IB Gateway paper often 4002). Use a unique clientId if another app is connected.",
+                    "WARN",
+                    "system",
+                )
         except Exception as e:
             self.connected = False
             emit_connection_status(False, str(e))
-            emit_log(f"TWS connect attempt failed: {e}", "DEBUG", "system")
+            emit_log(
+                f"TWS connect error: {e} — check host/port/clientId, API enabled in TWS, and no duplicate clientId.",
+                "WARN",
+                "system",
+            )
 
     def _try_reconnect_tws_if_needed(self):
         """If disconnected, try to reconnect to TWS periodically so starting TWS later is detected."""
@@ -1041,7 +1101,7 @@ class TradingEngine:
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
                     self._last_signal_heartbeat_time = now
                     try:
-                        import BOT
+                        BOT = self._get_bot_module()
                         signals = BOT.scan_all_stocks_signals(system_start_time=None, limit=21)
                         emit_signal_data(signals, getattr(self, "_signal_scan_start_time", datetime.now()).isoformat())
                     except Exception as e:
@@ -1084,7 +1144,7 @@ class TradingEngine:
     def _check_eod_time(self):
         """Periodically check if market end time has passed and close all positions."""
         try:
-            import BOT
+            BOT = self._get_bot_module()
             if getattr(BOT, "STOP_TRADING", False) or getattr(BOT, "DAY_LOCKED", False):
                 return
             result = BOT.timeCheckAndCloseProgram(

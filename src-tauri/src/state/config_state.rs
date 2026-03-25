@@ -335,8 +335,9 @@ impl ConfigState {
     }
 
     /// Load full ConfigState (trading + settings) from config.json. Single source only.
-    /// When running as built exe, pass `resource_config_path` from `app.path().resource_dir().map(|d| d.join("config.json"))`
-    /// so the bundled config.json is found (otherwise exe falls back to defaults MNQU5/NQU5).
+    /// Pass `resource_config_path` from `app.path().resource_dir().map(|d| d.join("config.json"))` for packaged bundles.
+    ///
+    /// Order: project paths, app data (UI saves), bundled resource, legacy `./config.json`, embedded.
     pub fn load_config_with_resource_path(
         resource_config_path: Option<std::path::PathBuf>,
     ) -> Option<ConfigState> {
@@ -347,18 +348,6 @@ impl ConfigState {
             Self::fix_trading_symbols(&mut trading);
             Some(ConfigState { trading, settings })
         };
-
-        // 0) Bundled resource path first (for built exe - config.json is in resources/)
-        if let Some(ref path) = resource_config_path {
-            if path.exists() {
-                if let Ok(contents) = std::fs::read_to_string(path) {
-                    if let Some(state) = try_load(&contents) {
-                        log::info!("Loaded config from bundled resource {:?} ({} symbols)", path, state.trading.stock_list_to_trade.len());
-                        return Some(state);
-                    }
-                }
-            }
-        }
 
         // 1) Project config.json
         for path in Self::project_config_paths() {
@@ -386,7 +375,19 @@ impl ConfigState {
             }
         }
 
-        // 3) Legacy ./config.json
+        // 3) Bundled resource path
+        if let Some(ref path) = resource_config_path {
+            if path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(path) {
+                    if let Some(state) = try_load(&contents) {
+                        log::info!("Loaded config from bundled resource {:?} ({} symbols)", path, state.trading.stock_list_to_trade.len());
+                        return Some(state);
+                    }
+                }
+            }
+        }
+
+        // 4) Legacy ./config.json
         if let Ok(contents) = std::fs::read_to_string("config.json") {
             if let Some(state) = try_load(&contents) {
                 log::info!("Loaded config from legacy ./config.json ({} symbols)", state.trading.stock_list_to_trade.len());
@@ -394,7 +395,7 @@ impl ConfigState {
             }
         }
 
-        // 4) Embedded config (standalone exe — no resources folder needed)
+        // 5) Embedded config (standalone exe — no resources folder needed)
         if let Some(state) = try_load(EMBEDDED_CONFIG) {
             log::info!("Loaded config from embedded binary ({} symbols) — standalone exe, no resources folder", state.trading.stock_list_to_trade.len());
             return Some(state);
@@ -558,9 +559,10 @@ impl ConfigState {
         let app_data = crate::utils::paths::app_data_dir();
         let primary = app_data.join("config.json");
         if primary.exists() {
-            std::fs::read_to_string(&primary).ok()
-        } else {
-            None
+            if let Ok(c) = std::fs::read_to_string(&primary) {
+                return Some(c);
+            }
         }
+        None
     }
 }
