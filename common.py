@@ -80,6 +80,8 @@ class OptionOrder:
     profit_trigger: bool = False
     current_profit_price: float = 0.0 # trailing profit
     profit_increment:float = 0.0 # profit increment until price reverses
+    max_tp_price: float = None  # ceiling for TP / trailing (entry + ATR*0.9 cap)
+    min_sl_price: float = None  # floor for SL (entry - ATR*0.9 cap)
     contract: Contract = None
     exit_placed: bool = False
     exit_order: bool = False
