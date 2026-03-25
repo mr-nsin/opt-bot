@@ -60,6 +60,7 @@ class TradingEngine:
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
         self._pnl_throttle_sec: float = 1.0  # Align with UI throttle (~1/s); cuts IPC vs 50ms engine loop
+        self._close_all_thread: Optional[threading.Thread] = None
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -494,11 +495,70 @@ class TradingEngine:
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
-        """Close all positions."""
-        emit_log("Close ALL positions requested", "WARN", "orders")
-        if self._order_mgr and hasattr(self._order_mgr, 'close_all_positions'):
-            self._order_mgr.close_all_positions()
-        return {"status": "close_all_requested"}
+        """Cancel all open orders, then flatten TWS positions; repeat until flat. Blocks new entries while running."""
+        if self._close_all_thread and self._close_all_thread.is_alive():
+            emit_log("Close All already running — ignored duplicate request", "WARN", "orders")
+            return {"status": "close_all_already_running"}
+
+        def _nonzero_positions_count() -> int:
+            try:
+                if not self._client or not self._client.isConnected():
+                    return -1
+                raw = list(self._client.get_all_positions())
+                return len(
+                    [p for p in raw if p and int(abs(getattr(p, "position", 0) or 0)) > 0]
+                )
+            except Exception:
+                return -1
+
+        def run_close_all():
+            import BOT
+
+            try:
+                BOT.CLOSE_ALL_IN_PROGRESS = True
+                emit_log("Close All: new entries blocked — cancelling orders and flattening positions", "WARN", "orders")
+                if not self._client or not self._client.isConnected():
+                    emit_log("Close All: TWS not connected", "ERROR", "orders")
+                    return
+                buf = getattr(self.config, "emergency_close_buffer_seconds", 5) if self.config else 5
+                try:
+                    buf = max(0, int(buf))
+                except (TypeError, ValueError):
+                    buf = 5
+                max_rounds = 15
+                for r in range(max_rounds):
+                    BOT.cancel_all_orders()
+                    time.sleep(0.35)
+                    BOT.getAndBuyAfterMarketEnd(buffer_seconds=buf)
+                    n = _nonzero_positions_count()
+                    if n == 0:
+                        emit_log("Close All: no open positions remaining", "INFO", "orders")
+                        break
+                    if n < 0:
+                        emit_log("Close All: could not read positions from TWS — stopping rounds", "ERROR", "orders")
+                        break
+                    emit_log(
+                        f"Close All: round {r + 1}/{max_rounds} — {n} position(s) still open, repeating cancel + MKT close",
+                        "WARN",
+                        "orders",
+                    )
+                    time.sleep(max(0.5, float(buf)))
+                else:
+                    n = _nonzero_positions_count()
+                    emit_log(
+                        f"Close All: stopped after {max_rounds} rounds — {n} position(s) may still be open (check TWS)",
+                        "ERROR",
+                        "orders",
+                    )
+            except Exception as e:
+                emit_log(f"Close All error: {e}", "ERROR", "orders")
+            finally:
+                BOT.CLOSE_ALL_IN_PROGRESS = False
+                emit_log("Close All: finished — new entries allowed again", "INFO", "orders")
+
+        self._close_all_thread = threading.Thread(target=run_close_all, daemon=True, name="close_all")
+        self._close_all_thread.start()
+        return {"status": "close_all_started"}
 
     def close_calls(self) -> dict:
         """Close all CALL positions."""
@@ -812,6 +872,7 @@ class TradingEngine:
             if not alive:
                 processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
                 self._event_processor_threads = []
+                BOT.arm_trading_session_gates()
                 for i in range(processor_count):
                     t = threading.Thread(target=BOT.event_processor, args=(self._event_queue, i), daemon=True)
                     t.start()
@@ -822,6 +883,7 @@ class TradingEngine:
                 BOT.STOP_TRADING = False
                 BOT.DAY_LOCKED = False
                 BOT.CLOSE_ALL_ORDERS = False
+                BOT.CLOSE_ALL_IN_PROGRESS = False
                 try:
                     pnl_t = threading.Thread(
                         target=BOT.pnl_watchdog_thread,

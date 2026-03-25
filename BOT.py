@@ -62,6 +62,7 @@ starting_profit = 0
 starting_loss = 0
 
 STOP_TRADING = False
+CLOSE_ALL_IN_PROGRESS = False  # True while UI Close All runs — block new entries
 DAILY_LIMIT_HIT = False
 DAY_LOCKED = False
 CLOSE_ALL_ORDERS = False
@@ -85,6 +86,9 @@ reconnect_time = 10
 db = None
 trade_time_dict = {}
 signal_dict = {}
+# Per underlying + side (CALL/PUT): last close time — cooldown runs only after that side is closed, never at session start
+# Per underlying: last (signal_active, direction) seen — first tick after arm is baseline only; trade on later *change* into a signal
+_post_start_last_sig = {}
 
 #def get_file_data()
 filePath = os.getcwd() + "\\config.json"
@@ -226,15 +230,25 @@ data = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
 def wwma(values, n):
     return values.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
 
-def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
-    """Normalized key for symbol+right+expiry cooldown.
-    Right is normalized: CALL/C → C, PUT/P → P (IB uses C/P, BOT uses CALL/PUT).
-    Expiry normalized: 2026-03-06 → 20260306."""
+def _norm_right_side(right: str) -> str:
+    """CALL/C → C, PUT/P → P for cooldown keys."""
     r = (right or "").strip().upper()
     if r.startswith("C"):
-        r = "C"
-    elif r.startswith("P"):
-        r = "P"
+        return "C"
+    if r.startswith("P"):
+        return "P"
+    return r[:1] if r else ""
+
+
+def _side_cooldown_key(symbol: str, right: str) -> str:
+    """Cooldown is per underlying + side only (no expiry). Timer starts when that side is closed."""
+    sym = (symbol or "").strip().upper()
+    return f"{sym}_{_norm_right_side(right)}"
+
+
+def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
+    """Lock key: symbol+right+expiry (serializes placement per contract). Not used for trade_time_dict cooldown."""
+    r = _norm_right_side(right)
     norm_exp = (expiry or "").replace("-", "").replace(" ", "").strip()
     if norm_exp:
         return f"{symbol}_{r}_{norm_exp}"
@@ -254,12 +268,66 @@ def _get_entry_placement_lock(key: str) -> Lock:
         return _entry_placement_locks[key]
 
 
+def arm_trading_session_gates():
+    """When event processors start: reset post-start signal baselines only (cooldown is not started at session start)."""
+    global _post_start_last_sig
+    _post_start_last_sig.clear()
+    logger.info("Session arm: per-symbol signal baseline reset (cooldown applies only after a close on that stock+side)")
+    try:
+        _emit_log(
+            "Session start: no cooldown clock until a position closes on that stock+side; stale signals ignored until next change",
+            "INFO",
+            "signal",
+        )
+    except Exception:
+        pass
+
+
+def _post_start_signal_blocks_trade(sym: str, data_engulf_tuple) -> bool:
+    """
+    First evaluation per symbol after session arm records baseline only (no trade).
+    Later, allow trading only when state *changes* into an active CALL/PUT (skips persistent pre-start patterns).
+    Returns True if this tick should NOT run trade checks.
+    """
+    global _post_start_last_sig
+    sym_u = (sym or "").upper()
+    matched = bool(data_engulf_tuple[0])
+    direction = (data_engulf_tuple[1] or "").upper() if matched else ""
+    cur = (matched, direction)
+    if sym_u not in _post_start_last_sig:
+        _post_start_last_sig[sym_u] = cur
+        try:
+            _emit_log(
+                f"{sym_u}: post-start baseline = {'none' if not matched else direction} — waiting for next signal change before trading",
+                "INFO",
+                "signal",
+            )
+        except Exception:
+            pass
+        return True
+    prev = _post_start_last_sig[sym_u]
+    if cur == prev:
+        return True
+    _post_start_last_sig[sym_u] = cur
+    if not matched:
+        try:
+            _emit_log(f"{sym_u}: signal cleared — still waiting for next directional signal", "DEBUG", "signal")
+        except Exception:
+            pass
+        return True
+    try:
+        _emit_log(f"{sym_u}: new signal after baseline → {direction}", "INFO", "signal")
+    except Exception:
+        pass
+    return False
+
+
 def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, expiry: str = None) -> bool:
     """
-    Check if cooldown is still active for symbol+right+expiry.
+    Check if cooldown is still active for symbol+side (CALL/PUT). Key is set only when an order on that side closes.
     Returns True if still in cooldown (should NOT place order), False if OK to trade.
     """
-    key = _cooldown_key(stockName, rightMatch, expiry)
+    key = _side_cooldown_key(stockName, rightMatch)
     last_trade_time = trade_time_dict.get(key)
     if last_trade_time is not None:
         time_since_last_trade = datetime.now() - last_trade_time
@@ -318,11 +386,15 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                 profitPrice=0, conIdDetails=None, legPrices=None, 
                 options_tick: Tick = None,
                 stock_tick:Tick = None, placement_context=None,
-                closing_order: bool = False, is_sqare_off=False):
+                closing_order: bool = False, is_sqare_off=False,
+                max_tp_price=None, min_sl_price=None):
                     
     if DAY_LOCKED and CLOSE_ALL_ORDERS and not (closing_order or is_sqare_off):
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
+    if globals().get("CLOSE_ALL_IN_PROGRESS", False) and not (closing_order or is_sqare_off):
+        logger.warning("Trading blocked: Close All in progress")
+        return "CloseAllInProgress"
 
     option_order = None
 
@@ -388,7 +460,9 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
             current_profit_price=profitPrice,
             profit_increment=PROFIT_INCREMENT,
             profit_trigger=False,
-            active=True)
+            active=True,
+            max_tp_price=max_tp_price,
+            min_sl_price=min_sl_price)
 
         logger.info(f"Created option_order: {option_order}")
         logger.info(f"Profit settings - Target: ${profitPrice:.2f}, Increment: ${PROFIT_INCREMENT:.2f}, StopLoss: ${auxPrice:.2f}")
@@ -469,12 +543,16 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 
 def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=None,
                         totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
-                        profitPrice=0, conIdDetails=None, legPrices=None, options_tick: Tick=None,
-                        stock_tick: Tick=None, placement_context=None):
+                        profitPrice=0, conIdDetails=None, legPrices=None,                         options_tick: Tick=None,
+                        stock_tick: Tick=None, placement_context=None,
+                        max_tp_price=None, min_sl_price=None):
                             
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
+    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
+        logger.warning("Trading blocked: Close All in progress")
+        return "CloseAllInProgress"
 
     if options_tick is None:
         logger.error("placeAndVerifyOrder: options_tick is required")
@@ -491,14 +569,15 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
         if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
             return "orderAlreadyPresent"
         
-        last_trade_time = trade_time_dict.get(key)
-    
+        side_key = _side_cooldown_key(symbol, right)
+        last_trade_time = trade_time_dict.get(side_key)
+
         if last_trade_time:
             seconds_since = (datetime.now() - last_trade_time).total_seconds()
             if seconds_since < TRADE_COOLDOWN_SECONDS:
-                logger.info(f"COOLDOWN ACTIVE [{key}]: Trade skipped — {int(seconds_since)}s since last trade (need {TRADE_COOLDOWN_SECONDS}s)")
+                logger.info(f"COOLDOWN ACTIVE [{side_key}]: Trade skipped — {int(seconds_since)}s since last close on this side (need {TRADE_COOLDOWN_SECONDS}s)")
                 try:
-                    _emit_log(f"Cooldown: {key} — {int(seconds_since)}s elapsed, need {TRADE_COOLDOWN_SECONDS}s — order blocked", "INFO", "order")
+                    _emit_log(f"Cooldown: {side_key} — {int(seconds_since)}s since close, need {TRADE_COOLDOWN_SECONDS}s — order blocked", "INFO", "order")
                 except Exception:
                     pass
                 return "cooldownPeriodHit"
@@ -517,7 +596,9 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
                         legPrices=legPrices, 
                         options_tick=options_tick,
                         stock_tick=stock_tick,
-                        placement_context=placement_context)
+                        placement_context=placement_context,
+                        max_tp_price=max_tp_price,
+                        min_sl_price=min_sl_price)
         return result
     except Exception as ex:
         logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
@@ -659,6 +740,12 @@ def _check_engulfing_patterns(getCandlesData, stock):
         return (True, "CALL", "mediumBuy", "engulf_CALL_D_hvy_vol_mediumBuy")
     if (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and candle_3_open >= candle_3_close and (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and (candle_6_vol >= candle_3_vol*0.6 and candle_4_vol >= candle_3_vol*0.55 and candle_5_vol <= candle_3_vol*0.6):
         return (True, "CALL", "mediumBuy", "engulf_CALL_E_mediumBuy")
+    # High volume engulf (CALL): merge from main — volume surge 1.5x+
+    if candle_6_close >= candle_5_close and candle_5_close >= candle_4_close and candle_4_close <= candle_3_close and candle_6_vol >= candle_5_vol*1.5 and candle_6_vol >= candle_4_vol*1.3:
+        return (True, "CALL", "heavyBuy", "engulf_CALL_high_vol_super")
+    recent_low = min(candle_4_low, candle_5_low)
+    if candle_6_low < recent_low and candle_6_close > recent_low and candle_6_close > (candle_6_high + candle_6_low)/2 and candle_6_vol >= candle_5_vol*1.5:
+        return (True, "CALL", "heavyBuy", "engulf_CALL_liquidity_swap")
     # Bearish (PUT) patterns
     if candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol >= candle_4_vol*0.8:
         return (True, "PUT", "mediumSell", "engulf_PUT_A_mediumSell")
@@ -666,12 +753,18 @@ def _check_engulfing_patterns(getCandlesData, stock):
         return (True, "PUT", "strongSell", "engulf_PUT_B_strongSell")
     if candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and candle_6_vol >= candle_5_vol*0.8:
         return (True, "PUT", "mediumSell", "engulf_PUT_B_hvy_vol_mediumSell")
+    # High volume engulf (PUT): merge from main
+    if candle_6_close <= candle_5_close and candle_5_close <= candle_4_close and candle_4_close >= candle_3_close and candle_6_vol >= candle_5_vol*1.5 and candle_6_vol >= candle_4_vol*1.3:
+        return (True, "PUT", "strongSell", "engulf_PUT_high_vol_super")
+    recent_high = max(candle_4_high, candle_5_high)
+    if candle_6_high > recent_high and candle_6_close < recent_high and candle_6_close < (candle_6_high + candle_6_low)/2 and candle_6_vol >= candle_5_vol*1.5:
+        return (True, "PUT", "strongSell", "engulf_PUT_liquidity_swap")
     if (candle_2_close <= candle_3_close or candle_2_close > candle_3_close) and (candle_1_close >= candle_2_close or candle_1_close < candle_2_close) and (candle_0_open >= candle_1_close or candle_0_open < candle_1_close) and (candle_0_close < candle_1_low) and candle_1_vol >= candle_0_vol*0.8:
         return (True, "PUT", "normalSell", "engulf_PUT_chain_normalSell")
     return (False, None, None, None)
 
 
-def getCallPutEngulfCheck(stock, limit=21, indicator="both"):
+def getCallPutEngulfCheck(stock, limit=21, indicator="engulfing"):
     from datetime import datetime
     logger.info(f"Checking BEARISH OR BULLISH Engulf Data for stock = {stock}")
     _emit_log(f"Signal check: {stock} (need {limit} bars, indicator={indicator})", "DEBUG", "signal")
@@ -1361,6 +1454,9 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return (False, 0.0, _z, {"failure_reason": "day_locked"})
+    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
+        logger.warning("Trading blocked: Close All in progress")
+        return (False, 0.0, _z, {"failure_reason": "close_all_in_progress"})
 
     # Use globals so sidecar (trading_engine) can set these; fallback if run as library without main_call
     _profit = globals().get("profit_amount_day", 200.0)
@@ -1648,6 +1744,8 @@ def _signal_entry_context(
 def checkConditionsAndTrade(dataValueSet, stock_tick):
     if globals().get("STOP_TRADING", False):
         return "stopped"
+    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
+        return "closingAll"
     #global tradeExpiry
     logger.info(f"Stock {dataValueSet[0][2].upper()} checkConditionsAndTrade - start")
     
@@ -1716,10 +1814,10 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
                         continue
                     else:
-                        tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
+                        tradeKey = _side_cooldown_key(stockName, rightMatch)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
-                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
+                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_close_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
 
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1882,10 +1980,10 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
                         continue
                     else:
-                        tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
+                        tradeKey = _side_cooldown_key(stockName, rightMatch)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
-                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
+                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_close_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
                     
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -2226,6 +2324,9 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
+    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
+        logger.warning("Trading blocked: Close All in progress")
+        return "CloseAllInProgress"
 
     logger.info(f"All Algo's conditions meet, now doing a check for Options Price must be ${MAX_CONTRACT_AMOUNT} or low")
     # tick = client.get_options_data(symbol=takeTick, expiry=takeExpiry, right=takeRight, strike=takeStrike)
@@ -2302,14 +2403,18 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         f"Time={marketTime} DTE={TimeDecayDiffVal} SPY/QQQ={'spy' in stock_symbol.lower() or 'qqq' in stock_symbol.lower()}"
     )
 
-    # ATR 1:1 risk reward: TP and SL equidistant from entry
+    # ATR 1:1 risk reward; TP/SL distance capped at 0.9 * underlying ATR (never wider)
+    atr_risk_cap = (atrVale * 0.9) if atrVale > 0.01 else 0.018
     if atrVale <= 0.01:
-        atr_dist = 0.02  # minimum distance for low ATR
+        base_dist = 0.02
     else:
-        atr_dist = atrVale * ATR_VALUE
+        base_dist = float(atrVale) * float(ATR_VALUE)
+    atr_dist = min(base_dist, float(atr_risk_cap))
 
-    profitPrice = round(tradePrice + float(atr_dist), 2)
-    auxPrice = round(tradePrice - float(atr_dist), 2)
+    profitPrice = round(tradePrice + atr_dist, 2)
+    auxPrice = round(tradePrice - atr_dist, 2)
+    max_tp_price = round(tradePrice + float(atr_risk_cap), 2)
+    min_sl_price = round(max(0.01, tradePrice - float(atr_risk_cap)), 2)
 
     # Special 0DTE returns (no trade in these cases)
     if TimeDecayDiffVal == 0:
@@ -2318,10 +2423,29 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         if tradePrice <= 0.1:
             return "0dtepricebelow10cent"
 
-    # Ensure stoploss is never negative
+    # Ensure stoploss is never negative; align min SL floor with actual aux when clamped
     if auxPrice < 0.01:
         auxPrice = 0.01
-        
+    if min_sl_price > auxPrice:
+        min_sl_price = auxPrice
+
+    # If ATR-based TP implies >20% premium gain vs entry, cap take-profit at fixed 15% (investment-proportional check == premium %)
+    atr_tp_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
+    if atr_tp_pct > 20.0:
+        profitPrice = round(tradePrice * 1.15, 2)
+        max_tp_price = profitPrice
+        logger.info(
+            f"TP cap: ATR target was {atr_tp_pct:.1f}% (>20% of premium) → using fixed 15% TP ${profitPrice:.2f}"
+        )
+        try:
+            _emit_log(
+                f"{stock_symbol}: ATR TP {atr_tp_pct:.1f}% > 20% — using fixed 15% target ${profitPrice:.2f}",
+                "INFO",
+                "order",
+            )
+        except Exception:
+            pass
+
     # ============ LOG FINAL CALCULATED VALUES ============
     profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
     loss_pct = ((tradePrice - auxPrice) / tradePrice * 100) if tradePrice > 0 else 0
@@ -2384,7 +2508,9 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                             auxPrice=auxPrice,
                             options_tick=options_tick,
                             stock_tick=stock_tick,
-                            placement_context=merged_context)
+                            placement_context=merged_context,
+                            max_tp_price=max_tp_price,
+                            min_sl_price=min_sl_price)
 
         # Cooldown is recorded in order_manager.process_fill when exit order fills (not on placement)
         logger.info(f"currentOrderId is = {currentOrderId}")
@@ -2660,7 +2786,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
                 except (ValueError, TypeError):
                     pass  # fallback: allow scan if time parsing fails
                 # Get the result of the call/put engulf check
-                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick → SuperTrend+Engulfing combined)", "DEBUG", "signal")
+                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick → Engulfing-based)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
                 logger.info(f"\n dataEngulf = {dataEngulf}\n")
                 if dataEngulf[0]:
@@ -2683,6 +2809,10 @@ def event_processor(event_queue: Queue, count: int) -> None:
                             float(underlying_price),
                             sig_strength or "signal",
                         )
+                    # Skip trading on first snapshot per symbol and on unchanged signal (wait for *next* signal after start)
+                    if _post_start_signal_blocks_trade(tick.contract.symbol, dataEngulf):
+                        event_queue.task_done()
+                        continue
                     result = checkConditionsAndTrade((dataEngulf, dataStrike), tick)
                     logger.info(f"checkConditionsAndTrade: {result}")
                     if result == "orderPlaced":
@@ -2696,7 +2826,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     elif isinstance(result, str) and result != "None":
                         _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
                 else:
-                    _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged or engulfing no match)", "DEBUG", "signal")
+                    _emit_log(f"{tick.contract.symbol}: No signal (engulfing no match)", "DEBUG", "signal")
             
             # Mark the event as processed
             event_queue.task_done()
@@ -2756,6 +2886,7 @@ def check_and_close_all_open_positions():
 def init_start_event_processors():
     processors = None
     if client.isConnected():
+        arm_trading_session_gates()
         # Create the specified number of event processors
         processors = [Thread(target=event_processor, args=(event_queue, count,)) for count in range(PROCESSORS_COUNT)]
         # Start the event processors
