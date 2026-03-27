@@ -127,7 +127,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
-.venv_x64
+.venv_x64/
+.venv_*/
 env/
 venv/
 ENV/
@@ -210,6 +211,8 @@ Desktop.ini
 # Python virtual environment
 venv/
 .venv/
+.venv_x64/
+.venv_*/
 env/
 .env/
 
