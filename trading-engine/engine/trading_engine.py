@@ -30,6 +30,17 @@ from protocol.emitter import (
 )
 from engine.models import TradingConfig
 
+# Project root (OPT_BOT) — option_targets lives next to BOT.py
+try:
+    from option_targets import normalize_ibkr_option_avg_premium
+except ImportError:
+    normalize_ibkr_option_avg_premium = None  # type: ignore
+
+try:
+    from account_scope import resolve_position_account_filter
+except ImportError:
+    resolve_position_account_filter = None  # type: ignore
+
 
 class TradingEngine:
     """
@@ -291,33 +302,48 @@ class TradingEngine:
         }
 
     def get_positions(self) -> list:
-        """Get current positions with live price and P&L from tick cache and order manager.
-        Uses TWS client.positions first; falls back to order_manager.entry_orders_cache when
-        TWS positions are empty but we have open trades (e.g. TWS sync delay or account mismatch).
+        """Get open option positions from TWS with live marks, PnL, and SL/TP from OrderManager.
+
+        TWS is the source of truth (no synthetic rows from local cache when IBKR shows flat).
+        If ``ACCOUNT_ID`` matches a TWS managed account, other accounts' legs are hidden.
+        If ``ACCOUNT_ID`` is empty, all streamed option legs are shown.
+        If ``ACCOUNT_ID`` is wrong/typo (not in managedAccounts), filtering is skipped for display
+        (fail-open) so the Active Positions tab is not blank — see WARN in logs.
         """
         if not self._client:
             return []
 
         positions = []
-        account_filter = (self.config.account_id or "").strip() if self.config else ""
+        raw_configured = (self.config.account_id or "").strip() if self.config else ""
+        ma_ids = tuple(getattr(self._client, "managed_account_ids", None) or ())
+        position_filter = raw_configured
+        if resolve_position_account_filter is not None:
+            eff, scope_warn = resolve_position_account_filter(raw_configured, ma_ids)
+            position_filter = eff if eff is not None else ""
+            if scope_warn:
+                now = time.time()
+                last = getattr(self, "_position_scope_warn_ts", 0.0)
+                if now - last > 60.0:
+                    self._position_scope_warn_ts = now
+                    emit_log(scope_warn, "WARN", "system")
+        skipped_account = 0
         if hasattr(self._client, 'positions'):
             for key, pos in list((self._client.positions or {}).items()):
                 qty = getattr(pos, 'position', 0)
+                try:
+                    qty = int(round(float(qty)))
+                except (TypeError, ValueError):
+                    qty = 0
                 if qty == 0:
                     continue
-                # When account_id is configured, only show positions for that account
+                # When position_filter is set, only show legs for that account
                 pos_account = getattr(pos, 'account', None) or ""
-                if account_filter and pos_account and pos_account != account_filter:
+                if position_filter and pos_account and pos_account != position_filter:
+                    skipped_account += 1
                     continue
 
-                # avg_cost from TWS is per-share cost (for options: price * multiplier)
                 avg_cost = getattr(pos, 'avg_cost', 0)
-                avg_price = avg_cost / 100.0 if avg_cost > 1 else avg_cost
-
-                # Try to get live price from order manager tick lookup, then client tick cache
-                current_price = 0.0
                 entry_order = None
-                tick = None
                 symbol = getattr(pos, 'symbol', str(key))
                 strike = getattr(pos, 'strike', 0)
                 right = getattr(pos, 'right', '')
@@ -325,15 +351,25 @@ class TradingEngine:
 
                 if self._order_mgr:
                     entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
-                    if entry_order:
-                        # Fallback: use entry_order.average_price when TWS avg_cost is 0
-                        if avg_price <= 0 and getattr(entry_order, 'average_price', 0) > 0:
-                            avg_price = float(entry_order.average_price)
-                        tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
-                        if tick and hasattr(tick, 'last') and tick.last > 0:
-                            current_price = tick.last
-                        elif tick and hasattr(tick, 'bid') and tick.bid > 0:
-                            current_price = tick.bid
+
+                fill = float(getattr(entry_order, "average_price", 0) or 0) if entry_order else 0.0
+                if normalize_ibkr_option_avg_premium is not None:
+                    avg_price = normalize_ibkr_option_avg_premium(avg_cost, fill if fill > 0 else None)
+                else:
+                    avg_price = float(fill or avg_cost or 0)
+                if avg_price <= 0 and fill > 0:
+                    avg_price = fill
+
+                # Try to get live price from order manager tick lookup, then client tick cache
+                current_price = 0.0
+                tick = None
+
+                if self._order_mgr and entry_order:
+                    tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
+                    if tick and hasattr(tick, 'last') and tick.last > 0:
+                        current_price = tick.last
+                    elif tick and hasattr(tick, 'bid') and tick.bid > 0:
+                        current_price = tick.bid
 
                 # Fallback: client tick_cache (get_options_data) when order lookup has no tick
                 if current_price <= 0 and hasattr(self._client, 'get_options_data'):
@@ -417,10 +453,18 @@ class TradingEngine:
                     pos_data["exit_price_source"] = exit_price_source
                 positions.append(pos_data)
 
-        # Do NOT fallback to entry_orders_cache when TWS positions are empty.
-        # TWS is the source of truth: if IBKR shows POS: 0, we show no positions.
-        # The old fallback caused "ghost positions" (13 active when IBKR had 0) because
-        # entry_orders_cache was not cleaned when positions closed via square-off or manual exit.
+        if skipped_account > 0 and position_filter:
+            now = time.time()
+            last = getattr(self, "_last_account_filter_warn_ts", 0.0)
+            if now - last > 60.0:
+                self._last_account_filter_warn_ts = now
+                emit_log(
+                    f"This poll skipped {skipped_account} TWS option leg(s): account filter '{position_filter}' "
+                    f"does not match those rows' accounts (they are hidden). Use the same Account as the "
+                    f"trading account on this TWS login, or clear Account to show all accounts.",
+                    "WARN",
+                    "system",
+                )
 
         # Deduplicate by (symbol, strike, right, expiry) — TWS can produce duplicates
         # when expiry format differs (e.g. 20260313 vs 2026-03-13) or multiple orders same option
@@ -887,6 +931,23 @@ class TradingEngine:
             BOT.USE_DIFF_EXPIRY_INDEX = str(getattr(self.config, "use_diff_expiry_index", "yes"))
             BOT.TRANSMIT = getattr(self.config, "order_transmit", True)
 
+            try:
+                cid = int(getattr(self.config, "client_id", 0) or 0)
+                acct = (getattr(self.config, "account_id", "") or "").strip()
+                host = getattr(self.config, "ip", "") or ""
+                port = int(getattr(self.config, "port", 0) or 0)
+                sym_key = ",".join(sorted(stock_list))
+                emit_log(
+                    f"SIGNAL_PARITY_FINGERPRINT clientId={cid} tws={host}:{port} accountId={acct!r} "
+                    f"candle={BOT.candleTime!r} fetch={BOT.fetchValue!r} symbols=[{sym_key}] "
+                    f"cooldown_sec={BOT.TRADE_COOLDOWN_SECONDS} perDayTrades={BOT.perDayTrades} "
+                    f"(each host is independent; sync config + use unique CLIENTID if several apps share one TWS)",
+                    "INFO",
+                    "system",
+                )
+            except Exception as e:
+                emit_log(f"SIGNAL_PARITY_FINGERPRINT log failed: {e}", "DEBUG", "system")
+
             # Ensure expiryStrike.json exists in CWD before BOT runs (avoids "[Errno 2] No such file or directory").
             # When frozen: copy from bundled resource (_MEIPASS); otherwise create empty or copy from sidecar dir.
             cwd = os.getcwd()
@@ -912,7 +973,8 @@ class TradingEngine:
             try:
                 emit_log("Initializing order requests (positions, PnL)...", "INFO", "system")
                 BOT.init_order_requests()
-                time.sleep(2.0)
+                # Brief yield for TWS callbacks (positions/PnL); strike + option phases dominate startup latency.
+                time.sleep(1.0)
                 emit_log("Initializing data feed (historical + options)...", "INFO", "system")
                 BOT.init_data_feed()
                 self._log_tws_underlyings_received()

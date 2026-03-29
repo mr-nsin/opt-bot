@@ -34,6 +34,11 @@ pub mod events {
     pub const LOG_MESSAGE: &str = "trading:log_message";
     pub const CONNECTION_STATUS: &str = "trading:connection_status";
     pub const ENGINE_STATUS: &str = "trading:engine_status";
+    pub const ACCOUNT_METRICS: &str = "trading:account_metrics";
+    pub const DATA_STATUS: &str = "trading:data_status";
+    pub const SIGNAL_DATA: &str = "trading:signal_data";
+    pub const ORDER_UPDATE: &str = "trading:order_update";
+    pub const ERROR: &str = "trading:error";
 
     // License events
     pub const LICENSE_VALIDATED: &str = "license:validated";

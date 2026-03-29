@@ -72,7 +72,14 @@ def compute_option_tp_sl(
     if aux_price < 0.01:
         aux_price = 0.01
 
-    max_tp_price = profit_price
+    # Trailing TP ceiling must be *wider* than initial TP. When max_tp_price == profit_price,
+    # OrderManager._cap_trailing_tp clamps every ratchet back to the initial target, so the
+    # effective trail never moves up with price (late exits / confusing SL&TP behaviour).
+    trail_ceiling_pct = min(float(max_move_fraction) * 2.5, 0.45)
+    max_tp_price = round(float(trade_price) * (1.0 + trail_ceiling_pct), 2)
+    if max_tp_price < profit_price:
+        max_tp_price = profit_price
+
     min_sl_price = round(max(0.01, trade_price - dist), 2)
     if min_sl_price > aux_price:
         min_sl_price = aux_price
@@ -103,6 +110,33 @@ def targets_from_config(
         max_move_fraction=max_frac,
         min_dist_dollars=min_dist,
     )
+
+
+def normalize_ibkr_option_avg_premium(
+    avg_cost: float | None,
+    order_avg_fill: float | None = None,
+) -> float:
+    """
+    Average cost basis for an option position for PnL / UI.
+
+    IBKR's position() avgCost for US equity options is normally the **average premium per
+    contract share** (same units as the option quote), not ``premium * 100``.
+
+    Prefer the order manager's fill price when present. A legacy bug divided avgCost by 100
+    whenever it was > 1, which breaks essentially all premiums above $1.00.
+    """
+    eo = float(order_avg_fill or 0)
+    if eo > 0:
+        return round(eo, 6)
+    ac = float(avg_cost or 0)
+    if ac <= 0:
+        return 0.0
+    # If TWS ever reports total contract dollars (e.g. ~150 for a $1.50 quote), map down.
+    if ac >= 50.0:
+        scaled = ac / 100.0
+        if 0.03 <= scaled <= 80.0:
+            return round(scaled, 6)
+    return round(ac, 6)
 
 
 def backfill_order_tp_sl_caps(order: Any) -> None:

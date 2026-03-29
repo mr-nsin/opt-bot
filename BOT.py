@@ -2578,7 +2578,7 @@ def _wait_underlying_ticks_ready(client, stock_contracts, timeout_sec=3.0, poll_
     )
 
 
-def _wait_option_snapshots_ready(client, options_contracts, timeout_sec=10.0, poll_interval=0.15):
+def _wait_option_snapshots_ready(client, options_contracts, timeout_sec=8.0, poll_interval=0.15):
     """
     Poll option snapshot ticks until enough contracts have bid/ask/last, or timeout.
     """
@@ -2696,7 +2696,7 @@ def init_data_feed():
                 client.subscribe(contract=put_option, snapshot=True)
                 options_contracts.extend((call_option, put_option))
 
-        _wait_option_snapshots_ready(client, options_contracts, timeout_sec=10.0, poll_interval=0.15)
+        _wait_option_snapshots_ready(client, options_contracts, timeout_sec=8.0, poll_interval=0.15)
         for contract in options_contracts:
             client.subscribe(contract=contract)
     except Exception as ex:

@@ -58,6 +58,57 @@
 - **Test Everything**: Verify changes work before marking done. Check logs, run tests.
 - **Own the Fix**: When something breaks, fix it end-to-end. Don't leave partial solutions.
 
+## Antigravity skill library (default reference for this repo)
+
+Installed skills live on disk (not in the model by default). **On every substantive prompt** (anything beyond a one-line answer), map the task to the tables below and **read the matching `SKILL.md` file(s)** with the editor’s Read tool **before** designing, refactoring, or adding features. Treat that content as project guidance for this session’s work.
+
+**Base path (expand `~` to the user home directory on macOS):**
+
+`~/.gemini/antigravity/skills/<skill-name>/SKILL.md`
+
+**Rules**
+
+- **Selective loading:** Read **1–4** skill files per task that clearly apply. Do **not** read the entire skills directory or unrelated skills.
+- **Stack match first:** Prefer stack skills for implementation; pull **architecture** skills when boundaries, ADRs, APIs, or structure are in scope.
+- **Honest limit:** No process can inject all skill text into a single context window; **curated reads** are how we keep quality without blowing the budget.
+- **Scripts:** Some skills (e.g. `senior-architect`) mention helper scripts. **Inspect before run**; do not execute untrusted automation on production paths.
+
+### Stack-aligned skills (React / TypeScript / Tailwind / Zustand / Rust / Python / quant)
+
+| Skill folder | Use when |
+|--------------|----------|
+| `typescript-pro` | TS types, strictness, shared shapes with RPC/config |
+| `react-best-practices` | Components, hooks, composition, React quality |
+| `zustand-store-ts` | Global/client state (`src/stores/`, Zustand) |
+| `tailwind-patterns` | Tailwind layout, tokens, UI consistency |
+| `rust-pro` | Tauri Rust: commands, state, sidecar lifecycle |
+| `rust-async-patterns` | Async Rust, concurrency at the shell boundary |
+| `python-pro` | Trading engine and root Python modules |
+| `async-python-patterns` | Async I/O, long-running engine loops |
+| `python-testing-patterns` | `pytest`, engine tests, regression safety |
+| `quant-analyst` | Options/quant framing, risk/time-series language (not IBKR-specific) |
+
+### Architect- and system-level skills
+
+| Skill folder | Use when |
+|--------------|----------|
+| `architecture` | Trade-offs, requirements, decision framework, ADR mindset |
+| `software-architecture` | Clean architecture, DDD-style boundaries, layering FE vs domain vs infra |
+| `api-design-principles` | Contracts between UI, Tauri, and Python; errors, versioning, clarity |
+| `backend-architect` | Service/API design, resilience, observability behind the engine |
+| `monorepo-architect` | Repo-wide packages, builds, CI, shared boundaries (this repo is multi-stack) |
+| `architecture-decision-records` | Writing or updating ADRs for major decisions |
+| `architecture-patterns` | Choosing structural patterns |
+| `architect-review` | Structured review of proposed designs |
+| `c4-architecture-c4-architecture` | C4-style documentation of context/containers/components |
+| `full-stack-orchestration-full-stack-feature` | End-to-end feature flow: data → API → UI → integration (use as checklist; subagent names inside may be tool-specific) |
+
+**Optional:** `antigravity-skill-orchestrator` when unsure which single skill fits; `senior-architect` only if you need its scripted workflows after review.
+
+### Cursor-bundled skills (separate path)
+
+Cursor may also expose skills under `~/.cursor/skills-cursor/` (e.g. create-rule, create-skill). Use those when the task is editor rules, skills authoring, or settings — not for trading logic.
+
 ## Project Context: QuantDrift OPT_BOT
 
 This is a **Tauri + React + Python** desktop trading application for options trading via Interactive Brokers (IBKR).
@@ -67,6 +118,7 @@ This is a **Tauri + React + Python** desktop trading application for options tra
 - **Backend**: Rust (Tauri) manages window, licensing, sidecar lifecycle
 - **Trading Engine**: Python sidecar (`trading-engine/`) communicates via JSON-RPC over stdio
 - **Legacy Python**: `BOT.py`, `common.py`, `order_manager.py`, `tws_api_client.py`, `Indicators.py` at project root
+- **Account scope** (`account_scope.py` + `tws_api_client.managed_account_ids`): **Display** vs **execution** boundary for IBKR. Empty `ACCOUNT_ID` → show all option legs TWS reports; set → filter Positions tab and set `order.account` in BOT. If configured id is **not** in TWS `managedAccounts`, position filtering **fails open** (show all) with a WARN so a typo does not blank the Active Positions tab — **orders may still use the bad id** until the user fixes config.
 
 ### Key Paths
 | Path | Purpose |
@@ -77,7 +129,7 @@ This is a **Tauri + React + Python** desktop trading application for options tra
 | `trading-engine/.venv/` | Python 3.12 virtualenv (all engine deps) |
 | `config.json` | Trading config (IP, port, symbols, risk params) |
 | `config/settings.json` | UI settings |
-| `docs/` | ROADMAP.md, design docs, analysis docs |
+| `docs/` | **ARCHITECTURE.md** (C4-style, protocol contract), ROADMAP.md, `architecture/adr/` |
 | `logs/trade_open_context.jsonl` | Entry-order audit: full signal OHLCV + SuperTrend DF + engulf window, algo bars, execution (queued async — see `trade_placement_audit.py`) |
 
 ### Running the App (macOS)

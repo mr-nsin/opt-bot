@@ -1,4 +1,28 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+fn deserialize_quantity_loose<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Qty {
+        I32(i32),
+        I64(i64),
+        F64(f64),
+        String(String),
+    }
+    match Qty::deserialize(deserializer)? {
+        Qty::I32(i) => Ok(i),
+        Qty::I64(i) => i
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("quantity out of i32 range")),
+        Qty::F64(f) => Ok(f.round() as i32),
+        Qty::String(s) => s
+            .parse::<i32>()
+            .map_err(|_| serde::de::Error::custom("invalid quantity string")),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Position {
@@ -6,6 +30,7 @@ pub struct Position {
     pub strike: f64,
     pub right: String,
     pub expiry: String,
+    #[serde(default, deserialize_with = "deserialize_quantity_loose")]
     pub quantity: i32,
     pub avg_price: f64,
     pub current_price: f64,
@@ -117,5 +142,27 @@ impl Default for TradingState {
             account_metrics: None,
             signal_data: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod position_deserialize_tests {
+    use super::*;
+
+    #[test]
+    fn quantity_accepts_f64_from_sidecar_json() {
+        let j = serde_json::json!({
+            "symbol": "TSLA",
+            "strike": 350.0,
+            "right": "C",
+            "expiry": "20260313",
+            "quantity": 2.0,
+            "avg_price": 1.5,
+            "current_price": 1.55,
+            "pnl": 10.0,
+            "pnl_percent": 3.33
+        });
+        let p: Position = serde_json::from_value(j).unwrap();
+        assert_eq!(p.quantity, 2);
     }
 }

@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, oneshot};
 
-use super::protocol::{SidecarMessage, SidecarRequest};
+use super::protocol::{event_types, SidecarMessage, SidecarRequest};
 use crate::commands::logs::{push_log, LogEntry};
 use crate::state::app_state::AppState;
 use crate::state::trading_state::{Position, TradeRecord, TradingStatus};
@@ -322,7 +322,7 @@ async fn handle_sidecar_message(
 
             // ---- Update Rust-side AppState based on event type ----
             match event.event.as_str() {
-                "pnl_update" => {
+                event_types::PNL_UPDATE => {
                     let daily = event
                         .data
                         .get("daily_pnl")
@@ -352,7 +352,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "position_update" => {
+                event_types::POSITION_UPDATE => {
                     if let Ok(pos) = serde_json::from_value::<Position>(event.data.clone()) {
                         let mut app = state.lock().await;
                         let norm_exp = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
@@ -384,7 +384,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "trade_executed" => {
+                event_types::TRADE_EXECUTED => {
                     if let Ok(trade) = serde_json::from_value::<TradeRecord>(event.data.clone()) {
                         let mut app = state.lock().await;
                         app.trading.total_trades += 1;
@@ -396,7 +396,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "trade_closed" => {
+                event_types::TRADE_CLOSED => {
                     let pnl = event.data.get("pnl").and_then(|v| v.as_f64());
                     let exit_price = event.data.get("exit_price").and_then(|v| v.as_f64());
                     let closed_symbol = event.data.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
@@ -489,7 +489,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "connection_status" => {
+                event_types::CONNECTION_STATUS => {
                     if let Some(connected) =
                         event.data.get("connected").and_then(|v| v.as_bool())
                     {
@@ -498,7 +498,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "signal_detected" => {
+                event_types::SIGNAL_DETECTED => {
                     let signal_str = serde_json::to_string(&event.data).unwrap_or_default();
                     let mut app = state.lock().await;
                     app.trading.last_signal = Some(signal_str);
@@ -506,12 +506,12 @@ async fn handle_sidecar_message(
                         Some(chrono::Utc::now().to_rfc3339());
                 }
 
-                "signal_data" => {
+                event_types::SIGNAL_DATA => {
                     let mut app = state.lock().await;
                     app.trading.signal_data = Some(event.data.clone());
                 }
 
-                "account_metrics" => {
+                event_types::ACCOUNT_METRICS => {
                     should_forward = false; // We emit explicitly; avoid double emit from generic forward
                     let mut app = state.lock().await;
                     let unchanged = app
@@ -529,7 +529,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "engine_status" => {
+                event_types::ENGINE_STATUS => {
                     if let Some(status_str) =
                         event.data.get("status").and_then(|v| v.as_str())
                     {
@@ -549,7 +549,7 @@ async fn handle_sidecar_message(
                     }
                 }
 
-                "log_message" => {
+                event_types::LOG_MESSAGE => {
                     // Push sidecar log messages into the Rust in-memory log buffer.
                     // Supports both batched (entries array) and single-entry format.
                     let entries: Vec<LogEntry> = if let Some(arr) = event.data.get("entries").and_then(|v| v.as_array()) {

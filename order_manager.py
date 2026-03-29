@@ -719,20 +719,19 @@ class OrderManager:
         ask_val = option_tick.ask if option_tick.ask > 0 else -1
         last_val = option_tick.last if option_tick.last > 0 else -1
 
-        # Exit price: Long = what we receive (sell at bid); Short = what we pay (buy at ask)
+        # Exit price (economic mark for closing):
+        # Long closing = SELL to close → use bid (or last if no bid), never max(bid,last) which
+        # overstates proceeds, delays realistic TP/SL behaviour, and diverges from check_stop_loss.
         if is_long:
-            if bid_val > 0 and last_val > 0:
-                exit_price = max(bid_val, last_val)
+            if bid_val > 0:
+                exit_price = bid_val
             elif last_val > 0:
                 exit_price = last_val
-            elif bid_val > 0:
-                exit_price = bid_val
             else:
                 exit_price = -1
         else:
-            if ask_val > 0 and last_val > 0:
-                exit_price = min(ask_val, last_val)  # Best price we might pay to buy back
-            elif ask_val > 0:
+            # Short closing = BUY to close → use ask (conservative), not min(ask,last)
+            if ask_val > 0:
                 exit_price = ask_val
             elif last_val > 0:
                 exit_price = last_val
@@ -743,11 +742,11 @@ class OrderManager:
             logger.warning(f"Invalid exit price for {order.option_symbol}: bid={bid_val}, ask={ask_val}, last={last_val}")
             return
 
-        # Validate prices (Long: bid/last; Short: ask/last)
-        if is_long and (option_tick.last == -1 or option_tick.bid == -1):
+        # Options often have last=-1 while bid/ask stream; require at least one usable mark.
+        if is_long and (option_tick.bid <= 0 and option_tick.last <= 0):
             logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
             return
-        if not is_long and (option_tick.last == -1 or option_tick.ask == -1):
+        if not is_long and (option_tick.ask <= 0 and option_tick.last <= 0):
             logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
             return
 
@@ -879,11 +878,10 @@ class OrderManager:
             logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, ask={option_tick.ask}, last={option_tick.last}")
             return
 
-        # Validate prices
-        if is_long and (option_tick.last == -1 or option_tick.bid == -1):
+        if is_long and (option_tick.bid <= 0 and option_tick.last <= 0):
             logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
             return
-        if not is_long and (option_tick.last == -1 or option_tick.ask == -1):
+        if not is_long and (option_tick.ask <= 0 and option_tick.last <= 0):
             logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
             return
 

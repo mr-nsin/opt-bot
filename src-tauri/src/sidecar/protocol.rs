@@ -54,6 +54,12 @@ pub mod event_types {
     pub const ERROR: &str = "error";
     pub const ENGINE_STATUS: &str = "engine_status";
     pub const CONNECTION_STATUS: &str = "connection_status";
+    /// IBKR account summary forwarded to UI (`trading:account_metrics`).
+    pub const ACCOUNT_METRICS: &str = "account_metrics";
+    /// Feed health / subscription snapshot (`trading:data_status`).
+    pub const DATA_STATUS: &str = "data_status";
+    /// Candle + signal rows for dashboard (`trading:signal_data`).
+    pub const SIGNAL_DATA: &str = "signal_data";
 }
 
 /// Known method names for requests to the sidecar
@@ -79,5 +85,19 @@ impl SidecarRequest {
             method: method.to_string(),
             params,
         }
+    }
+}
+
+#[cfg(test)]
+mod protocol_contract_tests {
+    use super::event_types;
+
+    #[test]
+    fn sidecar_event_names_match_python_messages_module() {
+        // Keep in sync with trading-engine/protocol/messages.py
+        assert_eq!(event_types::TICK_UPDATE, "tick_update");
+        assert_eq!(event_types::DATA_STATUS, "data_status");
+        assert_eq!(event_types::SIGNAL_DATA, "signal_data");
+        assert_eq!(event_types::ACCOUNT_METRICS, "account_metrics");
     }
 }

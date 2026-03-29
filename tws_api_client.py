@@ -55,6 +55,8 @@ class TwsApiClient(EWrapper, EClient):
         self._pnl_single_req_to_conid: dict[int, int] = {}
         self._pnl_single_req_id_seq: int = 31000
         self.account_summary_cache = {}  # tag -> value (str from TWS; parse to float in engine)
+        # Populated in managedAccounts(); used to validate config ACCOUNT_ID vs this TWS login
+        self.managed_account_ids: list = []
         self._lock = threading.Lock()
         self.ACCOUNT_SUMMARY_REQ_ID = 2
         # When True, reconnects are done by the trading engine only (avoids multiple TWS connections)
@@ -303,10 +305,21 @@ class TwsApiClient(EWrapper, EClient):
             self.reqSecDefOptParams(ticker_id, symbol,"", "STK", contract.conId)
 
         self.ticker_strike_fetched = False
-        while self.ticker_strike_fetched != True:
+        max_wait_sec = 20.0
+        waited = 0.0
+        while not self.ticker_strike_fetched and waited < max_wait_sec:
             time.sleep(0.5)
+            waited += 0.5
 
-        return self.ticker_strike_cache[ticker_id]
+        if not self.ticker_strike_fetched:
+            logger.warning(
+                "get_strikes: no response for %s within %.0fs (TWS load, market closed, or pacing) — using empty strikes",
+                symbol,
+                max_wait_sec,
+            )
+            return []
+
+        return self.ticker_strike_cache.get(ticker_id, [])
 
     """def get_contract_detail(self, contract: Contract):
         reqId = self.nextTickerId()
@@ -883,6 +896,7 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     def managedAccounts(self, accountsList: str):
         accounts = [a.strip() for a in accountsList.split(",") if a.strip()]
+        self.managed_account_ids = list(accounts)
         # Use configured account from UI if it's in the managed accounts list
         if self._configured_account_id and self._configured_account_id in accounts:
             self.managed_account = self._configured_account_id

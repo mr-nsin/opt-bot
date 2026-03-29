@@ -9,6 +9,8 @@ import threading
 from datetime import datetime
 from typing import Any, Dict
 
+from protocol import messages
+
 
 _write_lock = threading.Lock()
 
@@ -42,7 +44,7 @@ def send_event(event_type: str, data: Dict[str, Any]):
 
 
 def emit_tick(symbol: str, last: float, bid: float, ask: float, **kwargs):
-    send_event("tick_update", {
+    send_event(messages.TICK_UPDATE, {
         "symbol": symbol,
         "last": last,
         "bid": bid,
@@ -52,11 +54,11 @@ def emit_tick(symbol: str, last: float, bid: float, ask: float, **kwargs):
 
 
 def emit_position(position_data: dict):
-    send_event("position_update", position_data)
+    send_event(messages.POSITION_UPDATE, position_data)
 
 
 def emit_pnl(daily_pnl: float, unrealized: float, realized: float):
-    send_event("pnl_update", {
+    send_event(messages.PNL_UPDATE, {
         "daily_pnl": daily_pnl,
         "unrealized_pnl": unrealized,
         "realized_pnl": realized,
@@ -65,11 +67,11 @@ def emit_pnl(daily_pnl: float, unrealized: float, realized: float):
 
 def emit_account_metrics(metrics: Dict[str, Any]):
     """Emit IBKR account summary metrics (NetLiquidation, BuyingPower, etc.)."""
-    send_event("account_metrics", metrics)
+    send_event(messages.ACCOUNT_METRICS, metrics)
 
 
 def emit_signal(symbol: str, signal_type: str, strike: float, price: float, reason: str):
-    send_event("signal_detected", {
+    send_event(messages.SIGNAL_DETECTED, {
         "symbol": symbol,
         "signal_type": signal_type,
         "strike": strike,
@@ -80,15 +82,15 @@ def emit_signal(symbol: str, signal_type: str, strike: float, price: float, reas
 
 
 def emit_trade_executed(order_data: dict):
-    send_event("trade_executed", order_data)
+    send_event(messages.TRADE_EXECUTED, order_data)
 
 
 def emit_trade_closed(order_data: dict):
-    send_event("trade_closed", order_data)
+    send_event(messages.TRADE_CLOSED, order_data)
 
 
 def emit_order_update(order_id: int, status: str, symbol: str, **kwargs):
-    send_event("order_update", {
+    send_event(messages.ORDER_UPDATE, {
         "order_id": order_id,
         "status": status,
         "symbol": symbol,
@@ -117,7 +119,7 @@ def _flush_log_buffer():
         _LOG_BUFFER.clear()
         _log_flush_timer = None
     if entries:
-        send_event("log_message", {"entries": entries})
+        send_event(messages.LOG_MESSAGE, {"entries": entries})
 
 
 def flush_pending_logs():
@@ -190,7 +192,7 @@ def emit_log(message: str, level: str = "INFO", category: str = "trading"):
 
 
 def emit_engine_status(status: str, connected: bool = False, **kwargs):
-    send_event("engine_status", {
+    send_event(messages.ENGINE_STATUS, {
         "status": status,
         "connected": connected,
         **kwargs,
@@ -198,14 +200,14 @@ def emit_engine_status(status: str, connected: bool = False, **kwargs):
 
 
 def emit_connection_status(connected: bool, message: str = ""):
-    send_event("connection_status", {
+    send_event(messages.CONNECTION_STATUS, {
         "connected": connected,
         "message": message,
     })
 
 
 def emit_error(message: str, code: int = -1):
-    send_event("error", {
+    send_event(messages.ERROR, {
         "code": code,
         "message": message,
         "timestamp": datetime.now().isoformat(),
@@ -222,7 +224,7 @@ def emit_data_status(
     bar_count: int,
 ):
     """Emit a periodic snapshot of what data is being fetched (every ~10s)."""
-    send_event("data_status", {
+    send_event(messages.DATA_STATUS, {
         "timestamp": datetime.now().isoformat(),
         "connected": connected,
         "data_feed_started": data_feed_started,
@@ -240,7 +242,7 @@ def emit_signal_data(signals: list, system_started_at: str):
     Each row: symbol, date, open, high, low, close, volume, signal.
     system_started_at: ISO timestamp when the system/trading engine started.
     """
-    send_event("signal_data", {
+    send_event(messages.SIGNAL_DATA, {
         "signals": signals,
         "system_started_at": system_started_at,
         "timestamp": datetime.now().isoformat(),

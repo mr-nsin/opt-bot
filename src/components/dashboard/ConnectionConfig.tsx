@@ -40,7 +40,10 @@ export function ConnectionConfig({ disabled }: { disabled?: boolean }) {
         <div className="grid grid-cols-2 gap-2.5">
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Account</label>
-            <Input value={tradingConfig.account_id} onChange={(e) => !disabled && updateTradingConfig({ account_id: e.target.value })} placeholder="U1234567" disabled={disabled} />
+            <Input value={tradingConfig.account_id} onChange={(e) => !disabled && updateTradingConfig({ account_id: e.target.value })} placeholder="Optional — leave empty for all" disabled={disabled} />
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Empty: show every account&apos;s positions. Set to your IB id for order routing and to hide other accounts in the Positions tab. Wrong id hides legs until fixed or cleared.
+            </p>
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-muted-foreground">Order Expiry (s)</label>
