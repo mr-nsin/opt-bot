@@ -39,9 +39,7 @@ This document compares how **signals were generated in the original BOT.py flow*
    - **Starts N threads:** `threading.Thread(target=BOT.event_processor, args=(self._event_queue, i))` — same as original.
    - **`self._client.initialization_done = True`**
    - **`self._data_feed_started = True`**
-5. **Engine main loop (_run_engine):** Runs in a separate thread. Every ~50 ms it does:
-   - If **not** `_data_feed_started` and queue non-empty: **`event = self._event_queue.get(...)`** and **`self._process_event(event)`** (which only logs the event, no signal logic).
-   - If `_data_feed_started`: it does **not** read from the queue; only BOT event_processor threads do.
+5. **Engine main loop (_run_engine):** Runs in a separate thread. It **does not** read from `event_queue` — only BOT `event_processor` threads consume ticks (same as original BOT after the discard bug was fixed). Periodic work includes PnL, account metrics, data status, positions, **`timeCheckAndCloseProgram`** (EOD / daily limits) every few seconds when connected, and signal heartbeat / `scan_all_stocks_signals` on a longer interval.
 
 ---
 

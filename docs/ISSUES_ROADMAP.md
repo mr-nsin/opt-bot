@@ -35,10 +35,10 @@
 
 | Priority | Issue | File | Status |
 |----------|-------|------|--------|
-| P1 | timeCheckAndCloseProgram not in sidecar loop | trading_engine.py | 🔴 Open |
-| P1 | Expiry format mismatch in check_exit_conditions | order_manager.py | 🔴 Open |
-| P2 | updateTradePnl format verification | tradingStore, useTradingEvents | ⚠️ Verify |
-| P3 | Dead _process_event, docstrings, etc. | Various | 🔴 Open |
+| P1 | timeCheckAndCloseProgram not in sidecar loop | trading_engine.py | ✅ Done — `_check_eod_time()` every **5s** when TWS connected (independent of 30s signal heartbeat); calls `BOT.timeCheckAndCloseProgram` |
+| P1 | Expiry format mismatch in check_exit_conditions | order_manager.py | ✅ Done — `_norm_expiry` handles ISO / datetime; `_expiry_equivalent` matches YYYYMMDD vs YYYYMM vs dashed formats (`tests/test_order_manager_expiry.py`) |
+| P2 | updateTradePnl format verification | tradingStore, useTradingEvents | ✅ Verified — `Number(match.strike)` for JSON string strikes; `vitest` `src/stores/tradingStore.test.ts` |
+| P3 | Dead _process_event, docstrings, etc. | Various | ✅ Done — removed unused `_process_event`; `docs/SIGNAL_FLOW_BOT_VS_ENGINE.md` updated for current engine loop |
 
 ---
 

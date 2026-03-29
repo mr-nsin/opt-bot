@@ -100,7 +100,7 @@ export const useTradingStore = create<TradingState>((set) => ({
           (t.status === "open" || t.status === undefined) &&
           (match.symbol == null || t.symbol === match.symbol) &&
           (match.right == null || nr(t.right) === nr(match.right)) &&
-          (match.strike == null || Number(t.strike) === match.strike) &&
+          (match.strike == null || Number(t.strike) === Number(match.strike)) &&
           (match.expiry == null || match.expiry === "" || normExp(t.expiry) === normExp(match.expiry))
       );
       if (idx < 0) return state;

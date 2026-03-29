@@ -137,15 +137,35 @@ class OrderManager:
                 logger.error(f"Error closing position {order.option_symbol}: {ex}", exc_info=True)
 
     def _norm_expiry(self, exp: str) -> str:
-        """Normalize expiry to YYYYMMDD for matching (e.g. 2026-03-06 -> 20260306)."""
+        """Normalize expiry for cache keys: YYYYMMDD when possible, else YYYYMM or digit run."""
         if not exp:
             return ""
-        s = str(exp).replace("-", "").replace("/", "").strip()
-        if len(s) == 8 and s.isdigit():
-            return s
-        if len(s) == 10 and s[4] == "0" and s[7] == "0":
-            return s.replace("-", "")[:8]
-        return s[:8] if len(s) >= 8 else s
+        s = str(exp).strip()
+        if "T" in s:
+            s = s.split("T", 1)[0]
+        if " " in s:
+            s = s.split()[0]
+        s = s.replace("-", "").replace("/", "").strip()
+        digits = "".join(ch for ch in s if ch.isdigit())
+        if len(digits) >= 8:
+            return digits[:8]
+        if len(digits) == 6:
+            return digits
+        return digits[:8] if len(digits) > 8 else digits
+
+    def _expiry_equivalent(self, raw_a: str, raw_b: str) -> bool:
+        """True if two IB expiry strings refer to the same contract month/day (format-tolerant)."""
+        if not raw_a or not raw_b:
+            return True
+        da = "".join(c for c in str(raw_a) if c.isdigit())
+        db = "".join(c for c in str(raw_b) if c.isdigit())
+        if len(da) >= 8 and len(db) >= 8:
+            return da[:8] == db[:8]
+        if len(da) >= 8 and len(db) == 6:
+            return da[:6] == db
+        if len(db) >= 8 and len(da) == 6:
+            return db[:6] == da
+        return da == db
 
     def _norm_right(self, r: str) -> str:
         """Normalize right to C or P."""
@@ -179,7 +199,7 @@ class OrderManager:
                 if self._norm_right(order.right) != pos_right:
                     return False
             if require_expiry and pos_exp:
-                if order.expiration and self._norm_expiry(order.expiration) != pos_exp:
+                if order.expiration and not self._expiry_equivalent(str(expiry or ""), str(order.expiration or "")):
                     return False
             return True
 

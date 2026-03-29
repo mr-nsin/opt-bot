@@ -73,6 +73,9 @@ class TradingEngine:
         self._last_pnl_emit_time: float = 0
         self._pnl_throttle_sec: float = 1.0  # Align with UI throttle (~1/s); cuts IPC vs 50ms engine loop
         self._close_all_thread: Optional[threading.Thread] = None
+        # EOD / daily PnL limits — same BOT.timeCheckAndCloseProgram as standalone; not tied to signal heartbeat
+        self._last_eod_check_time: float = 0.0
+        self._eod_check_interval_sec: float = 5.0
 
     @contextmanager
     def _cwd_for_first_bot_import(self):
@@ -1196,6 +1199,11 @@ class TradingEngine:
                     self._last_positions_time = now
                     self._emit_positions()
 
+                # Periodic EOD / profit-loss cap (parity with standalone BOT paths calling timeCheckAndCloseProgram)
+                if self._client and self.connected and now - self._last_eod_check_time >= self._eod_check_interval_sec:
+                    self._last_eod_check_time = now
+                    self._check_eod_time()
+
                 # Every 30s: re-scan signal DataFrame, emit to UI, and heartbeat log
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
                     self._last_signal_heartbeat_time = now
@@ -1216,14 +1224,6 @@ class TradingEngine:
                     except Exception:
                         emit_log("Signal scanner active", "INFO", "signal")
 
-                    # Every 30s: check end-of-day time and close all positions if past EOD
-                    if self._data_feed_started and self.connected:
-                        if not hasattr(self, "_last_eod_check_time"):
-                            self._last_eod_check_time = 0.0
-                        if now - self._last_eod_check_time >= 30.0:
-                            self._last_eod_check_time = now
-                            self._check_eod_time()
-
                 time.sleep(0.05)  # 50ms loop
 
             except Exception as e:
@@ -1231,14 +1231,6 @@ class TradingEngine:
                 time.sleep(1)
 
         emit_log("Trading engine loop ended", "INFO", "system")
-
-    def _process_event(self, event):
-        """Process an event from the TWS event queue."""
-        try:
-            event_type = event.get("type", "") if isinstance(event, dict) else str(type(event))
-            emit_log(f"Processing event: {event_type}", "DEBUG", "trading")
-        except Exception as e:
-            emit_log(f"Event processing error: {e}", "ERROR", "trading")
 
     def _check_eod_time(self):
         """Periodically check if market end time has passed and close all positions."""
