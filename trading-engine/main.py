@@ -14,6 +14,7 @@ import sys
 import os
 import signal
 import time
+import atexit
 
 # Ensure loguru is bundled (used by common.py for logging)
 import loguru  # noqa: F401
@@ -31,8 +32,20 @@ SIDECAR_DIR = os.path.dirname(os.path.abspath(__file__))
 if SIDECAR_DIR not in sys.path:
     sys.path.insert(0, SIDECAR_DIR)
 
+# Host (e.g. Tauri) often spawns us with CWD = target/debug or the .app bundle dir.
+# get_logs_directory() uses getcwd() to choose trading-engine/logs vs repo logs/; without this,
+# logs land in OPT_BOT/logs while developers look under trading-engine/logs (empty).
+try:
+    os.chdir(SIDECAR_DIR)
+except OSError as e:
+    sys.stderr.write(f"[trading-engine] os.chdir({SIDECAR_DIR!r}) failed: {e}\n")
+    sys.stderr.flush()
+
+# Initialize loguru + stdlib bridge before any indirect import of common (emit_log mirror, tws, BOT).
+import common  # noqa: E402, F401
+
 from protocol.handler import MessageHandler
-from protocol.emitter import emit_log, emit_engine_status, send_response
+from protocol.emitter import emit_log, emit_engine_status, send_response, flush_pending_logs
 from protocol import messages
 from engine.trading_engine import TradingEngine
 
@@ -83,9 +96,13 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Emit startup event
+    # Emit startup event (log path: frozen sidecar → ~/QuantDrift/logs; dev python → trading-engine/logs or repo logs/)
+    from common import get_logs_directory
+
     emit_engine_status("Idle", connected=False)
+    emit_log(f"Log file directory: {get_logs_directory()}", "INFO", "system")
     emit_log("QuantDrift Trading Engine v1.0.0 started", "INFO", "system")
+    atexit.register(flush_pending_logs)
 
     # Start the message handler (blocks on stdin)
     handler.start()

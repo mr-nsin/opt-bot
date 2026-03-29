@@ -4,9 +4,20 @@ import os
 from datetime import datetime
 from typing import Optional
 
+
+def _default_trading_log_dir() -> str:
+    """Same folder as loguru bot_*.log when common is available; else CWD-relative logs."""
+    try:
+        from common import get_logs_directory
+
+        return get_logs_directory()
+    except Exception:
+        return "logs"
+
+
 class TradingLogger:
-    def __init__(self, log_dir: str = "logs", max_file_size: str = "10MB", backup_count: int = 5):
-        self.log_dir = log_dir
+    def __init__(self, log_dir: Optional[str] = None, max_file_size: str = "10MB", backup_count: int = 5):
+        self.log_dir = log_dir if log_dir is not None else _default_trading_log_dir()
         self.max_file_size = self._parse_size(max_file_size)
         self.backup_count = backup_count
         
@@ -80,8 +91,9 @@ class TradingLogger:
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         handler.setFormatter(formatter)
-        
+
         logger.addHandler(handler)
+        logger.propagate = False
         return logger
     
     def log_trade_entry(self, trade_data: dict):

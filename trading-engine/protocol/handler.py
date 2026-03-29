@@ -9,7 +9,7 @@ import json
 import threading
 from typing import Callable, Dict, Any
 
-from protocol.emitter import send_response, emit_log, emit_error
+from protocol.emitter import send_response, emit_log, emit_error, flush_pending_logs
 from protocol import messages
 
 
@@ -78,9 +78,11 @@ class MessageHandler:
             result = handler(params)
             send_response(request_id, result=result)
             if method == messages.STOP_TRADING:
+                flush_pending_logs()
                 os._exit(0)
         except Exception as e:
             emit_error(f"Handler error for {method}: {e}")
             send_response(request_id, error=str(e))
             if method == messages.STOP_TRADING:
+                flush_pending_logs()
                 os._exit(1)

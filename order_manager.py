@@ -1,6 +1,7 @@
 import datetime
 from typing import List, Optional
 from common import MarketOrder, OptionOrder, Tick, Trade, create_order_obj, logger, Contract
+from option_targets import backfill_order_tp_sl_caps
 from data_access import DAL
 from tws_api_client import TwsApiClient
 
@@ -248,6 +249,7 @@ class OrderManager:
             self.orders_cache[order.id] = order
             self.entry_orders_cache[self._option_key(order)] = order
             self.order_id_tick_lookup[order.id] = option_tick
+            backfill_order_tp_sl_caps(order)
 
     def del_exit_order(self, order: OptionOrder, option_tick: Tick) -> None:
         key = self._option_key(order)
@@ -393,6 +395,9 @@ class OrderManager:
         order.executed_qty = trade.executed_qty
         order.average_price = trade.average_price
 
+        if not order.exit_order:
+            backfill_order_tp_sl_caps(order)
+
         # Update the order in the database
         self.db.update(order=order)
 
@@ -465,6 +470,11 @@ class OrderManager:
                 "price": float(order.average_price or 0),
                 "status": "open",
                 "timestamp": datetime.datetime.now().isoformat(),
+                **(
+                    {"underlying_atr": float(getattr(order, "underlying_atr"))}
+                    if getattr(order, "underlying_atr", None) is not None
+                    else {}
+                ),
             })
             # Same-tick position_update so Rust AppState + UI match before next engine poll (TWS positions can lag).
             avg_px = float(order.average_price or 0)
@@ -489,6 +499,18 @@ class OrderManager:
                 )
                 if prof > 0:
                     pos_payload["profit_price"] = prof
+                if getattr(order, "profit_price", None) is not None and float(order.profit_price or 0) > 0:
+                    pos_payload["initial_profit_price"] = float(order.profit_price)
+                sl_raw = float(order.stoploss_price or 0)
+                floor_sl = getattr(order, "min_sl_price", None)
+                is_long = (order.order_side or "BUY").upper() == "BUY"
+                if is_long and floor_sl is not None:
+                    pos_payload["effective_stoploss_price"] = float(round(max(sl_raw, float(floor_sl)), 2))
+                elif sl_raw > 0:
+                    pos_payload["effective_stoploss_price"] = float(round(sl_raw, 2))
+                uatr = getattr(order, "underlying_atr", None)
+                if uatr is not None:
+                    pos_payload["underlying_atr"] = float(uatr)
             except (TypeError, ValueError):
                 pass
             _emit_position(pos_payload)

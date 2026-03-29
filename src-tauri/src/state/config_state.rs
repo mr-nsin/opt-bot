@@ -167,6 +167,10 @@ impl Default for TradingConfig {
     }
 }
 
+fn default_positions_update_interval_ms() -> i32 {
+    250
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -177,6 +181,8 @@ pub struct AppSettings {
     pub auto_start_trading: bool,
     pub log_level: String,
     pub update_interval: i32,
+    #[serde(default = "default_positions_update_interval_ms")]
+    pub positions_update_interval_ms: i32,
     pub show_charts: bool,
 }
 
@@ -190,6 +196,7 @@ impl Default for AppSettings {
             auto_start_trading: false,
             log_level: "info".into(),
             update_interval: 1000,
+            positions_update_interval_ms: 250,
             show_charts: true,
         }
     }
@@ -223,17 +230,35 @@ const EMBEDDED_CONFIG: &str = include_str!("../../../config.json");
 const EMBEDDED_CONFIG: &str = "{}";
 
 /// UI settings nested under "ui" key in config.json.
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize)]
 #[serde(default)]
 struct ConfigUi {
     theme: String,
     trading_mode: String,
     font_size: i32,
     update_interval: i32,
+    #[serde(default = "default_positions_update_interval_ms")]
+    positions_update_interval_ms: i32,
     show_charts: bool,
     show_notifications: bool,
     auto_start_trading: bool,
     log_level: String,
+}
+
+impl Default for ConfigUi {
+    fn default() -> Self {
+        Self {
+            theme: String::new(),
+            trading_mode: String::new(),
+            font_size: 0,
+            update_interval: 0,
+            positions_update_interval_ms: default_positions_update_interval_ms(),
+            show_charts: false,
+            show_notifications: false,
+            auto_start_trading: false,
+            log_level: String::new(),
+        }
+    }
 }
 
 /// Combined config.json structure: trading params + ui key (or flat fallback for migration).
@@ -312,6 +337,12 @@ impl ConfigState {
             .unwrap_or(def.trading_mode.as_str());
         let font_size = f.ui.as_ref().map(|u| u.font_size).or(f.font_size).unwrap_or(def.font_size).clamp(12, 24);
         let update_interval = f.ui.as_ref().map(|u| u.update_interval).or(f.update_interval).unwrap_or(def.update_interval);
+        let positions_update_interval_ms = f
+            .ui
+            .as_ref()
+            .map(|u| u.positions_update_interval_ms)
+            .unwrap_or(def.positions_update_interval_ms)
+            .clamp(50, 5000);
         let show_charts = f.ui.as_ref().map(|u| u.show_charts).or(f.show_charts).unwrap_or(def.show_charts);
         let show_notifications = f.ui.as_ref().map(|u| u.show_notifications).or(f.show_notifications).unwrap_or(def.show_notifications);
         let auto_start_trading = f.ui.as_ref().map(|u| u.auto_start_trading).or(f.auto_start_trading).unwrap_or(def.auto_start_trading);
@@ -327,6 +358,7 @@ impl ConfigState {
             trading_mode: trading_mode.to_string(),
             font_size,
             update_interval,
+            positions_update_interval_ms,
             show_charts,
             show_notifications,
             auto_start_trading,
@@ -451,6 +483,10 @@ impl ConfigState {
         ui_map.insert("trading_mode".into(), Value::String(s.trading_mode.clone()));
         ui_map.insert("font_size".into(), Value::Number(s.font_size.into()));
         ui_map.insert("update_interval".into(), Value::Number(s.update_interval.into()));
+        ui_map.insert(
+            "positions_update_interval_ms".into(),
+            Value::Number(s.positions_update_interval_ms.into()),
+        );
         ui_map.insert("show_charts".into(), Value::Bool(s.show_charts));
         ui_map.insert("show_notifications".into(), Value::Bool(s.show_notifications));
         ui_map.insert("auto_start_trading".into(), Value::Bool(s.auto_start_trading));

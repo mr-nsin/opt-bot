@@ -14,7 +14,11 @@ pub struct Position {
     #[serde(default)]
     pub profit_price: Option<f64>,
     #[serde(default)]
+    pub initial_profit_price: Option<f64>,
+    #[serde(default)]
     pub stoploss_price: Option<f64>,
+    #[serde(default)]
+    pub effective_stoploss_price: Option<f64>,
     #[serde(default)]
     pub trailing_active: Option<bool>,
     #[serde(default)]
@@ -27,6 +31,9 @@ pub struct Position {
     pub exit_price_used: Option<f64>,
     #[serde(default)]
     pub exit_price_source: Option<String>,
+    /// Underlying (stock) ATR at entry; used with config to derive option TP/SL width.
+    #[serde(default)]
+    pub underlying_atr: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +62,8 @@ pub struct TradeRecord {
     #[serde(default = "default_trade_status")]
     pub status: String,
     pub timestamp: String,
+    #[serde(default)]
+    pub underlying_atr: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

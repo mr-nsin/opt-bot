@@ -45,7 +45,7 @@ export const PositionsPage = memo(function PositionsPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
-    // Fetch once on mount; live updates via position_update (~1s poll + immediate on entry fill) and trade_executed
+    // Fetch once on mount; live updates via position_update (config ui.positions_update_interval_ms, default 250ms) + trade_executed
     Promise.all([refreshPositions(), refreshStatus()]);
   }, [refreshPositions, refreshStatus]);
 
@@ -246,7 +246,10 @@ export const PositionsPage = memo(function PositionsPage() {
                         Bid / Ask
                       </span>
                     </th>
-                    <th className="text-right text-muted-foreground/70 font-normal">
+                    <th
+                      className="text-right text-muted-foreground/70 font-normal"
+                      title="Take-profit / stop-loss targets; row shows underlying ATR used at entry when available"
+                    >
                       <span className="flex items-center justify-end gap-1">
                         <Shield className="h-3 w-3 opacity-60" />
                         TP / SL

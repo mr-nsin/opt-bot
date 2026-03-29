@@ -201,10 +201,23 @@ export const LogsPage = memo(function LogsPage() {
                   ) : (
                     <p className="text-2xs text-muted-foreground">Loading…</p>
                   )}
-                  <p className="text-2xs text-muted-foreground">
-                    Trading engine file logs may also be in{" "}
-                    <code className="bg-muted/50 px-1 rounded">~/QuantDrift/logs</code> when
-                    running the packaged app.
+                  <p className="text-2xs text-muted-foreground space-y-1">
+                    <span className="block">
+                      The path above is app data (shell); it may be empty. When you run the app, Tauri starts the
+                      bundled <code className="bg-muted/50 px-1 rounded">trading-engine</code> binary (PyInstaller);
+                      that process is <strong>frozen</strong>, so file logs go to{" "}
+                      <code className="bg-muted/50 px-1 rounded">~/QuantDrift/logs/bot_*.log</code> (macOS/Linux) or{" "}
+                      <code className="bg-muted/50 px-1 rounded">%APPDATA%\QuantDrift\logs</code> on Windows — not under
+                      the repo <code className="bg-muted/50 px-1 rounded">trading-engine/logs</code> folder. The Logs
+                      tab shows a line <strong>Log file directory: …</strong> at engine startup with the exact path.
+                    </span>
+                    <span className="block">
+                      Only when you run <code className="bg-muted/50 px-1 rounded">python trading-engine/main.py</code>{" "}
+                      from the repo do files go to <code className="bg-muted/50 px-1 rounded">trading-engine/logs</code>{" "}
+                      or <code className="bg-muted/50 px-1 rounded">logs/</code> next to{" "}
+                      <code className="bg-muted/50 px-1 rounded">common.py</code>. Override with env{" "}
+                      <code className="bg-muted/50 px-1 rounded">OPT_BOT_LOGS_DIR</code>.
+                    </span>
                   </p>
                   <div className="rounded-md bg-amber-500/10 border border-amber-500/20 p-2">
                     <p className="text-2xs text-amber-700 dark:text-amber-400 font-medium flex items-start gap-1.5">

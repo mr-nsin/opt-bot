@@ -20,7 +20,7 @@ export function useTradingEngine() {
     setTodayTrades,
     clearSignalsInSession,
   } = useTradingStore();
-  const { tradingConfig } = useConfigStore();
+  const { tradingConfig, settings } = useConfigStore();
 
   const startTrading = useCallback(async () => {
     if (!tradingConfig) throw new Error("Configuration not loaded");
@@ -29,7 +29,13 @@ export function useTradingEngine() {
     try {
       // Persist config before start so account_id and all params are saved
       await config.save(tradingConfig);
-      const result = await trading.start(tradingConfig);
+      const enginePayload = {
+        ...tradingConfig,
+        ui: {
+          positions_update_interval_ms: settings.positions_update_interval_ms ?? 250,
+        },
+      };
+      const result = await trading.start(enginePayload);
       setStatus("Running");
       setSidecarRunning(true);
       return result;
@@ -37,7 +43,7 @@ export function useTradingEngine() {
       setStatus({ Error: String(err) });
       throw err;
     }
-  }, [tradingConfig, setStatus, setSidecarRunning, clearSignalsInSession]);
+  }, [tradingConfig, settings.positions_update_interval_ms, setStatus, setSidecarRunning, clearSignalsInSession]);
 
   const stopTrading = useCallback(async () => {
     setStatus("Stopping");

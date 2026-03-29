@@ -13,6 +13,8 @@ export interface AppSettings {
   auto_start_trading: boolean;
   log_level: string;
   update_interval: number;
+  /** How often the trading engine emits position_update (ms). Clamped server-side [50, 5000]. */
+  positions_update_interval_ms: number;
   show_charts: boolean;
 }
 
@@ -39,6 +41,9 @@ export interface TradingConfig {
   active_volume?: number;
   max_contract_amount?: number;
   atr_value?: number;
+  /** Max fraction of option premium used for TP/SL distance (default 0.15) */
+  option_tp_sl_max_pct?: number;
+  option_tp_sl_min_dist?: number;
   share_volume?: number;
   body?: number;
   midpoint_offset?: number;
@@ -82,6 +87,8 @@ export interface TradeRecord {
   pnl?: number;
   status?: string;
   timestamp?: string;
+  /** Underlying ATR at entry (same basis as TP/SL distance). */
+  underlying_atr?: number;
   [key: string]: unknown;
 }
 
@@ -107,7 +114,11 @@ export interface Position {
   pnl?: number;
   pnl_percent?: number;
   profit_price?: number;
+  /** Initial take-profit target at entry (before trailing). */
+  initial_profit_price?: number;
   stoploss_price?: number;
+  /** Long options: max(stored aux, min_sl floor) — price level used for SL checks. */
+  effective_stoploss_price?: number;
   trailing_active?: boolean;
   /** Bid price (used for TP/SL when available) */
   bid?: number;
@@ -119,6 +130,8 @@ export interface Position {
   exit_price_used?: number;
   /** "bid" or "last" — source of exit_price_used */
   exit_price_source?: string;
+  /** Underlying (stock) ATR at entry; TP/SL width uses this with ATR_VALUE and premium cap. */
+  underlying_atr?: number;
   delta?: number;
   entry_time?: string;
   timestamp?: string;

@@ -109,6 +109,7 @@ def build():
         f"{ROOT_DIR}/tws_api_client.py{os.pathsep}.",
         f"{ROOT_DIR}/order_manager.py{os.pathsep}.",
         f"{ROOT_DIR}/data_access.py{os.pathsep}.",
+        f"{ROOT_DIR}/option_targets.py{os.pathsep}.",
         f"{ROOT_DIR}/Indicators.py{os.pathsep}.",
         f"{ROOT_DIR}/logger.py{os.pathsep}.",
         # Empty strike file so BOT never hits "[Errno 2] No such file or directory: expiryStrike.json"

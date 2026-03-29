@@ -15,10 +15,6 @@ import signal
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import logging
-logging.getLogger().handlers.clear()
-
-
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract, ComboLeg
@@ -37,6 +33,7 @@ from tws_api_client import TwsApiClient
 from order_manager import OrderManager
 from data_access import DAL
 from trade_placement_audit import log_open_trade_context
+from option_targets import targets_from_config
 
 # ---- Frontend log emitter (sends logs to Tauri UI via JSON-RPC stdout) ----
 # Imported conditionally because BOT.py can run standalone (legacy) or inside the sidecar.
@@ -387,7 +384,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                 options_tick: Tick = None,
                 stock_tick:Tick = None, placement_context=None,
                 closing_order: bool = False, is_sqare_off=False,
-                max_tp_price=None, min_sl_price=None):
+                max_tp_price=None, min_sl_price=None, underlying_atr=None):
                     
     if DAY_LOCKED and CLOSE_ALL_ORDERS and not (closing_order or is_sqare_off):
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
@@ -462,7 +459,8 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
             profit_trigger=False,
             active=True,
             max_tp_price=max_tp_price,
-            min_sl_price=min_sl_price)
+            min_sl_price=min_sl_price,
+            underlying_atr=underlying_atr)
 
         logger.info(f"Created option_order: {option_order}")
         logger.info(f"Profit settings - Target: ${profitPrice:.2f}, Increment: ${PROFIT_INCREMENT:.2f}, StopLoss: ${auxPrice:.2f}")
@@ -512,12 +510,15 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                     "limit_price": float(lmtPrice) if lmtPrice is not None else None,
                     "take_profit_price": float(profitPrice) if profitPrice is not None else None,
                     "stop_loss_price": float(auxPrice) if auxPrice is not None else None,
+                    "max_tp_trailing_cap": float(max_tp_price) if max_tp_price is not None else None,
+                    "min_sl_floor": float(min_sl_price) if min_sl_price is not None else None,
+                    "underlying_atr": float(underlying_atr) if underlying_atr is not None else None,
                 }
                 if placement_context is not None:
                     audit["placement_context"] = placement_context
                 log_open_trade_context(audit)
-            except Exception:
-                pass
+            except Exception as audit_ex:
+                logger.warning("trade_open_context.jsonl audit enqueue failed: {}", audit_ex)
         elif closing_order:
             _emit_log(f"EXIT ORDER: {symbol} {right} {strike} {action} {totalQuantity}x @ MKT", "INFO", "order")
         
@@ -545,7 +546,7 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
                         totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                         profitPrice=0, conIdDetails=None, legPrices=None,                         options_tick: Tick=None,
                         stock_tick: Tick=None, placement_context=None,
-                        max_tp_price=None, min_sl_price=None):
+                        max_tp_price=None, min_sl_price=None, underlying_atr=None):
                             
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
@@ -598,7 +599,8 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
                         stock_tick=stock_tick,
                         placement_context=placement_context,
                         max_tp_price=max_tp_price,
-                        min_sl_price=min_sl_price)
+                        min_sl_price=min_sl_price,
+                        underlying_atr=underlying_atr)
         return result
     except Exception as ex:
         logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
@@ -1730,6 +1732,12 @@ def _signal_entry_context(
             "CALL_DELTA_CHECK": float(CALL_DELTA_CHECK) if CALL_DELTA_CHECK is not None else None,
             "PUT_DELTA_CHECK": float(PUT_DELTA_CHECK) if PUT_DELTA_CHECK is not None else None,
             "VOLUME_CHECK": float(VOLUME_CHECK) if VOLUME_CHECK is not None else None,
+            "option_tp_sl_max_pct": float(
+                (globals().get("fileData") or {}).get("option_tp_sl_max_pct", 0.15)
+            ),
+            "option_tp_sl_min_dist": float(
+                (globals().get("fileData") or {}).get("option_tp_sl_min_dist", 0.02)
+            ),
         },
     }
     if supertrend_engulf_gate_passed is not None:
@@ -2403,18 +2411,16 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         f"Time={marketTime} DTE={TimeDecayDiffVal} SPY/QQQ={'spy' in stock_symbol.lower() or 'qqq' in stock_symbol.lower()}"
     )
 
-    # ATR 1:1 risk reward; TP/SL distance capped at 0.9 * underlying ATR (never wider)
-    atr_risk_cap = (atrVale * 0.9) if atrVale > 0.01 else 0.018
-    if atrVale <= 0.01:
-        base_dist = 0.02
-    else:
-        base_dist = float(atrVale) * float(ATR_VALUE)
-    atr_dist = min(base_dist, float(atr_risk_cap))
-
-    profitPrice = round(tradePrice + atr_dist, 2)
-    auxPrice = round(tradePrice - atr_dist, 2)
-    max_tp_price = round(tradePrice + float(atr_risk_cap), 2)
-    min_sl_price = round(max(0.01, tradePrice - float(atr_risk_cap)), 2)
+    # TP/SL: underlying ATR → dollar distance, then cap to a fraction of option premium (see option_targets.py)
+    _cfg = globals().get("fileData") or {}
+    _tg = targets_from_config(tradePrice, float(atrVale), _cfg)
+    profitPrice = _tg.profit_price
+    auxPrice = _tg.aux_price
+    max_tp_price = _tg.max_tp_price
+    min_sl_price = _tg.min_sl_price
+    atr_dist = _tg.dist_applied
+    atr_dist_raw = _tg.atr_dist_raw
+    _max_pct = float(_cfg.get("option_tp_sl_max_pct", 0.15))
 
     # Special 0DTE returns (no trade in these cases)
     if TimeDecayDiffVal == 0:
@@ -2423,28 +2429,10 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         if tradePrice <= 0.1:
             return "0dtepricebelow10cent"
 
-    # Ensure stoploss is never negative; align min SL floor with actual aux when clamped
-    if auxPrice < 0.01:
-        auxPrice = 0.01
-    if min_sl_price > auxPrice:
-        min_sl_price = auxPrice
-
-    # If ATR-based TP implies >20% premium gain vs entry, cap take-profit at fixed 15% (investment-proportional check == premium %)
-    atr_tp_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
-    if atr_tp_pct > 20.0:
-        profitPrice = round(tradePrice * 1.15, 2)
-        max_tp_price = profitPrice
-        logger.info(
-            f"TP cap: ATR target was {atr_tp_pct:.1f}% (>20% of premium) → using fixed 15% TP ${profitPrice:.2f}"
-        )
-        try:
-            _emit_log(
-                f"{stock_symbol}: ATR TP {atr_tp_pct:.1f}% > 20% — using fixed 15% target ${profitPrice:.2f}",
-                "INFO",
-                "order",
-            )
-        except Exception:
-            pass
+    logger.info(
+        f"TP_SL_MODEL {stock_symbol}: premium_cap={_max_pct:.0%} of entry | "
+        f"atr_raw_dist=${atr_dist_raw:.4f} applied_dist=${atr_dist:.4f} → TP=${profitPrice:.2f} SL=${auxPrice:.2f}"
+    )
 
     # ============ LOG FINAL CALCULATED VALUES ============
     profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
@@ -2484,6 +2472,12 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                 "take_profit": float(profitPrice),
                 "stop_loss": float(auxPrice),
                 "atr_dist": float(atr_dist),
+                "atr_dist_raw": float(atr_dist_raw),
+                "option_tp_sl_max_pct": float(_max_pct),
+                "option_tp_sl_min_dist": float(_cfg.get("option_tp_sl_min_dist", 0.02)),
+                "max_tp_price": float(max_tp_price),
+                "min_sl_price": float(min_sl_price),
+                "underlying_atr": float(atrVale) if atrVale is not None else None,
                 "quantity": int(totalQty),
                 "use_amount_usd": float(useAmount[stock_symbol]["amount"]),
                 "contract_notional_cents": float(lastPrice * 100),
@@ -2510,7 +2504,8 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                             stock_tick=stock_tick,
                             placement_context=merged_context,
                             max_tp_price=max_tp_price,
-                            min_sl_price=min_sl_price)
+                            min_sl_price=min_sl_price,
+                            underlying_atr=float(atrVale) if atrVale is not None else None)
 
         # Cooldown is recorded in order_manager.process_fill when exit order fills (not on placement)
         logger.info(f"currentOrderId is = {currentOrderId}")

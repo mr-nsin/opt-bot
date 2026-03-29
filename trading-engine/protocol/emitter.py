@@ -120,6 +120,47 @@ def _flush_log_buffer():
         send_event("log_message", {"entries": entries})
 
 
+def flush_pending_logs():
+    """Send any buffered log lines to stdout immediately (e.g. before os._exit skips atexit)."""
+    global _log_flush_timer
+    t = None
+    with _LOG_BUFFER_LOCK:
+        t = _log_flush_timer
+        _log_flush_timer = None
+    if t is not None:
+        try:
+            t.cancel()
+        except Exception:
+            pass
+    _flush_log_buffer()
+
+
+_mirror_to_loguru_warned = False
+
+
+def _mirror_emit_to_loguru(message: str, level: str, category: str) -> None:
+    """Duplicate UI logs to loguru file (common.setup_logger) — engine otherwise only used emit_log/stdout."""
+    global _mirror_to_loguru_warned
+    try:
+        from common import logger
+    except Exception as e:
+        if not _mirror_to_loguru_warned:
+            _mirror_to_loguru_warned = True
+            sys.stderr.write(
+                f"[emitter] log file mirror disabled (common import failed): {e}\n"
+            )
+            sys.stderr.flush()
+        return
+    text = f"[{category}] {message}"
+    lv = (level or "INFO").upper()
+    if lv == "ERROR":
+        logger.error(text)
+    elif lv == "WARN":
+        logger.warning(text)
+    else:
+        logger.info(text)
+
+
 def _schedule_log_flush():
     """Schedule a flush if not already scheduled."""
     global _log_flush_timer
@@ -144,6 +185,7 @@ def emit_log(message: str, level: str = "INFO", category: str = "trading"):
     }
     with _LOG_BUFFER_LOCK:
         _LOG_BUFFER.append(entry)
+    _mirror_emit_to_loguru(message, level, category)
     _schedule_log_flush()
 
 

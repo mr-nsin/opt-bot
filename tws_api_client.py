@@ -49,6 +49,11 @@ class TwsApiClient(EWrapper, EClient):
         self.initialization_done: bool = False
         self.connection_closed: bool= False
         self.pnl_cache = {}
+        # conId -> latest pnlSingle row (unrealized/daily/realized/value/pos)
+        self.pnl_single_cache: dict = {}
+        self._pnl_single_conid_to_req: dict[int, int] = {}
+        self._pnl_single_req_to_conid: dict[int, int] = {}
+        self._pnl_single_req_id_seq: int = 31000
         self.account_summary_cache = {}  # tag -> value (str from TWS; parse to float in engine)
         self._lock = threading.Lock()
         self.ACCOUNT_SUMMARY_REQ_ID = 2
@@ -104,7 +109,7 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     def nextValidId(self, orderId: int):
         super().nextValidId(orderId)
-        logger.info("setting nextValidOrderId: %d", orderId)
+        logger.info("setting nextValidOrderId: {}", orderId)
         self.nextValidOrderId = orderId
         logger.info(f"NextValidId: {orderId}")
         
@@ -130,6 +135,51 @@ class TwsApiClient(EWrapper, EClient):
     def nextTickerId(self)-> TickerId:
         self.ticker_id = self.ticker_id + 1
         return self.ticker_id
+
+    def _alloc_pnl_single_req_id(self) -> int:
+        self._pnl_single_req_id_seq += 1
+        return self._pnl_single_req_id_seq
+
+    def _ensure_pnl_single_subscription(self, account: str, conid: int) -> None:
+        if not conid or not (account or "").strip():
+            return
+        if conid in self._pnl_single_conid_to_req:
+            return
+        if not self.isConnected():
+            return
+        req_id = self._alloc_pnl_single_req_id()
+        try:
+            self.reqPnLSingle(req_id, account, "", conid)
+            self._pnl_single_conid_to_req[conid] = req_id
+            self._pnl_single_req_to_conid[req_id] = conid
+        except Exception as e:
+            logger.warning("reqPnLSingle failed conId=%s: %s", conid, e)
+
+    def _cancel_pnl_single_for_conid(self, conid: int) -> None:
+        if not conid:
+            return
+        req_id = self._pnl_single_conid_to_req.pop(conid, None)
+        if req_id is not None:
+            self._pnl_single_req_to_conid.pop(req_id, None)
+            try:
+                if self.isConnected():
+                    self.cancelPnLSingle(req_id)
+            except Exception:
+                pass
+        with self._lock:
+            self.pnl_single_cache.pop(conid, None)
+
+    def clear_pnl_single_subscriptions(self) -> None:
+        """Cancel all reqPnLSingle streams (e.g. on disconnect)."""
+        for conid in list(self._pnl_single_conid_to_req.keys()):
+            self._cancel_pnl_single_for_conid(conid)
+
+    def get_pnl_single_snapshot(self, conid: int):
+        if not conid:
+            return None
+        with self._lock:
+            row = self.pnl_single_cache.get(conid)
+            return dict(row) if row else None
 
     def parseIBDatetime(self, s: str) -> Union[date, datetime]:
         """
@@ -702,13 +752,21 @@ class TwsApiClient(EWrapper, EClient):
             self.cancelPnL(reqId)
             self._pnl_cancelled = True"""
 
-
-    """@iswrapper
+    @iswrapper
     def pnlSingle(self, reqId: int, pos: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float, value: float):
-        print(f"PNL Single Req {reqId} - Pos: {pos}, Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}, Value: {value}")"""
+        conid = self._pnl_single_req_to_conid.get(reqId)
+        if not conid:
+            return
+        with self._lock:
+            self.pnl_single_cache[conid] = {
+                "daily": dailyPnL,
+                "unrealized": unrealizedPnL,
+                "realized": realizedPnL,
+                "value": value,
+                "pos": pos,
+            }
 
-
-    @iswrapper 
+    @iswrapper
     def historicalDataUpdate(self, reqId: int, bar: BarData):
         bar.date = self.parseIBDatetime(bar.date)
         # print(f"historicalDataUpdate: {bar}")
@@ -780,22 +838,38 @@ class TwsApiClient(EWrapper, EClient):
             return
 
         ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
-        position_obj = self.positions.get(ticker, None)
-        if position_obj is None:
-            position_obj = Position(account=account, symbol=contract.symbol, position=position, strike=contract.strike, right=contract.right, expiry=contract.lastTradeDateOrContractMonth, avg_cost=avgCost)
-            self.positions[ticker] = position_obj
-            logger.info(position_obj)
+        cid = int(getattr(contract, "conId", 0) or 0)
+
+        if position == 0:
+            prev = self.positions.get(ticker)
+            cancel_id = cid or (getattr(prev, "con_id", 0) or 0)
+            self._cancel_pnl_single_for_conid(cancel_id)
+            self.positions.pop(ticker, None)
+            logger.info("Position flat: %s conId=%s", ticker, cancel_id)
             return
 
-        position_obj.position = position
-        position_obj.avg_cost = avgCost
-        if position == 0:
-            self.positions.pop(ticker, None)
-        logger.info(position_obj)
+        position_obj = self.positions.get(ticker, None)
+        if position_obj is None:
+            position_obj = Position(
+                account=account,
+                symbol=contract.symbol,
+                position=position,
+                strike=contract.strike,
+                right=contract.right,
+                expiry=contract.lastTradeDateOrContractMonth,
+                avg_cost=avgCost,
+                con_id=cid,
+            )
+            self.positions[ticker] = position_obj
+        else:
+            position_obj.position = position
+            position_obj.avg_cost = avgCost
+            if cid:
+                position_obj.con_id = cid
 
-        # self.positions.append(
-        #     {"Account": account, "Symbol": contract.symbol, "Position": position, "Strike": contract.strike,
-        #      "Right": contract.right, "Expiry": contract.lastTradeDateOrContractMonth})
+        acct = account or getattr(self, "managed_account", "") or ""
+        self._ensure_pnl_single_subscription(acct, cid)
+        logger.info(position_obj)
     
     @iswrapper
     def positionEnd(self):
@@ -858,3 +932,7 @@ class TwsApiClient(EWrapper, EClient):
     def connectionClosed(self):
         logger.error("TWS connection closed.")
         self.connection_closed = True
+        try:
+            self.clear_pnl_single_subscriptions()
+        except Exception:
+            pass

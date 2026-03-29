@@ -11,6 +11,7 @@ import {
   Target,
   ShieldAlert,
   BarChart3,
+  Activity,
 } from "lucide-react";
 import type { Position } from "@/lib/types";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
@@ -29,6 +30,35 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
   const timeHeld = entryTime
     ? formatTimeHeld(new Date(entryTime as string), new Date())
     : null;
+
+  const slDisplay =
+    position.effective_stoploss_price != null && position.effective_stoploss_price > 0
+      ? Number(position.effective_stoploss_price)
+      : position.stoploss_price != null && position.stoploss_price > 0
+        ? Number(position.stoploss_price)
+        : null;
+  const slAuxRaw =
+    position.stoploss_price != null && position.stoploss_price > 0
+      ? Number(position.stoploss_price)
+      : null;
+  const slTitle =
+    slDisplay != null && slAuxRaw != null && Math.abs(slDisplay - slAuxRaw) > 0.005
+      ? `Effective SL (stored order aux $${slAuxRaw.toFixed(2)})`
+      : "Stop Loss";
+
+  const tpCurrent =
+    position.profit_price != null && position.profit_price > 0 ? Number(position.profit_price) : null;
+  const tpInit =
+    position.initial_profit_price != null && position.initial_profit_price > 0
+      ? Number(position.initial_profit_price)
+      : null;
+  const showInitTp =
+    tpCurrent != null && tpInit != null && Math.abs(tpInit - tpCurrent) > 0.009;
+
+  const underlyingAtr =
+    position.underlying_atr != null && Number.isFinite(Number(position.underlying_atr))
+      ? Number(position.underlying_atr)
+      : null;
 
   return (
     <>
@@ -92,20 +122,48 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           )}
         </td>
 
-        {/* TP | SL — visible in main row when set */}
+        {/* TP | SL — TP shows current trailing target; init line when it diverges. SL shows effective level. */}
         <td className="text-xs text-right">
-          {(position.profit_price != null && position.profit_price > 0) || (position.stoploss_price != null && position.stoploss_price > 0) ? (
+          {tpCurrent != null || slDisplay != null ? (
             <span className="flex flex-col gap-0.5 items-end">
-              {position.profit_price != null && position.profit_price > 0 && (
-                <span className="text-emerald-500/90 font-mono tabular-nums" title="Take Profit">
-                  TP ${Number(position.profit_price).toFixed(2)}{position.trailing_active ? " ↺" : ""}
+              {tpCurrent != null && (
+                <span className="flex flex-col items-end gap-0">
+                  <span
+                    className="text-emerald-500/90 font-mono tabular-nums"
+                    title={showInitTp ? "Current take-profit target (trailing)" : "Take Profit"}
+                  >
+                    TP ${tpCurrent.toFixed(2)}
+                    {position.trailing_active ? " ↺" : ""}
+                  </span>
+                  {showInitTp && (
+                    <span className="text-muted-foreground/70 font-mono tabular-nums text-[10px]" title="Initial TP at entry">
+                      init ${tpInit!.toFixed(2)}
+                    </span>
+                  )}
                 </span>
               )}
-              {position.stoploss_price != null && position.stoploss_price > 0 && (
-                <span className="text-red-500/90 font-mono tabular-nums" title="Stop Loss">
-                  SL ${Number(position.stoploss_price).toFixed(2)}
+              {slDisplay != null && (
+                <span className="text-red-500/90 font-mono tabular-nums" title={slTitle}>
+                  SL ${slDisplay.toFixed(2)}
                 </span>
               )}
+              {underlyingAtr != null && (
+                <span
+                  className="text-muted-foreground/55 font-mono tabular-nums text-[10px]"
+                  title="Underlying ATR (21-bar on stock) at entry — combined with ATR_VALUE and premium % cap for TP/SL width"
+                >
+                  ATR {underlyingAtr.toFixed(4)}
+                </span>
+              )}
+            </span>
+          ) : underlyingAtr != null ? (
+            <span className="flex flex-col gap-0.5 items-end">
+              <span
+                className="text-muted-foreground/70 font-mono tabular-nums text-[10px]"
+                title="Underlying ATR (21-bar on stock) at entry — used for TP/SL distance model"
+              >
+                ATR {underlyingAtr.toFixed(4)}
+              </span>
             </span>
           ) : (
             <span className="text-muted-foreground/40">—</span>
@@ -172,16 +230,42 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                     title="TP/SL logic: bid when valid, else last. Ask not used."
                   />
                 )}
-                {position.profit_price !== undefined && position.profit_price > 0 && (
+                {tpCurrent != null && (
                   <DetailItem
                     icon={TrendingUp}
-                    label={position.trailing_active ? "Take Profit (trailing)" : "Take Profit"}
-                    value={`$${Number(position.profit_price).toFixed(2)}`}
+                    label={position.trailing_active ? "Take Profit (current)" : "Take Profit"}
+                    value={`$${tpCurrent.toFixed(2)}`}
                     color="text-emerald-400"
                   />
                 )}
-                {position.stoploss_price !== undefined && position.stoploss_price > 0 && (
-                  <DetailItem icon={ShieldAlert} label="Stop Loss" value={`$${Number(position.stoploss_price).toFixed(2)}`} color="text-red-400" />
+                {showInitTp && tpInit != null && (
+                  <DetailItem
+                    icon={Target}
+                    label="Take Profit (initial)"
+                    value={`$${tpInit.toFixed(2)}`}
+                    color="text-muted-foreground"
+                  />
+                )}
+                {slDisplay != null && (
+                  <DetailItem icon={ShieldAlert} label="Stop Loss (effective)" value={`$${slDisplay.toFixed(2)}`} color="text-red-400" title={slTitle} />
+                )}
+                {slAuxRaw != null && slDisplay != null && Math.abs(slDisplay - slAuxRaw) > 0.005 && (
+                  <DetailItem
+                    icon={ShieldAlert}
+                    label="Stop (order aux)"
+                    value={`$${slAuxRaw.toFixed(2)}`}
+                    color="text-muted-foreground"
+                    title="Raw aux price on the entry order"
+                  />
+                )}
+                {underlyingAtr != null && (
+                  <DetailItem
+                    icon={Activity}
+                    label="Underlying ATR (entry)"
+                    value={underlyingAtr.toFixed(4)}
+                    color="text-violet-400/90"
+                    title="Stock 21-bar ATR at entry. TP/SL distance uses this with config ATR_VALUE and option premium cap (see option_targets)."
+                  />
                 )}
                 {timeHeld && (
                   <DetailItem icon={Clock} label="Time Held" value={timeHeld} color="text-muted-foreground" />

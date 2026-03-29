@@ -1,8 +1,10 @@
 import datetime
+import logging
 import os
 import sys
 import threading
 from dataclasses import dataclass
+from typing import Optional
 from ibapi.wrapper import Contract, Order, OrderState
 from loguru import logger
 
@@ -82,6 +84,8 @@ class OptionOrder:
     profit_increment:float = 0.0 # profit increment until price reverses
     max_tp_price: float = None  # ceiling for TP / trailing (entry + ATR*0.9 cap)
     min_sl_price: float = None  # floor for SL (entry - ATR*0.9 cap)
+    # Underlying ATR (stock) at entry; used with config to set option TP/SL distance.
+    underlying_atr: Optional[float] = None
     contract: Contract = None
     exit_placed: bool = False
     exit_order: bool = False
@@ -127,6 +131,7 @@ class Position:
     right: str = None
     expiry: str = None
     avg_cost: float = 0.0
+    con_id: int = 0
     
 @dataclass
 class PNL:
@@ -174,6 +179,44 @@ def _loguru_patch(record):
     return record
 
 
+def _dev_logs_directory(common_dir: str, cwd: str) -> str:
+    """
+    Non-frozen log directory.
+    - OPT_BOT_LOGS_DIR: explicit override (absolute or relative to cwd at call time).
+    - CWD inside repo's trading-engine/: use <trading-engine>/logs (historical local dev / sidecar cwd).
+    - Otherwise: <repo>/logs next to common.py (stable when CWD is target/debug or repo root).
+    """
+    env = (os.environ.get("OPT_BOT_LOGS_DIR") or "").strip()
+    if env:
+        return os.path.abspath(env)
+    te = os.path.normpath(os.path.join(common_dir, "trading-engine"))
+    cwd_n = os.path.normpath(os.path.abspath(cwd))
+    sep = os.sep
+    if cwd_n == te or cwd_n.startswith(te + sep):
+        return os.path.join(cwd_n, "logs")
+    return os.path.join(common_dir, "logs")
+
+
+def get_logs_directory() -> str:
+    """Directory for rotating loguru files and TradingLogger defaults."""
+    if getattr(sys, "frozen", False):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "QuantDrift", "logs")
+    return _dev_logs_directory(
+        os.path.dirname(os.path.abspath(__file__)),
+        os.getcwd(),
+    )
+
+
+def _sink_level() -> str:
+    """File/stderr minimum level; set OPT_BOT_LOG_LEVEL=DEBUG to capture logger.debug in bot_*.log."""
+    raw = (os.environ.get("OPT_BOT_LOG_LEVEL") or "INFO").strip().upper()
+    allowed = frozenset(
+        {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
+    )
+    return raw if raw in allowed else "INFO"
+
+
 def setup_logger(name='log', console_handler=True):
     """
     Configure loguru for file + optional console. Returns the loguru logger.
@@ -181,14 +224,10 @@ def setup_logger(name='log', console_handler=True):
     Logs path: when frozen (exe), use %APPDATA%\\QuantDrift\\logs on Windows for user-accessible logs.
     """
     logger.remove()
-    if getattr(sys, "frozen", False):
-        # Running from packaged exe: use app data dir so user can find logs
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        logs_path = os.path.join(base, "QuantDrift", "logs")
-    else:
-        logs_path = "logs"
+    logs_path = get_logs_directory()
     os.makedirs(logs_path, exist_ok=True)
     today = datetime.date.today().strftime("%Y-%m-%d")
+    lvl = _sink_level()
     # Format without thread_id to avoid KeyError when record comes from stdlib logging bridge
     log_format = "{time:YYYY-MM-DD HH:mm:ss} - {level} - {message}"
     logger.patch(_loguru_patch)
@@ -196,12 +235,43 @@ def setup_logger(name='log', console_handler=True):
         os.path.join(logs_path, f'{name}_{today}.log'),
         rotation="50 MB",
         retention=2,
-        level="INFO",
+        level=lvl,
         format=log_format,
     )
     if console_handler:
-        logger.add(sys.stderr, format=log_format, level="INFO")
+        logger.add(sys.stderr, format=log_format, level=lvl)
     return logger
 
 
+class StdlibToLoguruHandler(logging.Handler):
+    """
+    Forward stdlib logging records to loguru (same sinks as setup_logger).
+    Needed because BOT.py used to clear root handlers; loggers like trade_placement_audit
+    had no handlers and dropped WARNING/ERROR entirely.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            try:
+                level = logger.level(record.levelname).name
+            except ValueError:
+                level = record.levelname
+            frame, depth = logging.currentframe(), 2
+            while frame and frame.f_code.co_filename == logging.__file__:
+                frame = frame.f_back
+                depth += 1
+            logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        except Exception:
+            self.handleError(record)
+
+
+def _configure_stdlib_logging_bridge() -> None:
+    """Single root handler: stdlib -> loguru (bot_*.log + stderr)."""
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(StdlibToLoguruHandler())
+    root.setLevel(logging.DEBUG)
+
+
 setup_logger(name='bot', console_handler=True)
+_configure_stdlib_logging_bridge()

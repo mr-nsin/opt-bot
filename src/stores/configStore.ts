@@ -21,6 +21,7 @@ const defaultSettings: AppSettings = {
   auto_start_trading: false,
   log_level: "info",
   update_interval: 1000,
+  positions_update_interval_ms: 250,
   show_charts: true,
 };
 

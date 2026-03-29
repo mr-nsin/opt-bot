@@ -123,6 +123,20 @@ class DAL:
                     pass  # Column already exists
                 else:
                     raise
+            for col in (
+                ("max_tp_price", "REAL"),
+                ("min_sl_price", "REAL"),
+                ("underlying_atr", "REAL"),
+            ):
+                try:
+                    cursor.execute(f"ALTER TABLE option_orders ADD COLUMN {col[0]} {col[1]}")
+                    self.conn.commit()
+                    logger.info(f"Added {col[0]} column to option_orders")
+                except sqlite3.OperationalError as ae:
+                    if "duplicate column name" in str(ae).lower():
+                        pass
+                    else:
+                        raise
         except sqlite3.Error as e:
             logger.error(f"An error occurred: {e.args[0]}")
 
@@ -155,8 +169,11 @@ class DAL:
                                 exit_order,
                                 active,
                                 ref_order_id,
-                                placed_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                max_tp_price,
+                                min_sl_price,
+                                placed_at,
+                                underlying_atr)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (new_order.id,
                         new_order.conId,
                         new_order.symbol,
@@ -179,7 +196,10 @@ class DAL:
                         new_order.exit_order,
                         new_order.active,
                         new_order.ref_order_id,
-                        placed_at))
+                        getattr(new_order, "max_tp_price", None),
+                        getattr(new_order, "min_sl_price", None),
+                        placed_at,
+                        getattr(new_order, "underlying_atr", None)))
 
                 # Save the changes and close the connection
                 self.conn.commit()
@@ -200,6 +220,9 @@ class DAL:
         option_orders = []
         for row in rows:
             placed_at = row[23] if len(row) > 23 else None
+            max_tp = row[24] if len(row) > 24 else None
+            min_sl = row[25] if len(row) > 25 else None
+            u_atr = row[26] if len(row) > 26 else None
             option_order = OptionOrder(
                 id=row[0],
                 conId=row[1],
@@ -224,7 +247,10 @@ class DAL:
                 exit_order=row[20],
                 active=row[21],
                 ref_order_id=row[22],
-                placed_at=placed_at)
+                placed_at=placed_at,
+                max_tp_price=max_tp,
+                min_sl_price=min_sl,
+                underlying_atr=u_atr)
             option_orders.append(option_order)
         logger.info(f"Loaded {len(option_orders)} orders from DB (these are historical; only active/synced orders are used for trading)")
 
@@ -246,7 +272,25 @@ class DAL:
             with self.lock:
                 cursor = self.conn.cursor()
                 # Update the option order in the database
-                query = f"UPDATE option_orders SET order_status = '{option_order.order_status}', executed_qty = {option_order.executed_qty}, average_price = {option_order.average_price},profit_price = {option_order.profit_price},profit_trigger = {option_order.profit_trigger}, current_profit_price = {option_order.current_profit_price},profit_increment = {option_order.profit_increment} WHERE id = {option_order.id}"
+                def _sql_num(v):
+                    if v is None:
+                        return "NULL"
+                    try:
+                        return str(float(v))
+                    except (TypeError, ValueError):
+                        return "NULL"
+
+                mtp = _sql_num(getattr(option_order, "max_tp_price", None))
+                msl = _sql_num(getattr(option_order, "min_sl_price", None))
+                query = (
+                    f"UPDATE option_orders SET order_status = '{option_order.order_status}', "
+                    f"executed_qty = {option_order.executed_qty}, average_price = {option_order.average_price},"
+                    f"profit_price = {option_order.profit_price},profit_trigger = {option_order.profit_trigger}, "
+                    f"current_profit_price = {option_order.current_profit_price},"
+                    f"profit_increment = {option_order.profit_increment},"
+                    f"max_tp_price = {mtp}, min_sl_price = {msl} "
+                    f"WHERE id = {option_order.id}"
+                )
                 logger.info(f"update_option_order: {query}")
                 cursor.execute(query)
                 # Save the changes and close the connection

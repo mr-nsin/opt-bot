@@ -211,6 +211,9 @@ export function useTradingEvents() {
       entry_price: data.entry_price || data.price || 0,
       status: "open",
       timestamp: data.timestamp || new Date().toISOString(),
+      ...(data.underlying_atr != null && Number.isFinite(Number(data.underlying_atr))
+        ? { underlying_atr: Number(data.underlying_atr) }
+        : {}),
     });
 
     // Immediately add to positionStore so Active Positions and Trade Blotter show at the same time
@@ -232,6 +235,9 @@ export function useTradingEvents() {
         avg_price: data.entry_price || data.price || 0,
         current_price: data.entry_price || data.price || 0,
         pnl: 0,
+        ...(data.underlying_atr != null && Number.isFinite(Number(data.underlying_atr))
+          ? { underlying_atr: Number(data.underlying_atr) }
+          : {}),
       } as any]);
     }
 

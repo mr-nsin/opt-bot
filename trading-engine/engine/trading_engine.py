@@ -56,7 +56,7 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 1.0  # Balance UX vs IPC (aligned with PnL throttle)
+        self._positions_interval_sec: float = 0.25  # Overridden from config ui.positions_update_interval_ms on load
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
@@ -116,6 +116,7 @@ class TradingEngine:
         try:
             # Parse configuration (symbols come from UI – sidecar subscribes to these)
             self.config = TradingConfig.from_dict(config_data)
+            self._apply_positions_emit_interval()
             sym_list = list(self.config.stock_list_to_trade.keys()) if self.config.stock_list_to_trade else []
             emit_log(f"Configuration loaded: {len(sym_list)} symbols from UI: {', '.join(sym_list) or '(none)'}")
 
@@ -358,6 +359,21 @@ class TradingEngine:
                 pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
                 pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
 
+                used_ib_pnl = False
+                con_id_opt = int(getattr(pos, "con_id", 0) or 0)
+                if con_id_opt and self._client and hasattr(self._client, "get_pnl_single_snapshot"):
+                    ib_row = self._client.get_pnl_single_snapshot(con_id_opt)
+                    if ib_row is not None and "unrealized" in ib_row:
+                        pnl = float(ib_row["unrealized"])
+                        cost_basis = avg_price * abs(qty) * 100 if avg_price > 0 and qty else 0
+                        pnl_pct = (pnl / cost_basis * 100) if cost_basis > 0 else 0
+                        used_ib_pnl = True
+                        v = ib_row.get("value")
+                        if v is not None and abs(qty) > 0:
+                            implied = float(v) / (abs(qty) * 100.0)
+                            if implied > 0:
+                                current_price = implied
+
                 pos_data = {
                     "symbol": symbol,
                     "strike": strike,
@@ -369,12 +385,26 @@ class TradingEngine:
                     "pnl": round(pnl, 2),
                     "pnl_percent": round(pnl_pct, 2),
                 }
+                if used_ib_pnl:
+                    pos_data["pnl_source"] = "ib"
                 # Include SL/TP from managed entry order so UI can display them
                 if entry_order:
-                        pos_data["stoploss_price"] = round(float(entry_order.stoploss_price or 0), 2)
-                        pos_data["profit_price"] = round(float(entry_order.current_profit_price or entry_order.profit_price or 0), 2)
+                    pos_data["stoploss_price"] = round(float(entry_order.stoploss_price or 0), 2)
+                    pos_data["profit_price"] = round(float(entry_order.current_profit_price or entry_order.profit_price or 0), 2)
+                    if getattr(entry_order, "profit_price", None) is not None and float(entry_order.profit_price or 0) > 0:
+                        pos_data["initial_profit_price"] = round(float(entry_order.profit_price), 2)
+                    sl_raw = float(entry_order.stoploss_price or 0)
+                    floor_sl = getattr(entry_order, "min_sl_price", None)
+                    is_long = (entry_order.order_side or "BUY").upper() == "BUY"
+                    if is_long and floor_sl is not None:
+                        pos_data["effective_stoploss_price"] = round(max(sl_raw, float(floor_sl)), 2)
+                    elif sl_raw > 0:
+                        pos_data["effective_stoploss_price"] = round(sl_raw, 2)
                         if getattr(entry_order, "profit_trigger", False):
                             pos_data["trailing_active"] = True
+                        uatr = getattr(entry_order, "underlying_atr", None)
+                        if uatr is not None:
+                            pos_data["underlying_atr"] = round(float(uatr), 4)
                 # Include bid/ask/last and exit logic for TP/SL transparency
                 if bid_val not in (-1, None):
                     pos_data["bid"] = round(bid_val, 4)
@@ -468,6 +498,7 @@ class TradingEngine:
                 "price": entry_price,
                 "status": "open",
                 "timestamp": datetime.now().isoformat(),
+                "underlying_atr": round(1.2 + i * 0.15, 4),
             })
             emit_log(f"DEMO: ENTRY FILLED {s['symbol']} {s['strike']}{s['right'][0]} {qty}x @ ${entry_price:.2f}", "INFO", "order")
             time.sleep(0.5)
@@ -492,6 +523,7 @@ class TradingEngine:
                     "current_price": current,
                     "pnl": pnl,
                     "pnl_percent": pnl_pct,
+                    "underlying_atr": round(1.2 + demo_symbols.index(s) * 0.15, 4),
                 })
             # Emit fake P&L
             total_pnl = sum(
@@ -626,6 +658,7 @@ class TradingEngine:
         """Update configuration at runtime. Syncs BOT globals so cooldown and other params take effect immediately."""
         config_data = params.get("config", {})
         self.config = TradingConfig.from_dict(config_data)
+        self._apply_positions_emit_interval()
         try:
             BOT = self._get_bot_module()
             BOT.TRADE_COOLDOWN_SECONDS = int(getattr(self.config, "distance_between_trade", 610))
@@ -637,6 +670,10 @@ class TradingEngine:
     # ==========================================
     # Internal methods
     # ==========================================
+
+    def _apply_positions_emit_interval(self) -> None:
+        if self.config:
+            self._positions_interval_sec = float(self.config.positions_emit_interval_sec)
 
     def _init_database(self):
         """Initialize the database layer."""
@@ -1208,6 +1245,10 @@ class TradingEngine:
                     payload["stoploss_price"] = float(pos["stoploss_price"])
                 if pos.get("profit_price") is not None:
                     payload["profit_price"] = float(pos["profit_price"])
+                if pos.get("initial_profit_price") is not None:
+                    payload["initial_profit_price"] = float(pos["initial_profit_price"])
+                if pos.get("effective_stoploss_price") is not None:
+                    payload["effective_stoploss_price"] = float(pos["effective_stoploss_price"])
                 if pos.get("trailing_active") is True:
                     payload["trailing_active"] = True
                 if pos.get("bid") is not None:
@@ -1219,6 +1260,8 @@ class TradingEngine:
                 if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
                     payload["exit_price_used"] = float(pos["exit_price_used"])
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
+                if pos.get("pnl_source"):
+                    payload["pnl_source"] = str(pos["pnl_source"])
                 emit_position(payload)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")

@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useTradingStore } from "@/stores/tradingStore";
 import { cn, formatCurrency, formatTime, pnlColor } from "@/lib/utils";
-import { ArrowUpDown, ArrowUp, ArrowDown, ClipboardList, Clock, Tag, Target, Calendar, Hash, BarChart3, DollarSign, CheckCircle } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown, ClipboardList, Clock, Tag, Target, Calendar, Hash, BarChart3, DollarSign, CheckCircle, Activity } from "lucide-react";
 
 type SortField = "time" | "symbol" | "pnl" | "side";
 type SortDir = "asc" | "desc";
@@ -116,6 +116,12 @@ export const TradeBlotter = memo(function TradeBlotter() {
                       Entry / Exit
                     </span>
                   </th>
+                  <th className="text-right" title="Underlying ATR at entry (TP/SL distance model)">
+                    <span className="flex items-center justify-end gap-1">
+                      <Activity className="h-3 w-3 opacity-60" />
+                      ATR
+                    </span>
+                  </th>
                   <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} align="right" icon={DollarSign} />
                   <th className="text-left">
                     <span className="flex items-center gap-1">
@@ -169,6 +175,11 @@ export const TradeBlotter = memo(function TradeBlotter() {
                               : "—"}
                           </span>
                         </span>
+                      </td>
+                      <td className="text-xs font-mono tabular-nums text-right text-muted-foreground/80">
+                        {t.underlying_atr != null && Number.isFinite(Number(t.underlying_atr))
+                          ? Number(t.underlying_atr).toFixed(4)
+                          : "—"}
                       </td>
                       <td className="text-right">
                         {isClosed ? (

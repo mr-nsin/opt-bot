@@ -112,6 +112,17 @@ def _get_market_end(data: Dict) -> str:
     )
 
 
+def _parse_positions_emit_interval_sec(data: Dict) -> float:
+    """ui.positions_update_interval_ms → seconds, clamped [0.05, 5.0]. Default 250 ms."""
+    ui = data.get("ui") or {}
+    raw = ui.get("positions_update_interval_ms", 250)
+    try:
+        sec = float(raw) / 1000.0
+    except (TypeError, ValueError):
+        sec = 0.25
+    return max(0.05, min(5.0, sec))
+
+
 @dataclass
 class TradingConfig:
     """Mirrors the config.json structure"""
@@ -159,6 +170,10 @@ class TradingConfig:
     liquidity_check_on_off: str = "ON"
     liquidity_min_volume: int = 20
     liquidity_max_spread_pct: float = 15.0
+    option_tp_sl_max_pct: float = 0.15
+    option_tp_sl_min_dist: float = 0.02
+    # How often the engine emits position_update to the UI (seconds). From ui.positions_update_interval_ms in config.json.
+    positions_emit_interval_sec: float = 0.25
 
     @classmethod
     def from_dict(cls, data: Dict) -> "TradingConfig":
@@ -208,6 +223,9 @@ class TradingConfig:
             liquidity_check_on_off=data.get("liquidity_check_on_off", data.get("LIQUIDITY_CHECK_ON_OFF", "ON")),
             liquidity_min_volume=int(data.get("liquidity_min_volume", data.get("LIQUIDITY_MIN_VOLUME", 20))),
             liquidity_max_spread_pct=float(data.get("liquidity_max_spread_pct", data.get("LIQUIDITY_MAX_SPREAD_PCT", 15))),
+            option_tp_sl_max_pct=float(data.get("option_tp_sl_max_pct", data.get("OPTION_TP_SL_MAX_PCT", 0.15))),
+            option_tp_sl_min_dist=float(data.get("option_tp_sl_min_dist", data.get("OPTION_TP_SL_MIN_DIST", 0.02))),
+            positions_emit_interval_sec=_parse_positions_emit_interval_sec(data),
         )
 
     def to_bot_config_dict(self) -> Dict[str, Any]:
@@ -262,4 +280,6 @@ class TradingConfig:
             "LIQUIDITY_CHECK_ON_OFF": self.liquidity_check_on_off,
             "LIQUIDITY_MIN_VOLUME": self.liquidity_min_volume,
             "LIQUIDITY_MAX_SPREAD_PCT": self.liquidity_max_spread_pct,
+            "option_tp_sl_max_pct": self.option_tp_sl_max_pct,
+            "option_tp_sl_min_dist": self.option_tp_sl_min_dist,
         }

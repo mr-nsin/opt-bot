@@ -81,18 +81,37 @@ Before placing any trade, the following checks are performed:
    - **Volume filter**: volume >= `VOLUME_CHECK` (100)
 5. Select the strike with the best delta match
 
-### Step 5: Order Calculation
+### Step 5: Order Calculation (`takeTrade` in `BOT.py`)
 
-1. **Quantity**: `MAX_CONTRACT_AMOUNT / (ask_price * 100)` — max contracts within dollar limit ($350)
-2. **Entry price**: Ask price for BUY
-3. **Take Profit**: `entry_price + profit_increment` (configurable, default 0.03)
-4. **Stop Loss**: `entry_price * (1 - stoploss_pct)` — typically 30-50% of entry
-5. **Order type**: LMT (limit) for entry
-6. **Order expiry**: GTD (Good Till Date) with `ORDER_EXPIRY_TIMER` seconds (15s)
+All TP/SL distances use **`tradePrice`** (planned entry premium) and **`atrVale`** (underlying ATR from the algo path, not option premium ATR). Config: `ATR_VALUE`, `profit_increment` in `config.json`.
+
+1. **Entry reference `tradePrice`** (before SL/TP):
+   - If bid/ask spread ≤ **$0.03**: market order at **ask** (rounded).
+   - If spread > **$0.03**: limit order at **bid** (rounded).
+
+2. **ATR distance** (symmetric band, capped):
+   - `atr_risk_cap = atrVale * 0.9` if `atrVale > 0.01`, else `0.018`
+   - `base_dist = 0.02` if `atrVale <= 0.01`, else `atrVale * ATR_VALUE` (config)
+   - `atr_dist = min(base_dist, atr_risk_cap)` — never wider than 90% of underlying ATR
+
+3. **Initial targets** (long option BUY path):
+   - **Take profit** (`profitPrice`): `round(tradePrice + atr_dist, 2)`
+   - **Stop loss** (`auxPrice`): `round(tradePrice - atr_dist, 2)`
+   - **Caps stored on order**: `max_tp_price = round(tradePrice + atr_risk_cap, 2)`, `min_sl_price = round(max(0.01, tradePrice - atr_risk_cap), 2)`
+   - **15% premium TP cap**: if ATR-implied TP gain vs `tradePrice` exceeds **20%**, set TP to `round(tradePrice * 1.15, 2)` and align `max_tp_price`
+   - **SL floor**: `auxPrice` floored at `$0.01` when needed; `min_sl_price` stays consistent with `auxPrice`
+
+4. **Quantity**: `stockData[symbol].amount / (tradePrice * 100)` (per-symbol dollar budget; at least 1 contract), gated by `lastPrice * 100 <= MAX_CONTRACT_AMOUNT`
+
+5. **Order type**: MKT or LMT per spread rule above (not always LMT)
+
+6. **Order expiry**: GTD with `ORDER_EXPIRY_TIMER` seconds from config (e.g. 60)
+
+**Note:** `profit_increment` is **not** the initial TP distance; it is the **trailing** step size used after fill in `OrderManager.check_take_profit()`.
 
 ### Step 6: Order Placement (placeAndVerifyOrder → placeOrder)
 
-1. **Cooldown check**: `trade_time_dict[{symbol}_{right}]` — must exceed `TRADE_COOLDOWN_SECONDS` (610s)
+1. **Cooldown check**: normalized symbol+right+expiry key — must exceed `TRADE_COOLDOWN_SECONDS` from config (`distance_between_trade`, e.g. 120s)
 2. **Lock check**: `options_tick.locked` — prevents concurrent order attempts
 3. **Active order check**: No pending/submitted order for same symbol
 4. Create `OptionOrder` object with all TP/SL params
@@ -105,30 +124,37 @@ Before placing any trade, the following checks are performed:
 
 Managed in `OrderManager.check_take_profit()`:
 
+- **Long:** `exit_price = max(bid, last)` when both valid (sell-side mark for checks).
+- **Initial target** `current_profit_price` starts at **`profit_price`** from `takeTrade` (ATR-based), not `entry + profit_increment`.
+- When `exit_price >= current_profit_price`, trailing activates; `current_profit_price` moves to `exit_price + profit_increment`, then **`_cap_trailing_tp`** clamps so it does not exceed **`max_tp_price`**.
+- **Close** after trailing is active: `exit_price < current_profit_price - profit_increment`.
+
+Example (initial TP from ATR, `profit_increment = $0.03`):
+
 ```
-entry_price = $1.50
-profit_price (initial) = $1.53 (entry + 0.03 increment)
-profit_increment = $0.03
+entry (filled avg) ≈ $1.50
+profit_price (initial target) = $1.95  (example: tradePrice + atr_dist)
+current_profit_price starts at $1.95
 
-Price rises to $1.55:
-  → exit_price ($1.55) >= current_profit_price ($1.53)
-  → profit_trigger = True
-  → current_profit_price = $1.55 + $0.03 = $1.58
+Price rises to $1.95:
+  → exit >= $1.95 → profit_trigger = True
+  → current_profit_price = $1.95 + $0.03 = $1.98 (then cap vs max_tp_price)
 
-Price continues to $1.60:
-  → exit_price ($1.60) >= current_profit_price ($1.58)
-  → current_profit_price = $1.60 + $0.03 = $1.63
+Price continues to $2.00:
+  → current_profit_price updates upward by trail logic (capped at max_tp_price)
 
-Price falls to $1.57:
-  → profit_trigger = True AND exit_price ($1.57) < ($1.63 - $0.03 = $1.60)
-  → CLOSE POSITION (locked in profit from $1.50 → ~$1.57)
+Price falls to $1.94:
+  → profit_trigger AND exit < (current_profit_price - $0.03)
+  → CLOSE POSITION
 ```
 
 ### Stop Loss
 
 Managed in `OrderManager.check_stop_loss()`:
-- If `exit_price <= stoploss_price` → CLOSE POSITION via market order
-- Uses bid price (what you can actually sell at) if available
+
+- **Long:** `exit_price` = bid if valid, else last. Effective stop level is **`max(stoploss_price, min_sl_price)`** when `min_sl_price` is set (ATR cap floor).
+- **Close** when `exit_price <= sl_price` (long).
+- **Short** positions use ask/last and close when `exit_price >= sl_price` (reverse logic).
 
 ### Position Close Mechanism
 
@@ -142,6 +168,10 @@ Managed in `OrderManager.check_stop_loss()`:
 
 - **Entry fill**: Log, update DB
 - **Exit fill**: Record cooldown time (`trade_time_dict[key]`), deactivate entry order, delete both from DB
+
+## Alternate strategy modules (not the live `takeTrade` path)
+
+`strategies/engulfing_atr.py` and `strategies/enhanced_engulfing_atr.py` compute TP/SL as **ATR × sl_multiplier / tp_multiplier** on candle close. Use them for experiments or backtests; production entries use the ATR symmetric rules in **`takeTrade`** plus **`OrderManager`** trailing TP above.
 
 ## Daily P&L Risk Management
 
@@ -165,5 +195,5 @@ Runs every ~60 seconds:
 
 - After any position close, `trade_time_dict["{symbol}_{right}"]` records `datetime.now()`
 - Before new trade: checks `(now - last_trade_time).total_seconds() < TRADE_COOLDOWN_SECONDS`
-- Default cooldown: **610 seconds** (~10 minutes) between same symbol+right trades
+- Cooldown duration: **`distance_between_trade`** in `config.json` (seconds between same symbol+right+expiry)
 - Prevents rapid re-entry after exits
