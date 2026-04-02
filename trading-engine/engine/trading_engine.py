@@ -23,9 +23,9 @@ if PARENT_DIR not in sys.path:
 
 from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
-    emit_pnl, emit_position, emit_positions_snapshot, emit_signal, emit_trade_executed,
+    emit_pnl, emit_position, emit_signal, emit_trade_executed,
     emit_trade_closed, emit_order_update, emit_error,
-    emit_data_status, emit_account_metrics, emit_signal_data,
+    emit_data_status, emit_account_metrics,
 )
 from engine.models import TradingConfig
 
@@ -55,16 +55,11 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 0.1  # 10 updates/sec for near-realtime UI prices
+        self._positions_interval_sec: float = 0.5
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
-        self._pnl_throttle_sec: float = 0.1  # 10 PnL updates/sec to match position emission rate
-        self._close_all_thread: Optional[threading.Thread] = None
-        # Cached get_positions() result to avoid O(N) rebuilds every 100ms
-        self._positions_cache: list = []
-        self._positions_cache_time: float = 0
-        self._positions_cache_ttl: float = 0.05  # 50ms cache TTL
+        self._pnl_throttle_sec: float = 1.0  # Emit PnL at most once per second (~95% less IPC)
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -247,18 +242,11 @@ class TradingEngine:
             "config_loaded": self.config is not None,
         }
 
-    def invalidate_positions_cache(self):
-        """Force next get_positions() to rebuild (call after trade_executed/trade_closed)."""
-        self._positions_cache_time = 0
-
     def get_positions(self) -> list:
         """Get current positions with live price and P&L from tick cache and order manager.
-        Results are cached for 50ms to avoid O(N) rebuilds at 10 calls/sec.
+        Uses TWS client.positions first; falls back to order_manager.entry_orders_cache when
+        TWS positions are empty but we have open trades (e.g. TWS sync delay or account mismatch).
         """
-        now = time.time()
-        if now - self._positions_cache_time < self._positions_cache_ttl:
-            return self._positions_cache
-
         if not self._client:
             return []
 
@@ -352,23 +340,14 @@ class TradingEngine:
                     pos_data["exit_price_source"] = exit_price_source
                 positions.append(pos_data)
 
-        # Do NOT fallback to entry_orders_cache when TWS positions are empty.
-        # TWS is the source of truth: if IBKR shows POS: 0, we show no positions.
-        # The old fallback caused "ghost positions" (13 active when IBKR had 0) because
-        # entry_orders_cache was not cleaned when positions closed via square-off or manual exit.
-
         # Deduplicate by (symbol, strike, right, expiry) — TWS can produce duplicates
-        # when expiry format differs (e.g. 20260313 vs 2026-03-13) or multiple orders same option
-        result = self._deduplicate_positions(positions)
-        self._positions_cache = result
-        self._positions_cache_time = time.time()
-        return result
+        return self._deduplicate_positions(positions)
 
     def _deduplicate_positions(self, positions: list) -> list:
         """Deduplicate positions by (symbol, strike, right, expiry). Keep first; prefer one with current_price if duplicate."""
         if not positions:
             return []
-        seen: dict[str, dict] = {}
+        seen: dict = {}
         norm_exp = lambda e: (e or "").replace("-", "").replace(" ", "").strip()
         norm_right = lambda r: "C" if str(r or "").upper() in ("C", "CALL") else "P" if str(r or "").upper() in ("P", "PUT") else (str(r or "")[:1].upper() or "C")
         for p in positions:
@@ -378,7 +357,6 @@ class TradingEngine:
             expiry = norm_exp(p.get("expiry", "") or "")
             key = f"{sym}_{strike:.4f}_{right}_{expiry}"
             if key in seen:
-                # Duplicate: prefer the one with current_price > 0 for better P&L display
                 prev = seen[key]
                 if float(p.get("current_price", 0) or 0) > 0 and float(prev.get("current_price", 0) or 0) <= 0:
                     seen[key] = dict(p)
@@ -496,109 +474,23 @@ class TradingEngine:
             emit_engine_status("Idle", connected=False)
 
     def close_position(self, params: dict) -> dict:
-        """Close a specific position by symbol (and optionally strike/right/expiry for options)."""
+        """Close a specific position by symbol (and optionally strike/right for options)."""
         symbol = params.get("symbol", "")
         strike = params.get("strike")
         right = params.get("right")
-        expiry = params.get("expiry")
         if strike is not None:
             strike = float(strike)
-        emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right} expiry={expiry}" if strike or right or expiry else ""), "INFO", "orders")
-        if not self._order_mgr or not hasattr(self._order_mgr, 'close_position_by_symbol'):
-            msg = f"Cannot close {symbol}: order manager not available"
-            emit_log(msg, "ERROR", "orders")
-            emit_error(msg)
-            return {"status": "error", "message": msg}
-        result = self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right, expiry=expiry)
-        self.invalidate_positions_cache()
-        if result is False:
-            msg = f"Close failed for {symbol}: no matching position or TWS not connected"
-            emit_log(msg, "ERROR", "orders")
-            emit_error(msg)
-            return {"status": "error", "message": msg}
+        emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right}" if strike or right else ""), "INFO", "orders")
+        if self._order_mgr and hasattr(self._order_mgr, 'close_position_by_symbol'):
+            self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right)
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
-        """Cancel all open orders, then flatten TWS positions; repeat until flat. Blocks new entries while running."""
-        if self._close_all_thread and self._close_all_thread.is_alive():
-            emit_log("Close All already running — ignored duplicate request", "WARN", "orders")
-            return {"status": "close_all_already_running"}
-
-        def _nonzero_positions_count() -> int:
-            try:
-                if not self._client or not self._client.isConnected():
-                    return -1
-                raw = list(self._client.get_all_positions())
-                return len(
-                    [p for p in raw if p and int(abs(getattr(p, "position", 0) or 0)) > 0]
-                )
-            except Exception:
-                return -1
-
-        def run_close_all():
-            import BOT
-
-            try:
-                BOT.CLOSE_ALL_IN_PROGRESS = True
-                emit_log("Close All: new entries blocked — cancelling orders and flattening positions", "WARN", "orders")
-                if not self._client or not self._client.isConnected():
-                    emit_log("Close All: TWS not connected", "ERROR", "orders")
-                    return
-                buf = getattr(self.config, "emergency_close_buffer_seconds", 5) if self.config else 5
-                try:
-                    buf = max(0, int(buf))
-                except (TypeError, ValueError):
-                    buf = 5
-                max_rounds = 15
-                for r in range(max_rounds):
-                    BOT.cancel_all_orders()
-                    time.sleep(0.35)
-                    BOT.getAndBuyAfterMarketEnd(buffer_seconds=buf)
-                    n = _nonzero_positions_count()
-                    if n == 0:
-                        emit_log("Close All: no open positions remaining", "INFO", "orders")
-                        break
-                    if n < 0:
-                        emit_log("Close All: could not read positions from TWS — stopping rounds", "ERROR", "orders")
-                        break
-                    emit_log(
-                        f"Close All: round {r + 1}/{max_rounds} — {n} position(s) still open, repeating cancel + MKT close",
-                        "WARN",
-                        "orders",
-                    )
-                    time.sleep(max(0.5, float(buf)))
-                else:
-                    n = _nonzero_positions_count()
-                    emit_log(
-                        f"Close All: stopped after {max_rounds} rounds — {n} position(s) may still be open (check TWS)",
-                        "ERROR",
-                        "orders",
-                    )
-            except Exception as e:
-                emit_log(f"Close All error: {e}", "ERROR", "orders")
-            finally:
-                BOT.CLOSE_ALL_IN_PROGRESS = False
-                emit_log("Close All: finished — new entries allowed again", "INFO", "orders")
-
-        self._close_all_thread = threading.Thread(target=run_close_all, daemon=True, name="close_all")
-        self._close_all_thread.start()
-        return {"status": "close_all_started"}
-
-    def close_calls(self) -> dict:
-        """Close all CALL positions."""
-        emit_log("Close ALL CALLS requested", "WARN", "orders")
-        count = 0
-        if self._order_mgr and hasattr(self._order_mgr, 'close_positions_by_right'):
-            count = self._order_mgr.close_positions_by_right("CALL")
-        return {"status": "close_calls_requested", "count": count}
-
-    def close_puts(self) -> dict:
-        """Close all PUT positions."""
-        emit_log("Close ALL PUTS requested", "WARN", "orders")
-        count = 0
-        if self._order_mgr and hasattr(self._order_mgr, 'close_positions_by_right'):
-            count = self._order_mgr.close_positions_by_right("PUT")
-        return {"status": "close_puts_requested", "count": count}
+        """Close all positions."""
+        emit_log("Close ALL positions requested", "WARN", "orders")
+        if self._order_mgr and hasattr(self._order_mgr, 'close_all_positions'):
+            self._order_mgr.close_all_positions()
+        return {"status": "close_all_requested"}
 
     def update_config(self, params: dict) -> dict:
         """Update configuration at runtime. Syncs BOT globals so cooldown and other params take effect immediately."""
@@ -896,7 +788,6 @@ class TradingEngine:
             if not alive:
                 processor_count = getattr(BOT, "PROCESSORS_COUNT", 4)
                 self._event_processor_threads = []
-                BOT.arm_trading_session_gates()
                 for i in range(processor_count):
                     t = threading.Thread(target=BOT.event_processor, args=(self._event_queue, i), daemon=True)
                     t.start()
@@ -907,7 +798,6 @@ class TradingEngine:
                 BOT.STOP_TRADING = False
                 BOT.DAY_LOCKED = False
                 BOT.CLOSE_ALL_ORDERS = False
-                BOT.CLOSE_ALL_IN_PROGRESS = False
                 try:
                     pnl_t = threading.Thread(
                         target=BOT.pnl_watchdog_thread,
@@ -935,20 +825,6 @@ class TradingEngine:
             self._data_feed_started = True
             self._last_signal_heartbeat_time = time.time()
             emit_log("Data feed and strategies started", "INFO", "system")
-
-            # Initial signal scan: get DataFrame of signals for current + previous candles per stock
-            # Returns signals from the time system started (current candle at start + previous candles)
-            self._signal_scan_start_time = datetime.now()
-            def _emit_initial_signal_data():
-                try:
-                    time.sleep(2.0)  # Allow bars to populate
-                    signals = BOT.scan_all_stocks_signals(system_start_time=None, limit=21)  # All candles; UI can filter by system_started_at
-                    emit_signal_data(signals, self._signal_scan_start_time.isoformat())
-                    emit_log(f"Initial signal scan: {len(signals)} candle signals for {len(stock_list)} stocks", "INFO", "signal")
-                except Exception as e:
-                    emit_log(f"Initial signal scan failed: {e}", "WARN", "signal")
-            threading.Thread(target=_emit_initial_signal_data, daemon=True).start()
-
             emit_log(
                 f"IBKR data + signal scanner started: monitoring {', '.join(stock_list)}. "
                 "Logs will show 'Signal scan', 'IBKR bars', 'Trade check', and 'IBKR data' (every 10s) when data is flowing.",
@@ -1061,16 +937,11 @@ class TradingEngine:
                     self._last_positions_time = now
                     self._emit_positions()
 
-                # Every 30s: re-scan signal DataFrame, emit to UI, and heartbeat log
+                # Every 30s: heartbeat to show the engine is alive and scanning for signals
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
                     self._last_signal_heartbeat_time = now
                     try:
                         import BOT
-                        signals = BOT.scan_all_stocks_signals(system_start_time=None, limit=21)
-                        emit_signal_data(signals, getattr(self, "_signal_scan_start_time", datetime.now()).isoformat())
-                    except Exception as e:
-                        emit_log(f"Signal scan failed: {e}", "WARN", "signal")
-                    try:
                         stock_list = getattr(BOT, "stockList", []) or []
                         active_threads = len([t for t in self._event_processor_threads if t and t.is_alive()])
                         queue_size = self._event_queue.qsize() if self._event_queue else 0
@@ -1081,15 +952,15 @@ class TradingEngine:
                     except Exception:
                         emit_log("Signal scanner active", "INFO", "signal")
 
-                    # Every 30s: check end-of-day time and close all positions if past EOD
-                    if self._data_feed_started and self.connected:
-                        if not hasattr(self, "_last_eod_check_time"):
-                            self._last_eod_check_time = 0.0
-                        if now - self._last_eod_check_time >= 30.0:
-                            self._last_eod_check_time = now
-                            self._check_eod_time()
+                # Every 30s: check end-of-day time and close all positions if past EOD
+                if self._data_feed_started and self.connected:
+                    if not hasattr(self, "_last_eod_check_time"):
+                        self._last_eod_check_time = 0.0
+                    if now - self._last_eod_check_time >= 30.0:
+                        self._last_eod_check_time = now
+                        self._check_eod_time()
 
-                time.sleep(0.02)  # 20ms loop for faster position/PnL emission triggers
+                time.sleep(0.05)  # 50ms loop
 
             except Exception as e:
                 emit_error(f"Engine loop error: {e}")
@@ -1151,11 +1022,44 @@ class TradingEngine:
         except Exception:
             pass  # Silently skip P&L errors
 
+    def _ensure_open_position_options_subscribed(self) -> None:
+        """
+        Subscribe to market data for every non-zero OPT position in TWS.
+        init_data_feed only streams a subset of strikes; held positions outside that set
+        had no ticks → current_price stuck at avg → P&L and Bid/Ask never update.
+        """
+        if not self._client or not hasattr(self._client, "positions"):
+            return
+        for _key, pos in list(self._client.positions.items()):
+            try:
+                raw_q = float(getattr(pos, "position", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(raw_q) < 1e-9:
+                continue
+            symbol = (getattr(pos, "symbol", None) or "").strip()
+            if not symbol:
+                continue
+            exp = str(getattr(pos, "expiry", "") or "").replace("-", "").strip()
+            if not exp:
+                continue
+            try:
+                strike_f = float(getattr(pos, "strike", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            ru = str(getattr(pos, "right", "") or "").strip().upper()
+            side = "P" if ru in ("PUT", "P") else "C"
+            try:
+                c = self._client.get_options_contract(symbol, exp, side, strike_f)
+                self._client.subscribe(c, snapshot=False)
+            except Exception:
+                pass
+
     def _emit_positions(self):
-        """Emit current positions as a single batch snapshot (1 IPC call instead of N)."""
+        """Emit current positions to the UI so the Positions page shows active positions."""
         try:
+            self._ensure_open_position_options_subscribed()
             positions = self.get_positions()
-            payloads = []
             for pos in positions:
                 payload = {
                     "symbol": pos.get("symbol", ""),
@@ -1184,8 +1088,7 @@ class TradingEngine:
                 if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
                     payload["exit_price_used"] = float(pos["exit_price_used"])
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
-                payloads.append(payload)
-            emit_positions_snapshot(payloads)
+                emit_position(payload)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")
 

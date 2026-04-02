@@ -80,8 +80,6 @@ class OptionOrder:
     profit_trigger: bool = False
     current_profit_price: float = 0.0 # trailing profit
     profit_increment:float = 0.0 # profit increment until price reverses
-    max_tp_price: float = None  # ceiling for TP / trailing (entry + ATR*0.9 cap)
-    min_sl_price: float = None  # floor for SL (entry - ATR*0.9 cap)
     contract: Contract = None
     exit_placed: bool = False
     exit_order: bool = False
@@ -181,12 +179,8 @@ def setup_logger(name='log', console_handler=True):
     Logs path: when frozen (exe), use %APPDATA%\\QuantDrift\\logs on Windows for user-accessible logs.
     """
     logger.remove()
-    if getattr(sys, "frozen", False):
-        # Running from packaged exe: use app data dir so user can find logs
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        logs_path = os.path.join(base, "QuantDrift", "logs")
-    else:
-        logs_path = "logs"
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    logs_path = os.path.join(base, "QuantDrift", "logs")
     os.makedirs(logs_path, exist_ok=True)
     today = datetime.date.today().strftime("%Y-%m-%d")
     # Format without thread_id to avoid KeyError when record comes from stdlib logging bridge

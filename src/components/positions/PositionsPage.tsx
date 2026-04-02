@@ -6,8 +6,6 @@ import { PositionRow } from "./PositionRow";
 import { PositionHistory } from "./PositionHistory";
 import { TradeBlotter } from "./TradeBlotter";
 import { usePositions } from "@/hooks/usePositions";
-import { useTradingEngine } from "@/hooks/useTradingEngine";
-import { useTradingStore } from "@/stores/tradingStore";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   RefreshCw,
@@ -19,13 +17,6 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
-  Tag,
-  Calendar,
-  Hash,
-  BarChart3,
-  LineChart,
-  Shield,
-  DollarSign,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
@@ -35,19 +26,16 @@ type SortField = "symbol" | "pnl" | "strike" | "qty";
 type SortDir = "asc" | "desc";
 
 export const PositionsPage = memo(function PositionsPage() {
-  const { positions, closedPositions, loading, refreshPositions, closeAll, closeCalls, closePuts } = usePositions();
-  const { refreshStatus } = useTradingEngine();
-  const todayTrades = useTradingStore((s) => s.todayTrades);
+  const { positions, closedPositions, loading, refreshPositions, closeAll } = usePositions();
   const [showCloseAll, setShowCloseAll] = useState(false);
-  const [showCloseCalls, setShowCloseCalls] = useState(false);
-  const [showClosePuts, setShowClosePuts] = useState(false);
   const [sortField, setSortField] = useState<SortField>("pnl");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
-    // Fetch once on mount; live updates come via position_update events (every 2s from engine)
-    Promise.all([refreshPositions(), refreshStatus()]);
-  }, [refreshPositions, refreshStatus]);
+    refreshPositions();
+    const i = setInterval(refreshPositions, 1000);
+    return () => clearInterval(i);
+  }, [refreshPositions]);
 
   const toggleSort = useCallback(
     (field: SortField) => {
@@ -90,39 +78,6 @@ export const PositionsPage = memo(function PositionsPage() {
     return { totalPnl, callCount, putCount };
   }, [positions]);
 
-  // Merge closedPositions (from trade_closed events) with todayTrades closed (from backend hydration)
-  const closedForHistory = useMemo(() => {
-    const fromEvents = closedPositions;
-    const fromTrades = todayTrades
-      .filter((t) => (t.status as string) === "closed")
-      .map((t) => ({
-        symbol: t.symbol ?? "",
-        strike: t.strike ?? 0,
-        right: t.right ?? "",
-        expiry: t.expiry ?? "",
-        quantity: t.quantity ?? 0,
-        avg_price: t.entry_price,
-        entry_price: t.entry_price,
-        exit_price: t.exit_price,
-        pnl: t.pnl,
-        timestamp: t.timestamp,
-      }));
-    const seen = new Set<string>();
-    const merged: typeof fromEvents = [];
-    for (const p of [...fromEvents, ...fromTrades]) {
-      const key = `${p.symbol}-${p.strike}-${p.right}-${(p.expiry ?? "").replace(/-/g, "")}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        merged.push(p);
-      }
-    }
-    return merged.sort((a, b) => {
-      const ta = (a.timestamp as string) ?? "";
-      const tb = (b.timestamp as string) ?? "";
-      return tb.localeCompare(ta);
-    });
-  }, [closedPositions, todayTrades]);
-
   return (
     <div className="space-y-2.5 min-w-0 w-full">
       {/* Page header */}
@@ -134,20 +89,10 @@ export const PositionsPage = memo(function PositionsPage() {
           </h2>
           <p className="text-xs text-muted-foreground/60">Active and closed positions</p>
         </div>
-        <div className="flex gap-1.5 flex-wrap">
+        <div className="flex gap-1.5">
           <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-8 text-xs">
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
-          {summary.callCount > 0 && (
-            <Button variant="outline" size="sm" onClick={() => setShowCloseCalls(true)} className="h-8 text-xs border-emerald-500/50 text-emerald-600 hover:bg-emerald-500/10">
-              <TrendingUp className="h-3 w-3 mr-1" /> Close Calls ({summary.callCount})
-            </Button>
-          )}
-          {summary.putCount > 0 && (
-            <Button variant="outline" size="sm" onClick={() => setShowClosePuts(true)} className="h-8 text-xs border-red-500/50 text-red-600 hover:bg-red-500/10">
-              <TrendingDown className="h-3 w-3 mr-1" /> Close Puts ({summary.putCount})
-            </Button>
-          )}
           {positions.length > 0 && (
             <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-8 text-xs">
               <XCircle className="h-3 w-3 mr-1" /> Close All
@@ -219,46 +164,26 @@ export const PositionsPage = memo(function PositionsPage() {
                 <thead>
                   <tr>
                     <th className="w-6" />
-                    <SortTh field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} align="left" icon={Tag} />
-                    <th className="text-center">
-                      <span className="flex items-center justify-center gap-1">
-                        <Briefcase className="h-3 w-3 opacity-60" />
-                        Type
-                      </span>
+                    <SortTh field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th>Type</th>
+                    <SortTh field="strike" label="Strike" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th>Expiry</th>
+                    <SortTh field="qty" label="Qty" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th className="text-muted-foreground/70 font-normal min-w-[5.5rem]" title="Average fill (entry) and live mark">
+                      Entry / Current
                     </th>
-                    <SortTh field="strike" label="Strike" sort={sortField} dir={sortDir} onClick={toggleSort} align="right" icon={Target} />
-                    <th className="text-left">
-                      <span className="flex items-center gap-1">
-                        <Calendar className="h-3 w-3 opacity-60" />
-                        Expiry
-                      </span>
-                    </th>
-                    <SortTh field="qty" label="Qty" sort={sortField} dir={sortDir} onClick={toggleSort} align="right" icon={Hash} />
-                    <th className="text-right" title="Entry (avg) / Current price">
-                      <span className="flex items-center justify-end gap-1">
-                        <BarChart3 className="h-3 w-3 opacity-60" />
-                        Entry / Current
-                      </span>
-                    </th>
-                    <th className="text-right text-muted-foreground/70 font-normal" title="Bid / Ask prices used for TP/SL">
-                      <span className="flex items-center justify-end gap-1">
-                        <LineChart className="h-3 w-3 opacity-60" />
-                        Bid / Ask
-                      </span>
-                    </th>
-                    <th className="text-right text-muted-foreground/70 font-normal">
-                      <span className="flex items-center justify-end gap-1">
-                        <Shield className="h-3 w-3 opacity-60" />
-                        TP / SL
-                      </span>
-                    </th>
-                    <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} align="right" icon={DollarSign} />
-                    <th className="w-16 text-right" />
+                    <th className="text-muted-foreground/70 font-normal" title="Bid / Ask prices used for TP/SL">Bid / Ask</th>
+                    <th className="text-muted-foreground/70 font-normal">TP / SL</th>
+                    <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} />
+                    <th className="w-16" />
                   </tr>
                 </thead>
                 <tbody>
                   {sortedPositions.map((p) => (
-                    <PositionRow key={`${p.symbol}-${p.strike}-${p.right}-${(p.expiry ?? "").replace(/-/g, "")}`} position={p} />
+                    <PositionRow
+                      key={`${p.symbol}-${p.strike}-${p.right}-${(p.expiry || "").replace(/-/g, "")}`}
+                      position={p}
+                    />
                   ))}
                 </tbody>
               </table>
@@ -269,7 +194,7 @@ export const PositionsPage = memo(function PositionsPage() {
 
       <TradeBlotter />
 
-      <PositionHistory positions={closedForHistory} />
+      <PositionHistory positions={closedPositions} />
 
       <ConfirmDialog
         open={showCloseAll}
@@ -279,24 +204,6 @@ export const PositionsPage = memo(function PositionsPage() {
         variant="destructive"
         onConfirm={() => { setShowCloseAll(false); closeAll(); }}
         onCancel={() => setShowCloseAll(false)}
-      />
-      <ConfirmDialog
-        open={showCloseCalls}
-        title="Close All Calls"
-        message={`Close all ${summary.callCount} CALL position(s)?`}
-        confirmLabel="Close Calls"
-        variant="default"
-        onConfirm={() => { setShowCloseCalls(false); closeCalls(); }}
-        onCancel={() => setShowCloseCalls(false)}
-      />
-      <ConfirmDialog
-        open={showClosePuts}
-        title="Close All Puts"
-        message={`Close all ${summary.putCount} PUT position(s)?`}
-        confirmLabel="Close Puts"
-        variant="default"
-        onConfirm={() => { setShowClosePuts(false); closePuts(); }}
-        onCancel={() => setShowClosePuts(false)}
       />
     </div>
   );
@@ -309,37 +216,29 @@ function SortTh({
   sort,
   dir,
   onClick,
-  align = "left",
-  icon: Icon,
 }: {
   field: SortField;
   label: string;
   sort: SortField;
   dir: SortDir;
   onClick: (f: SortField) => void;
-  align?: "left" | "right";
-  icon?: React.ComponentType<{ className?: string }>;
 }) {
   const isActive = sort === field;
   return (
     <th
       className={cn(
         "cursor-pointer select-none transition-colors",
-        align === "right" ? "text-right" : "text-left",
         isActive ? "!text-primary" : "hover:!text-foreground/70"
       )}
       onClick={() => onClick(field)}
     >
-      <div className={cn("flex items-center gap-1", align === "right" && "justify-end")}>
-        {Icon && <Icon className="h-3 w-3 opacity-60 shrink-0" />}
-        <span className="flex items-center gap-0.5">
-          {label}
-          {isActive ? (
-            dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
-          ) : (
-            <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
-          )}
-        </span>
+      <div className="flex items-center gap-0.5">
+        {label}
+        {isActive ? (
+          dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
+        ) : (
+          <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
+        )}
       </div>
     </th>
   );

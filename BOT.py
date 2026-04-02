@@ -3,7 +3,7 @@ import time, copy
 import io, json
 import time
 import random
-from typing import Optional
+from typing import Optional, Tuple
 # import scanner
 import Indicators as indi
 import pandas as pd
@@ -30,7 +30,7 @@ import datetime
 import pytz
 # import MySQLdb
 from datetime import datetime, timedelta
-from threading import Thread, Lock
+from threading import Thread
 from queue import Queue, Empty
 from common import OptionOrder, logger, Tick, getExpiry
 from tws_api_client import TwsApiClient
@@ -61,7 +61,6 @@ starting_profit = 0
 starting_loss = 0
 
 STOP_TRADING = False
-CLOSE_ALL_IN_PROGRESS = False  # True while UI Close All runs — block new entries
 DAILY_LIMIT_HIT = False
 DAY_LOCKED = False
 CLOSE_ALL_ORDERS = False
@@ -85,9 +84,6 @@ reconnect_time = 10
 db = None
 trade_time_dict = {}
 signal_dict = {}
-# Per underlying + side (CALL/PUT): last close time — cooldown runs only after that side is closed, never at session start
-# Per underlying: last (signal_active, direction) seen — first tick after arm is baseline only; trade on later *change* into a signal
-_post_start_last_sig = {}
 
 #def get_file_data()
 filePath = os.getcwd() + "\\config.json"
@@ -99,48 +95,20 @@ with open("config.json", "r",  encoding="utf-8") as fopen:
 # Connection Details - IP, PORT, ClientID
 global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK, VOLUME_CHECK, ATR_CHECKS
 global ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val, profit_amount_day, loss_amount_day
-global ADX_ON_OFF, ADX_THRESHOLD, RSI_DIVERGENCE_ON_OFF, VOLUME_DIVERGENCE_ON_OFF, LIQUIDITY_SWAP_ON_OFF, LIQUIDITY_CHECK_ON_OFF, LIQUIDITY_MIN_VOLUME, LIQUIDITY_MAX_SPREAD_PCT
 
 
 # -- LICENSE SYSTEM --
 LICENSE_FILE = "license.json"
 LICENSE_KEY = "TraderNova_987_90_1"
 
-def hard_exit(
-    *,
-    daily_pnl=None,
-    profit_limit=None,
-    loss_limit=None,
-    side=None,
-):
-    """Lock trading for the day. If ``side`` is ``'profit'`` or ``'loss'``, logs which limit tripped and IBKR daily P&L vs thresholds."""
+def hard_exit():
     global STOP_TRADING, DAY_LOCKED, CLOSE_ALL_ORDERS
+    logger.error("HARD EXIT: Daily limit hit — locking trading for the day")
     STOP_TRADING = True
     DAY_LOCKED = True
     CLOSE_ALL_ORDERS = True
-
-    if (
-        side in ("profit", "loss")
-        and daily_pnl is not None
-        and profit_limit is not None
-        and loss_limit is not None
-    ):
-        which = "PROFIT target" if side == "profit" else "LOSS limit"
-        log_msg = (
-            f"HARD EXIT: {which} hit — IBKR daily P&L ${float(daily_pnl):.2f} "
-            f"(profit_target=${float(profit_limit):.2f}, loss_limit=${float(loss_limit):.2f}) — locking trading for the day"
-        )
-        emit_msg = (
-            f"Daily P&L limit hit — {which}: daily P&L ${float(daily_pnl):.2f} vs "
-            f"profit_target=${float(profit_limit):.2f}, loss_limit=${float(loss_limit):.2f} — trading locked"
-        )
-    else:
-        log_msg = "HARD EXIT: Trading stopped — locking trading for the day (no P&L limit details)"
-        emit_msg = "Trading locked for the day — engine stopped (see prior risk/system logs for reason)"
-
-    logger.error(log_msg)
     try:
-        _emit_log(emit_msg, "ERROR", "system")
+        _emit_log("Daily P&L limit hit — trading locked for the day", "ERROR", "system")
     except Exception:
         pass
     
@@ -256,104 +224,20 @@ data = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close'])
 def wwma(values, n):
     return values.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
 
-def _norm_right_side(right: str) -> str:
-    """CALL/C → C, PUT/P → P for cooldown keys."""
-    r = (right or "").strip().upper()
-    if r.startswith("C"):
-        return "C"
-    if r.startswith("P"):
-        return "P"
-    return r[:1] if r else ""
-
-
-def _side_cooldown_key(symbol: str, right: str) -> str:
-    """Cooldown is per underlying + side only (no expiry). Timer starts when that side is closed."""
-    sym = (symbol or "").strip().upper()
-    return f"{sym}_{_norm_right_side(right)}"
-
-
 def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
-    """Lock key: symbol+right+expiry (serializes placement per contract). Not used for trade_time_dict cooldown."""
-    r = _norm_right_side(right)
+    """Normalized key for symbol+right+expiry cooldown. Expiry normalized (2026-03-06 -> 20260306)."""
     norm_exp = (expiry or "").replace("-", "").replace(" ", "").strip()
     if norm_exp:
-        return f"{symbol}_{r}_{norm_exp}"
-    return f"{symbol}_{r}"
-
-
-# Per-key locks to prevent race: multiple event processors placing same symbol+right+expiry
-_entry_placement_locks: dict = {}
-_entry_placement_locks_guard = Lock()
-
-
-def _get_entry_placement_lock(key: str) -> Lock:
-    """Get or create a lock for the given cooldown key (symbol_right_expiry)."""
-    with _entry_placement_locks_guard:
-        if key not in _entry_placement_locks:
-            _entry_placement_locks[key] = Lock()
-        return _entry_placement_locks[key]
-
-
-def arm_trading_session_gates():
-    """When event processors start: reset post-start signal baselines only (cooldown is not started at session start)."""
-    global _post_start_last_sig
-    _post_start_last_sig.clear()
-    logger.info("Session arm: per-symbol signal baseline reset (cooldown applies only after a close on that stock+side)")
-    try:
-        _emit_log(
-            "Session start: no cooldown clock until a position closes on that stock+side; stale signals ignored until next change",
-            "INFO",
-            "signal",
-        )
-    except Exception:
-        pass
-
-
-def _post_start_signal_blocks_trade(sym: str, data_engulf_tuple) -> bool:
-    """
-    First evaluation per symbol after session arm records baseline only (no trade).
-    Later, allow trading only when state *changes* into an active CALL/PUT (skips persistent pre-start patterns).
-    Returns True if this tick should NOT run trade checks.
-    """
-    global _post_start_last_sig
-    sym_u = (sym or "").upper()
-    matched = bool(data_engulf_tuple[0])
-    direction = (data_engulf_tuple[1] or "").upper() if matched else ""
-    cur = (matched, direction)
-    if sym_u not in _post_start_last_sig:
-        _post_start_last_sig[sym_u] = cur
-        try:
-            _emit_log(
-                f"{sym_u}: post-start baseline = {'none' if not matched else direction} — waiting for next signal change before trading",
-                "INFO",
-                "signal",
-            )
-        except Exception:
-            pass
-        return True
-    prev = _post_start_last_sig[sym_u]
-    if cur == prev:
-        return True
-    _post_start_last_sig[sym_u] = cur
-    if not matched:
-        try:
-            _emit_log(f"{sym_u}: signal cleared — still waiting for next directional signal", "DEBUG", "signal")
-        except Exception:
-            pass
-        return True
-    try:
-        _emit_log(f"{sym_u}: new signal after baseline → {direction}", "INFO", "signal")
-    except Exception:
-        pass
-    return False
+        return f"{symbol}_{right}_{norm_exp}"
+    return f"{symbol}_{right}"
 
 
 def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, expiry: str = None) -> bool:
     """
-    Check if cooldown is still active for symbol+side (CALL/PUT). Key is set only when an order on that side closes.
+    Check if cooldown is still active for symbol+right+expiry.
     Returns True if still in cooldown (should NOT place order), False if OK to trade.
     """
-    key = _side_cooldown_key(stockName, rightMatch)
+    key = _cooldown_key(stockName, rightMatch, expiry)
     last_trade_time = trade_time_dict.get(key)
     if last_trade_time is not None:
         time_since_last_trade = datetime.now() - last_trade_time
@@ -411,15 +295,11 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
                 totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                 profitPrice=0, conIdDetails=None, legPrices=None, 
                 options_tick: Tick = None,
-                stock_tick:Tick = None, closing_order: bool = False, is_sqare_off=False,
-                max_tp_price=None, min_sl_price=None):
+                stock_tick:Tick = None, closing_order: bool = False, is_sqare_off=False):
                     
     if DAY_LOCKED and CLOSE_ALL_ORDERS and not (closing_order or is_sqare_off):
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
-    if globals().get("CLOSE_ALL_IN_PROGRESS", False) and not (closing_order or is_sqare_off):
-        logger.warning("Trading blocked: Close All in progress")
-        return "CloseAllInProgress"
 
     option_order = None
 
@@ -428,7 +308,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
     logger.info("Order Data 1 ")
     
     if not (closing_order or is_sqare_off):
-        open_order = order_mgr.get_entry_order(symbol=symbol, right=right, expiry=expiry)
+        open_order = order_mgr.get_entry_order(symbol=symbol, right=right)
         norm_right = right[0].upper() if right else right
         if open_order is not None and open_order.active and (open_order.right or "")[0:1].upper() == norm_right:
             logger.info(f"Order already present for Stock TTT = {symbol} Get Right is = {right} and open_order right is = {open_order.right}")
@@ -485,9 +365,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
             current_profit_price=profitPrice,
             profit_increment=PROFIT_INCREMENT,
             profit_trigger=False,
-            active=True,
-            max_tp_price=max_tp_price,
-            min_sl_price=min_sl_price)
+            active=True)
 
         logger.info(f"Created option_order: {option_order}")
         logger.info(f"Profit settings - Target: ${profitPrice:.2f}, Increment: ${PROFIT_INCREMENT:.2f}, StopLoss: ${auxPrice:.2f}")
@@ -549,39 +427,34 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=None,
                         totalQuantity=None, orderType=None, lmtPrice=0, auxPrice=0, 
                         profitPrice=0, conIdDetails=None, legPrices=None, options_tick: Tick=None,
-                        stock_tick: Tick=None, max_tp_price=None, min_sl_price=None):
+                        stock_tick: Tick=None):
                             
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
-    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
-        logger.warning("Trading blocked: Close All in progress")
-        return "CloseAllInProgress"
 
     if options_tick is None:
         logger.error("placeAndVerifyOrder: options_tick is required")
         return "error"
+    if options_tick.locked:
+        return "optionsTickLocked"
 
-    # Per-key lock serializes placement for same symbol+right+expiry; no need for options_tick.locked
-    # (options_tick.locked caused spurious "optionsTickLocked" when multiple event processors contended)
-    key = _cooldown_key(symbol, right, expiry)
-    entry_lock = _get_entry_placement_lock(key)
-    entry_lock.acquire()
+    options_tick.locked = True
     logger.info("Creating Orders")
     
     try:
         if options_tick.active_order != None and options_tick.active_order.order_status in ["Pending", "submitted"]:
             return "orderAlreadyPresent"
         
-        side_key = _side_cooldown_key(symbol, right)
-        last_trade_time = trade_time_dict.get(side_key)
-
+        key = _cooldown_key(symbol, right, expiry)
+        last_trade_time = trade_time_dict.get(key)
+    
         if last_trade_time:
             seconds_since = (datetime.now() - last_trade_time).total_seconds()
             if seconds_since < TRADE_COOLDOWN_SECONDS:
-                logger.info(f"COOLDOWN ACTIVE [{side_key}]: Trade skipped — {int(seconds_since)}s since last close on this side (need {TRADE_COOLDOWN_SECONDS}s)")
+                logger.info(f"COOLDOWN ACTIVE [{key}]: Trade skipped — {int(seconds_since)}s since last trade (need {TRADE_COOLDOWN_SECONDS}s)")
                 try:
-                    _emit_log(f"Cooldown: {side_key} — {int(seconds_since)}s since close, need {TRADE_COOLDOWN_SECONDS}s — order blocked", "INFO", "order")
+                    _emit_log(f"Cooldown: {key} — {int(seconds_since)}s elapsed, need {TRADE_COOLDOWN_SECONDS}s — order blocked", "INFO", "order")
                 except Exception:
                     pass
                 return "cooldownPeriodHit"
@@ -599,164 +472,21 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
                         conIdDetails=conIdDetails,
                         legPrices=legPrices, 
                         options_tick=options_tick,
-                        stock_tick=stock_tick,
-                        max_tp_price=max_tp_price,
-                        min_sl_price=min_sl_price)
+                        stock_tick=stock_tick)
         return result
     except Exception as ex:
         logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
         return "error"
     finally:
-        entry_lock.release()
+        options_tick.locked = False
 
-def get_signal_dataframe_for_stock(stock, limit=21, indicator="supertrend"):
-    """
-    Get a pandas DataFrame with signals for current and previous candles for a stock.
-    Returns DataFrame with columns: symbol, date, open, high, low, close, volume, signal (ST_BUY_SELL).
-    Returns None if insufficient data.
-    """
-    if client is None:
-        return None
-    getCandlesData = client.get_bars(stock=stock, barSize=candleTime, limit=limit)
-    if getCandlesData is None or len(getCandlesData) < limit:
-        return None
-    if indicator != "supertrend":
-        return None
-    new_dict = {
-        "Date": [x.date for x in getCandlesData],
-        "Open": [getattr(x, "open", x.close) for x in getCandlesData],
-        "High": [x.high for x in getCandlesData],
-        "Low": [x.low for x in getCandlesData],
-        "Close": [x.close for x in getCandlesData],
-        "Volume": [getattr(x, "volume", 0) for x in getCandlesData],
-    }
-    new_df = pd.DataFrame(new_dict)
-    super_trend_signal = indi.BOTSingal(new_df)
-    result = super_trend_signal[["Date", "Open", "High", "Low", "Close", "Volume", "ST_BUY_SELL"]].copy()
-    result.rename(columns={"ST_BUY_SELL": "signal"}, inplace=True)
-    result["symbol"] = stock
-    result["date"] = result["Date"].apply(lambda x: x.isoformat() if hasattr(x, "isoformat") else str(x))
-    return result[["symbol", "date", "Open", "High", "Low", "Close", "Volume", "signal"]]
-
-
-def scan_all_stocks_signals(system_start_time=None, limit=21):
-    """
-    Scan each stock in stockList and return a combined list of signal rows (JSON-serializable).
-    Each row: symbol, date, open, high, low, close, volume, signal.
-    If system_start_time is set, only includes candles with date >= system_start_time
-    (signals from the time system started, including current candle at start).
-    """
-    rows = []
-    for stock in (stockList or []):
-        try:
-            df = get_signal_dataframe_for_stock(stock, limit=limit)
-            if df is None or df.empty:
-                continue
-            for _, r in df.iterrows():
-                candle_date = r.get("Date") or r.get("date")
-                if candle_date is None:
-                    continue
-                if system_start_time is not None:
-                    try:
-                        if hasattr(candle_date, "timestamp"):
-                            ts = candle_date.timestamp()
-                        elif hasattr(candle_date, "replace") and hasattr(candle_date, "tzinfo"):
-                            ts = candle_date.timestamp()
-                        else:
-                            ts = 0
-                        start_ts = system_start_time.timestamp() if hasattr(system_start_time, "timestamp") else float(system_start_time or 0)
-                        if ts < start_ts:
-                            continue
-                    except Exception:
-                        pass
-                date_str = candle_date.isoformat() if hasattr(candle_date, "isoformat") else str(candle_date)
-                rows.append({
-                    "symbol": stock,
-                    "date": date_str,
-                    "open": float(r.get("Open", 0)),
-                    "high": float(r.get("High", 0)),
-                    "low": float(r.get("Low", 0)),
-                    "close": float(r.get("Close", 0)),
-                    "volume": int(r.get("Volume", 0)),
-                    "signal": str(r.get("signal", "NA")),
-                })
-        except Exception as ex:
-            logger.warning(f"scan_all_stocks_signals: {stock} failed: {ex}")
-            continue
-    return rows
-
-
-def _check_engulfing_patterns(getCandlesData, stock):
-    """
-    Check for super-good engulfing patterns only. Returns (matched, right, strength) or (False, None, None).
-    Engulfing-based trading: strong patterns with volume confirmation.
-    """
-    if getCandlesData is None or len(getCandlesData) < 8:
-        return (False, None, None)
-    last2Candles = getCandlesData[1:8]
-    candle_0, candle_1, candle_2, candle_3, candle_4, candle_5, candle_6 = (
-        last2Candles[0], last2Candles[1], last2Candles[2], last2Candles[3],
-        last2Candles[4], last2Candles[5], last2Candles[6])
-    candle_0_vol = int(candle_0.volume)
-    candle_1_vol = int(candle_1.volume)
-    candle_2_vol = int(candle_2.volume)
-    candle_3_vol = int(candle_3.volume)
-    candle_4_vol = int(candle_4.volume)
-    candle_5_vol = int(candle_5.volume)
-    candle_6_vol = int(candle_6.volume)
-    candle_0_close = float(candle_0.close)
-    candle_1_close = float(candle_1.close)
-    candle_2_close = float(candle_2.close)
-    candle_3_close = float(candle_3.close)
-    candle_4_close = float(candle_4.close)
-    candle_5_close = float(candle_5.close)
-    candle_6_close = float(candle_6.close)
-    candle_0_open = float(candle_0.open)
-    candle_1_open = float(candle_1.open)
-    candle_3_open = float(candle_3.open)
-    candle_4_open = float(candle_4.open)
-    candle_5_open = float(candle_5.open)
-    candle_6_open = float(candle_6.open)
-    candle_1_high, candle_1_low = float(candle_1.high), float(candle_1.low)
-    candle_3_high, candle_3_low = float(candle_3.high), float(candle_3.low)
-    candle_4_high, candle_4_low = float(candle_4.high), float(candle_4.low)
-    candle_5_high, candle_5_low = float(candle_5.high), float(candle_5.low)
-    candle_6_high, candle_6_low = float(candle_6.high), float(candle_6.low)
-    # Super-good CALL patterns (strong engulf + volume)
-    if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and candle_5_vol >= candle_4_vol*0.65 and (candle_6_vol >= candle_5_vol*1.2 or candle_6_vol >= candle_4_vol*1.2):
-        return (True, "CALL", "heavyBuy")
-    if (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2 <= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2 <= candle_3_close) and candle_6_vol >= candle_5_vol*1.25:
-        return (True, "CALL", "heavyBuy")
-    if candle_6_close >= candle_5_close and candle_5_close >= candle_5_open and (candle_5_open-candle_5_low >= (candle_5_close-candle_5_open)*2) and (candle_5_high-candle_5_open <= candle_5_close-candle_5_open) and candle_5_vol >= candle_4_vol*1.05 and candle_6_vol >= candle_5_vol*0.55:
-        return (True, "CALL", "heavyBuy")
-    # High volume engulf (CALL): very strong — volume surge 1.5x+ on bullish engulf
-    if candle_6_close >= candle_5_close and candle_5_close >= candle_4_close and candle_4_close <= candle_3_close and candle_6_vol >= candle_5_vol*1.5 and candle_6_vol >= candle_4_vol*1.3:
-        return (True, "CALL", "heavyBuy")
-    # Liquidity swap engulf (CALL): sweep below prior low, close above mid — high vol
-    recent_low = min(candle_4_low, candle_5_low)
-    if candle_6_low < recent_low and candle_6_close > recent_low and candle_6_close > (candle_6_high + candle_6_low)/2 and candle_6_vol >= candle_5_vol*1.5:
-        return (True, "CALL", "heavyBuy")
-    # Bearish (PUT) patterns
-    if candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol >= candle_4_vol*0.8:
-        return (True, "PUT", "mediumSell")
-    if candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol*0.85 and candle_6_vol <= candle_5_vol*1.25:
-        return (True, "PUT", "strongSell")
-    if candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and candle_6_vol >= candle_5_vol*0.8:
-        return (True, "PUT", "mediumSell")
-    # High volume engulf (PUT): very strong — volume surge 1.5x+ on bearish engulf
-    if candle_6_close <= candle_5_close and candle_5_close <= candle_4_close and candle_4_close >= candle_3_close and candle_6_vol >= candle_5_vol*1.5 and candle_6_vol >= candle_4_vol*1.3:
-        return (True, "PUT", "strongSell")
-    # Liquidity swap engulf (PUT): sweep above prior high, close below mid — high vol
-    recent_high = max(candle_4_high, candle_5_high)
-    if candle_6_high > recent_high and candle_6_close < recent_high and candle_6_close < (candle_6_high + candle_6_low)/2 and candle_6_vol >= candle_5_vol*1.5:
-        return (True, "PUT", "strongSell")
-    return (False, None, None)
-
-
-def getCallPutEngulfCheck(stock, limit=21, indicator="engulfing"):
+def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
     from datetime import datetime
     logger.info(f"Checking BEARISH OR BULLISH Engulf Data for stock = {stock}")
     _emit_log(f"Signal check: {stock} (need {limit} bars, indicator={indicator})", "DEBUG", "signal")
+
+    # NOTE: commented by Saif
+    # getCandlesData = getCurrentUndPrice(stock)
 
     getCandlesData = client.get_bars(stock=stock, barSize=candleTime, limit=limit)
     n_bars = len(getCandlesData) if getCandlesData else 0
@@ -811,45 +541,179 @@ def getCallPutEngulfCheck(stock, limit=21, indicator="engulfing"):
             right = "PUT"
         _emit_log(f"Signal result: {stock} → {right} ({indicator} OK)", "INFO", "signal")
         return True, right,  stock, "strongBuy"
-    elif indicator == "both":
-        # Combined: SuperTrend for direction + Engulfing as filter. Signal only when BOTH agree.
-        if getCandlesData is None or len(getCandlesData) < limit:
-            return False, "None", stock, "notrade"
-        if stock not in signal_dict:
-            signal_dict[stock] = {"last_signal": "", "current_signal": ""}
-        new_dict = {
-            "Date": [x.date for x in getCandlesData],
-            "Close": [x.close for x in getCandlesData],
-            "High": [x.high for x in getCandlesData],
-            "Low": [x.low for x in getCandlesData],
-        }
-        new_df = pd.DataFrame(new_dict)
-        super_trend_signal = indi.BOTSingal(new_df)[["Date", "Close", "ST_BUY_SELL"]]
-        signal_dict[stock]["last_signal"] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[1]
-        signal_dict[stock]["current_signal"] = super_trend_signal["ST_BUY_SELL"][::-1].iloc[0]
-        current_sig = signal_dict[stock]["current_signal"]
-        last_sig = signal_dict[stock]["last_signal"]
-        if last_sig != current_sig:
-            st_right = "CALL" if current_sig.lower() != "sell" else "PUT"
-            engulf_matched, engulf_right, engulf_strength = _check_engulfing_patterns(getCandlesData, stock)
-            if engulf_matched and engulf_right == st_right:
-                _emit_log(f"SuperTrend+Engulfing CONFIRMED: {stock} → {st_right} ({engulf_strength})", "INFO", "signal")
-                return True, st_right, stock, engulf_strength or "strongBuy"
-            else:
-                _emit_log(f"SuperTrend flip {stock} → {st_right} but engulfing {'no match' if not engulf_matched else f'says {engulf_right}'} — skipping", "DEBUG", "signal")
-                return False, "None", stock, "notrade"
-        _emit_log(f"SuperTrend: {stock} signal={current_sig} (no change)", "DEBUG", "signal")
-        return False, "None", stock, "notrade"
     else:
-        # Engulfing-based: super-good patterns only (no SuperTrend)
-        if getCandlesData is None or len(getCandlesData) < 8:
-            _emit_log(f"IBKR bars: {stock} insufficient (need 8 for engulfing)", "INFO", "data")
+        if getCandlesData is None:
             return False, "None", stock, "notrade"
-        engulf_matched, engulf_right, engulf_strength = _check_engulfing_patterns(getCandlesData, stock)
-        if engulf_matched and engulf_right:
-            _emit_log(f"Engulfing signal: {stock} → {engulf_right} ({engulf_strength})", "INFO", "signal")
-            return True, engulf_right, stock, engulf_strength or "heavyBuy"
-        return False, "None", stock, "notrade"
+        
+        if len(getCandlesData) < 8:
+            logger.info(f"{stock} not enough candles.")
+            logger.info(f"\n Received Candles for stocks= {stock} are = {getCandlesData}\n")
+            _emit_log(f"IBKR bars: {stock} received {len(getCandlesData) if getCandlesData else 0} bars (need 8 for engulfing)", "INFO", "data")
+            return False, "None", stock, "notrade"
+        
+        last2Candles = getCandlesData[1:8]
+        logger.info(f"Last 7 candles data 1st is = {last2Candles}")
+        
+        candle_0 = last2Candles[0]
+        candle_1 = last2Candles[1]
+        candle_2 = last2Candles[2]
+        candle_3 = last2Candles[3]
+        candle_4 = last2Candles[4]
+        candle_5 = last2Candles[5]
+        candle_6 = last2Candles[6]
+        
+        # candle_0_range = round((float(candle_0.high) - float(candle_0.low)), 3)
+        # candle_1_range = round((float(candle_1.high) - float(candle_1.low)), 3)
+        # candle_2_range = round((float(candle_2.high) - float(candle_2.low)), 3)
+        # candle_3_range = round((float(candle_3.high) - float(candle_3.low)), 3)
+        
+        candle_0_vol = int(candle_0.volume)
+        candle_1_vol = int(candle_1.volume)
+        candle_2_vol = int(candle_2.volume)
+        candle_3_vol = int(candle_3.volume)
+        candle_4_vol = int(candle_4.volume)
+        candle_5_vol = int(candle_5.volume)
+        candle_6_vol = int(candle_6.volume)
+        
+        candle_0_close = float(candle_0.close)
+        candle_1_close = float(candle_1.close)
+        candle_2_close = float(candle_2.close)
+        candle_3_close = float(candle_3.close)
+        candle_4_close = float(candle_4.close)
+        candle_5_close = float(candle_5.close)
+        candle_6_close = float(candle_6.close)
+        
+        candle_0_open = float(candle_0.open)
+        candle_1_open = float(candle_1.open)
+        candle_2_open = float(candle_2.open)
+        candle_3_open = float(candle_3.open)
+        candle_4_open = float(candle_4.open)
+        candle_5_open = float(candle_5.open)
+        candle_6_open = float(candle_6.open)
+        
+        candle_1_high = float(candle_1.high)
+        candle_2_high = float(candle_2.high)
+        candle_3_high = float(candle_3.high)
+        candle_4_high = float(candle_4.high)
+        candle_5_high = float(candle_5.high)
+        candle_6_high = float(candle_6.high)
+        
+        candle_0_low = float(candle_0.low)
+        candle_1_low = float(candle_1.low)
+        candle_2_low = float(candle_2.low)
+        candle_3_low = float(candle_3.low)
+        candle_4_low = float(candle_4.low)
+        candle_5_low = float(candle_5.low)
+        candle_6_low = float(candle_6.low)
+        
+        #AI_function() # match the pattern
+        if candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
+            candle_6_vol>= candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.65:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-AAAAA-StrongBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "strongBuy"
+        elif candle_6_close >= candle_5_close and (candle_5_close >= candle_4_open or candle_5_close >= candle_4_high or candle_5_close >= candle_4_close) and candle_4_close <= candle_3_close and \
+            candle_5_vol >=candle_4_vol*0.65 and (candle_6_vol >=candle_5_vol*1.2 or candle_6_vol >=candle_4_vol*1.2):
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-AAAAA_HVY_VOL-StrongBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "heavyBuy"
+        elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2<= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2<= candle_3_close) and \
+            candle_6_vol >=candle_5_vol*0.65:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 4 candles Pure Bullish Engulf Condition <<<CALL-BBBBB-StrongBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "strongBuy"
+        elif (candle_6_close >= candle_5_open or candle_6_close >= candle_5_high) and (candle_5_close <= candle_4_close or (candle_5_high+candle_5_low)/2<= candle_4_close) and (candle_4_close <= candle_3_close or (candle_4_high+candle_4_low)/2<= candle_3_close) and \
+            candle_6_vol >=candle_5_vol*1.25:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 4 candles Pure Bullish Engulf Condition <<<CALL-BBBBB_HVY_VOL_StrongBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "heavyBuy"
+        elif candle_6_close >= candle_5_close and candle_5_close>=candle_5_open and (candle_5_open-candle_5_low>=candle_5_close-candle_5_open*2) and \
+            (candle_5_high-candle_5_open<=candle_5_close-candle_5_open) and \
+            (candle_6_vol >=candle_5_vol*0.65 and candle_5_vol >=candle_4_vol*0.85):
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-CCCCC-StrongBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "strongBuy"
+        elif candle_6_close >= candle_5_close and candle_5_close>=candle_5_open and (candle_5_open-candle_5_low>=candle_5_close-candle_5_open*2) and \
+            (candle_5_high-candle_5_open<=candle_5_close-candle_5_open) and \
+            candle_5_vol >=candle_4_vol*1.05 and candle_6_vol >=candle_5_vol*0.55:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> 3 candles Pure Bullish Engulf Condition <<<CALL-CCCCC_HVY_VOL_StrongBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "heavyBuy"
+        elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and \
+            candle_4_open >= candle_4_close and \
+            (candle_5_vol >= candle_4_vol*0.65 and candle_6_vol >= candle_5_vol*0.55 and candle_6_vol >=candle_4_vol*0.5):
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bullish Engulf Condition <<<CALL-DDDDD-MediumBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "normalBuy"
+        elif (candle_6_close >= candle_4_open or candle_6_close >= candle_4_high) and \
+            candle_4_open >= candle_4_close and \
+            (candle_5_vol > candle_4_vol*0.55 and candle_6_vol >=candle_4_vol*0.52 and candle_6_vol >=candle_5_vol*0.55):
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bullish Engulf Condition <<<CALL-DDDDD_HVY_VOL_MediumBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "mediumBuy"
+        elif (candle_6_close >= candle_3_open or candle_6_close >= candle_3_high) and \
+            candle_3_open >= candle_3_close and \
+            (candle_4_open <= candle_3_open or candle_4_open <= candle_3_high) and (candle_5_open <= candle_3_open or candle_5_open <= candle_3_high) and \
+            (candle_6_vol >= candle_3_vol*0.6 and candle_4_vol >= candle_3_vol*0.55 and candle_5_vol <= candle_3_vol*0.6):
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bullish Engulf Condition <<<CALL-EEEEE-MediumBUY>> meet. Return TRUE \
+                        candle_4_close = {} and candle_4_high = {} candle_4_vol = {} and candle_3_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_4_close, candle_4_high, candle_4_vol, candle_3_vol, candle_6_close, candle_5_close, candle_3_open, candle_3_close, candle_4_open))
+            return True, "CALL", stock, "mediumBuy"
+        elif candle_6_close <= candle_4_open and candle_6_close <= candle_5_open and candle_5_high >= candle_4_high and candle_6_close <= candle_4_open and \
+            candle_6_close <= candle_5_low and candle_6_vol >= candle_5_vol * 0.85 and candle_6_vol >= candle_4_vol * 0.8:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-AAAAA_MediumSELL>> meet. Return TRUE \
+                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
+            return True, "PUT", stock, "mediumSell"
+        elif candle_6_close <= candle_5_open and candle_6_open >= candle_5_close and candle_6_open >= candle_5_high and candle_6_close <= candle_5_low and \
+            candle_6_vol >= candle_5_vol * 0.85 and candle_6_vol <= candle_5_vol * 1.25:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-BBBBB_StrongSELL>> meet. Return TRUE \
+                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
+            return True, "PUT", stock, "strongSell"
+        elif candle_6_close <= candle_5_open and candle_6_close <= candle_4_open and candle_6_close <= candle_3_open and \
+            candle_6_vol >= candle_5_vol * 0.8:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-BBBBB_HVY_VOL_StrongSELL>> meet. Return TRUE \
+                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
+            return True, "PUT", stock, "mediumSell"
+        elif (candle_2_close <= candle_3_close or candle_2_close > candle_3_close) and \
+                (candle_1_close >= candle_2_close or candle_1_close < candle_2_close) and \
+                (candle_0_open >= candle_1_close or candle_0_open < candle_1_close) and \
+                (candle_0_close < candle_1_low) and \
+                candle_1_vol >= candle_0_vol * 0.8:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> AND Bearish Engulf Condition <<<PUT-AAAAA>> meet. Return TRUE \
+                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}.\n\n".format(
+                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
+            return True, "PUT", stock, "normalSell"
+        else:
+            logger.info("\n\n*********************************** <<<<Stock = {} >>>>> NO CONDITION MEET. Return FALSE \
+                        candle_1_close = {} and candle_1_high = {} candle_1_vol = {} and candle_0_vol = {} \
+                        4th Candle close is = {}, 3rd Candle Close is ={}, Current Open is = {}, Current Close is = {}, Previous OPEN is = {}. \
+                        ********************************** STOCK CHECK END ********************************************\n\n".format(
+                stock, candle_1_close, candle_1_high, candle_1_vol, candle_0_vol, candle_3_close, candle_2_close, candle_0_open, candle_0_close, candle_1_open))
+            return False, "None", stock, "notrade"
 
 def checkVWAPValue(stock, Right, candlesData):
     # from datetime import datetime
@@ -1096,20 +960,6 @@ def get_delta_volume(stock, strike, right, expiry):
     if market_data:
         delta_val = getattr(market_data, "delta", None)
         vol_val = getattr(market_data, "volume", None)
-        bid_val = getattr(market_data, "bid", None)
-        ask_val = getattr(market_data, "ask", None)
-        last_val = getattr(market_data, "last", None)
-        # Liquidity check: skip illiquid options (wide spread, low volume) — effectively "liquidity swap" to try next strike
-        liq_on = str(globals().get("LIQUIDITY_CHECK_ON_OFF", "OFF")).lower() == "on"
-        if liq_on and hasattr(indi, "checkLiquidity"):
-            min_vol = int(globals().get("LIQUIDITY_MIN_VOLUME", 20))
-            max_spread = float(globals().get("LIQUIDITY_MAX_SPREAD_PCT", 15))
-            if not indi.checkLiquidity(bid_val, ask_val, last_val, vol_val, min_volume=min_vol, max_spread_pct=max_spread):
-                logger.info(f"Liquidity check failed for {stock} {right} {strike} — skipping (try next strike)")
-                _emit_log(f"Liquidity: {stock} {right} {strike} illiquid — skip", "INFO", "signal")
-                deltaVolData.append("NoDataPresent")
-                deltaVolData.append(market_data)
-                return deltaVolData
         if delta_val is not None and delta_val != -1 and vol_val is not None and vol_val != -1:
             deltaVolData = [(delta_val, vol_val)]
 
@@ -1124,9 +974,6 @@ def get_delta_volume(stock, strike, right, expiry):
 def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
-        return (False, 0.0, ([0], [0], [0]))
-    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
-        logger.warning("Trading blocked: Close All in progress")
         return (False, 0.0, ([0], [0], [0]))
 
     isPreviousNeutralCandles = False
@@ -1151,59 +998,6 @@ def checkAlgoAndTrade(Stock, Right, onlyAtrCheck="no"):
         logger.warning(f"No/insufficient candle data for {Stock}; skipping algo check (historical data may not be ready)")
         _emit_log(f"Algo: {Stock} insufficient bars ({n_candles}) — skipping trade check", "INFO", "signal")
         return (False, 0.0, ([0], [0], [0]))
-
-    df_candles = client.to_df(getCandlesData)
-
-    # ADX filter: skip sideways market (ADX < threshold)
-    adx_on = str(globals().get("ADX_ON_OFF", "OFF")).lower() == "on"
-    if adx_on:
-        adx_threshold = float(globals().get("ADX_THRESHOLD", 25))
-        adx_val = indi.getADX(df_candles, period=14) if hasattr(indi, "getADX") else None
-        if adx_val is not None and adx_val < adx_threshold:
-            logger.info(f"ADX={adx_val:.1f} < {adx_threshold} (sideways market) — skipping {Stock}")
-            _emit_log(f"ADX: {Stock} sideway market (ADX={adx_val:.1f}) — no trade", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0])) if onlyAtrCheck == "no" else (False, 0.0, ([0], [0], [0]))  # noqa: E501
-        elif adx_val is not None:
-            _emit_log(f"ADX: {Stock} ADX={adx_val:.1f} ≥ {adx_threshold} ✓", "DEBUG", "signal")
-
-    # RSI divergence: must align with signal (CALL needs bullish or none, PUT needs bearish or none)
-    rsi_div_on = str(globals().get("RSI_DIVERGENCE_ON_OFF", "OFF")).lower() == "on"
-    if rsi_div_on == "on" and onlyAtrCheck == "no":
-        rsi_div = indi.checkRSIDivergence(df_candles, rsi_period=14, lookback=5) if hasattr(indi, "checkRSIDivergence") else None
-        if rsi_div == "bearish" and Right.upper() in ("CALL", "C"):
-            logger.info(f"RSI bearish divergence — skip CALL for {Stock}")
-            _emit_log(f"RSI divergence: {Stock} bearish — skip CALL", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
-        if rsi_div == "bullish" and Right.upper() in ("PUT", "P"):
-            logger.info(f"RSI bullish divergence — skip PUT for {Stock}")
-            _emit_log(f"RSI divergence: {Stock} bullish — skip PUT", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
-
-    # Volume divergence: must align with signal
-    vol_div_on = str(globals().get("VOLUME_DIVERGENCE_ON_OFF", "OFF")).lower() == "on"
-    if vol_div_on == "on" and onlyAtrCheck == "no":
-        vol_div = indi.checkVolumeDivergence(df_candles, lookback=5) if hasattr(indi, "checkVolumeDivergence") else None
-        if vol_div == "bearish" and Right.upper() in ("CALL", "C"):
-            logger.info(f"Volume bearish divergence — skip CALL for {Stock}")
-            _emit_log(f"Volume divergence: {Stock} bearish — skip CALL", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
-        if vol_div == "bullish" and Right.upper() in ("PUT", "P"):
-            logger.info(f"Volume bullish divergence — skip PUT for {Stock}")
-            _emit_log(f"Volume divergence: {Stock} bullish — skip PUT", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
-
-    # Liquidity swap pattern: sweep and reversal — must align with signal (CALL needs bullish, PUT needs bearish)
-    liq_swap_on = str(globals().get("LIQUIDITY_SWAP_ON_OFF", "OFF")).lower() == "on"
-    if liq_swap_on == "on" and onlyAtrCheck == "no":
-        liq_swap = indi.checkLiquiditySwapPattern(df_candles, lookback=5) if hasattr(indi, "checkLiquiditySwapPattern") else None
-        if liq_swap == "bearish" and Right.upper() in ("CALL", "C"):
-            logger.info(f"Liquidity swap bearish — skip CALL for {Stock}")
-            _emit_log(f"Liquidity swap: {Stock} bearish sweep — skip CALL", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
-        if liq_swap == "bullish" and Right.upper() in ("PUT", "P"):
-            logger.info(f"Liquidity swap bullish — skip PUT for {Stock}")
-            _emit_log(f"Liquidity swap: {Stock} bullish sweep — skip PUT", "INFO", "signal")
-            return (False, 0.0, ([0], [0], [0]))
 
     logger.info("\nVWAP_ON_OFF => {}\n".format(VWAP_ON_OFF))
     if onlyAtrCheck == "no":
@@ -1261,10 +1055,6 @@ def updateStockMapper(stockName, value):
         f2.write(f"{updateVal}")
 
 def checkConditionsAndTrade(dataValueSet, stock_tick):
-    if globals().get("STOP_TRADING", False):
-        return "stopped"
-    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
-        return "closingAll"
     #global tradeExpiry
     logger.info(f"Stock {dataValueSet[0][2].upper()} checkConditionsAndTrade - start")
     
@@ -1332,10 +1122,10 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
                         continue
                     else:
-                        tradeKey = _side_cooldown_key(stockName, rightMatch)
+                        tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
-                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_close_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
+                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
 
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1435,10 +1225,10 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
                         continue
                     else:
-                        tradeKey = _side_cooldown_key(stockName, rightMatch)
+                        tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
-                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_close_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
+                            logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
                     
                     logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
                     if deltaVolDataReturn == "NoDataPresent":
@@ -1709,16 +1499,91 @@ def timeDecayDiff(expiryDate):
     logger.info("\n\n Time Decay Days Diff remaing from expiry is = {}\n\n".format(diffTimedecay))
     
     return diffTimedecay
-    
 
 
-def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick, action: str = "BUY"):
+def _option_bar_ticker_key(symbol: str, expiry: str, right: str, strike) -> str:
+    """Must match tws_api_client.subscribe() OPT cache key: symbol + expiry + right + strike."""
+    return f"{symbol}{expiry}{right}{strike}"
+
+
+def try_get_option_atr_from_bars(symbol: str, expiry: str, right: str, strike, min_bars: int = 22) -> Optional[float]:
+    """
+    ATR from IBKR historical bars for the option, if that series is populated.
+    init_data_feed only subscribes history for underlyings, so this usually returns None and callers fall back to STK ATR.
+    """
+    try:
+        ticker_key = _option_bar_ticker_key(symbol, expiry, right, strike)
+        bars = client.get_bars(stock=ticker_key, barSize=candleTime, limit=max(min_bars + 5, 30))
+        if not bars or len(bars) < min_bars:
+            return None
+        df = client.to_df(bars)
+        if df is None or len(df) < min_bars:
+            return None
+        atr_series = getATR(df)
+        v = float(atr_series.iloc[-1])
+        if pd.isna(v) or v <= 0:
+            return None
+        return v
+    except Exception as ex:
+        logger.debug(f"Option ATR unavailable for {symbol} {expiry} {right} {strike}: {ex}")
+        return None
+
+
+def resolve_atr_for_sl_tp(
+    symbol: str, expiry: str, right: str, strike, stock_atr: float
+) -> Tuple[float, str]:
+    """Prefer option (strike) ATR from bars; if missing, use underlying ATR passed from algo (STK)."""
+    opt_atr = try_get_option_atr_from_bars(symbol, expiry, right, strike)
+    if opt_atr is not None:
+        return opt_atr, "OPT"
+    try:
+        sa = float(stock_atr)
+    except (TypeError, ValueError):
+        sa = 0.0
+    return sa, "STK"
+
+
+def compute_sl_tp_from_price_and_atr(price: float, atr: float, is_long: bool) -> Tuple[float, float]:
+    """
+    LONG: if ATR > price*30% → TP = price + 30%*price, SL = price - 30%*price;
+          else → TP = price + ATR, SL = price - ATR.
+    SHORT: same distances with TP/SL reversed (TP lower, SL higher for a short option premium).
+    """
+    threshold = price * 0.30
+    if atr > threshold:
+        offset = price * 0.30
+    else:
+        offset = atr
+    if offset <= 0:
+        offset = 0.01
+    if is_long:
+        tp = round(price + offset, 2)
+        sl = round(price - offset, 2)
+    else:
+        tp = round(price - offset, 2)
+        sl = round(price + offset, 2)
+    return tp, sl
+
+
+def _zero_dte_entry_gate(trade_price: float, market_time_int: int, dte: int) -> Optional[str]:
+    """Hard stops for 0DTE only (no TP/SL overrides here)."""
+    if dte != 0:
+        return None
+    if market_time_int >= 1445:
+        return "0dte2ndhalfnotrade"
+    if market_time_int <= 1130:
+        if trade_price <= 0.1:
+            return "0dtepricebelow10cent"
+    elif 1130 < market_time_int <= 1300:
+        if trade_price <= 0.1:
+            return "0dtepricebelow10cent"
+    return None
+
+
+def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick):
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
-    if globals().get("CLOSE_ALL_IN_PROGRESS", False):
-        logger.warning("Trading blocked: Close All in progress")
-        return "CloseAllInProgress"
 
     logger.info(f"All Algo's conditions meet, now doing a check for Options Price must be ${MAX_CONTRACT_AMOUNT} or low")
     # tick = client.get_options_data(symbol=takeTick, expiry=takeExpiry, right=takeRight, strike=takeStrike)
@@ -1779,81 +1644,51 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         tradePrice = round(bidPrice, 2)
 
     logger.info(f"Current tradePrice is = {tradePrice}")
-    
-    # ============ PROFIT/STOPLOSS CALCULATION - THIS IS CRITICAL ============
-    marketTime = datetime.now().astimezone(pytz.timezone("America/New_York")).strftime("%H-%M")
-    marketTime = marketTime.replace("-", "")
-    marketTimeInt = int(marketTime)
-    
-    TimeDecayDiffVal = timeDecayDiff(tradeExpiry_val)
-    if "spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower():
-        TimeDecayDiffVal = -1
-        
-    # Get underlying stock price for percentage-based ATR scaling
-    underlying_price = stock_tick.last if stock_tick and stock_tick.last > 0 else 0
+    # ============ PROFIT/STOPLOSS (option premium vs ATR / 30% rule) ============
+    ny_tz = pytz.timezone("America/New_York")
+    market_time_str = datetime.now().astimezone(ny_tz).strftime("%H-%M").replace("-", "")
+    market_time_int = int(market_time_str)
 
-    # Log the calculation parameters
+    time_decay_dte = timeDecayDiff(tradeExpiry_val)
+    if "spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower():
+        time_decay_dte = -1
+
+    zd_gate = _zero_dte_entry_gate(trade_price=tradePrice, market_time_int=market_time_int, dte=time_decay_dte)
+    if zd_gate:
+        return zd_gate
+
+    is_long_entry = True  # takeTrade only BUYs options; short premium would set False
+
+    atr_sl_tp, atr_source = resolve_atr_for_sl_tp(stock_symbol, expiry, right, strike, atrVale)
     logger.info(
-        f"PL_CALC {stock_symbol}: Entry=${tradePrice:.2f} ATR=${atrVale:.4f} "
-        f"StockPrice=${underlying_price:.2f} Time={marketTime} DTE={TimeDecayDiffVal} "
-        f"SPY/QQQ={'spy' in stock_symbol.lower() or 'qqq' in stock_symbol.lower()}"
+        f"PL_CALC {stock_symbol}: Entry=${tradePrice:.2f} ATR_for_SLTP={atr_sl_tp:.4f} ({atr_source}) "
+        f"stock_ATR_ref={float(atrVale) if atrVale is not None else 0:.4f} Time={market_time_str} DTE={time_decay_dte}"
     )
 
-    # TP/SL calculation using ATR vs 30% of option price
-    # ATR is scaled from stock ATR to option premium terms
-    price_30pct = tradePrice * 0.30  # 30% of option entry price
-
-    if underlying_price > 0 and atrVale > 0.01:
-        atr_pct = atrVale / underlying_price
-        option_pct = atr_pct * float(ATR_VALUE)
-        atr_dist = tradePrice * option_pct  # ATR distance in option $ terms
-        logger.info(
-            f"ATR_SCALE {stock_symbol}: atr_pct={atr_pct*100:.3f}% option_pct={option_pct*100:.1f}% "
-            f"atr_dist=${atr_dist:.4f} price_30pct=${price_30pct:.4f}"
-        )
+    if atr_sl_tp <= 0.01:
+        profitPrice = round(tradePrice + 0.02, 2)
+        auxPrice = round(tradePrice - 0.01, 2)
+        logger.info(f"Low ATR case: Profit=${profitPrice:.2f}, StopLoss=${auxPrice:.2f}")
     else:
-        atr_dist = 0.0
-        atr_pct = 0.0
-        option_pct = 0.0
-        logger.warning(
-            f"ATR_SCALE {stock_symbol}: no ATR available (stock_price={underlying_price}, ATR={atrVale}), using 30% cap"
-        )
+        profitPrice, auxPrice = compute_sl_tp_from_price_and_atr(tradePrice, atr_sl_tp, is_long_entry)
 
-    # If ATR > 30% of price → cap at 30%; otherwise use ATR
-    if atr_dist > price_30pct:
-        tp_sl_dist = price_30pct
-        logger.info(f"TP/SL {stock_symbol}: ATR ${atr_dist:.4f} > 30% ${price_30pct:.4f} → using 30% cap")
-    else:
-        tp_sl_dist = atr_dist if atr_dist > 0 else price_30pct
-        logger.info(f"TP/SL {stock_symbol}: ATR ${atr_dist:.4f} <= 30% ${price_30pct:.4f} → using ATR")
-
-    profitPrice = round(tradePrice + tp_sl_dist, 2)
-    auxPrice = round(tradePrice - tp_sl_dist, 2)
-    max_tp_price = round(tradePrice + tp_sl_dist, 2)
-    min_sl_price = round(max(0.01, tradePrice - tp_sl_dist), 2)
-
-    # Special 0DTE returns (no trade in these cases)
-    if TimeDecayDiffVal == 0:
-        if marketTimeInt >= 1445:
-            return "0dte2ndhalfnotrade"
-        if tradePrice <= 0.1:
-            return "0dtepricebelow10cent"
-
-    # Ensure stoploss is never negative; align min SL floor with actual aux when clamped
     if auxPrice < 0.01:
         auxPrice = 0.01
-    if min_sl_price > auxPrice:
-        min_sl_price = auxPrice
 
     # ============ LOG FINAL CALCULATED VALUES ============
-    profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
-    loss_pct = ((tradePrice - auxPrice) / tradePrice * 100) if tradePrice > 0 else 0
-    
-    rr = ((profitPrice - tradePrice) / (tradePrice - auxPrice)) if (tradePrice - auxPrice) > 0 else 0
+    if is_long_entry:
+        profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
+        loss_pct = ((tradePrice - auxPrice) / tradePrice * 100) if tradePrice > 0 else 0
+        rr = ((profitPrice - tradePrice) / (tradePrice - auxPrice)) if (tradePrice - auxPrice) > 0 else 0
+    else:
+        profit_pct = ((tradePrice - profitPrice) / tradePrice * 100) if tradePrice > 0 else 0
+        loss_pct = ((auxPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
+        rr = ((tradePrice - profitPrice) / (auxPrice - tradePrice)) if (auxPrice - tradePrice) > 0 else 0
     logger.info(
         f"TARGETS {stock_symbol}: Entry=${tradePrice:.2f} | TP=${profitPrice:.2f} (+{profit_pct:.1f}%) "
         f"| SL=${auxPrice:.2f} (-{loss_pct:.1f}%) | Increment=${PROFIT_INCREMENT:.2f} | R:R=1:{rr:.2f}"
     )
+
 
     logger.info(f"\n\nCurrent Options Price is = {lastPrice} And Current Active Volume = {activeVol}")
 
@@ -1864,7 +1699,7 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
 
         #logger.info(f"Amount to Use is = {useAmount} and Quantities to trade is = useAmount/tradPrice = {totalQty}")
         logger.info(f"Amount to Use is = {useAmount[stock_symbol]['amount']} and Quantities to trade = {totalQty}")
-        rr_ratio = (profitPrice - tradePrice) / (tradePrice - auxPrice) if (tradePrice - auxPrice) > 0 else 0
+        rr_ratio = rr
         _emit_log(
             f"TRADE SETUP: {stock_symbol} {right} {strike} @ ${tradePrice:.2f} | TP=${profitPrice:.2f} SL=${auxPrice:.2f} | R:R=1:{rr_ratio:.1f} | Qty={totalQty}",
             "INFO", "order"
@@ -1883,11 +1718,14 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
                             profitPrice=profitPrice,
                             auxPrice=auxPrice,
                             options_tick=options_tick,
-                            stock_tick=stock_tick,
-                            max_tp_price=max_tp_price,
-                            min_sl_price=min_sl_price)
+                            stock_tick=stock_tick)
 
-        # Cooldown is recorded in order_manager.process_fill when exit order fills (not on placement)
+        logger.info("\nupdating new time for last trade\n")
+        trade_key = _cooldown_key(stock_symbol, right, expiry)
+        trade_time_dict.update({trade_key: datetime.now()})
+        logger.info(f"Cooldown recorded for {trade_key} — next trade for same symbol+right+expiry in {TRADE_COOLDOWN_SECONDS}s")
+        
+        #options_tick.last_trade_time = datetime.now()
         logger.info(f"currentOrderId is = {currentOrderId}")
         return "orderPlaced"
     else:
@@ -2045,19 +1883,14 @@ def event_processor(event_queue: Queue, count: int) -> None:
     Returns:
         None
     """
-    global STOP_TRADING
     logger.info(f"Starting event processor #{count + 1}")
     _emit_log(f"Event processor #{count + 1} started — scanning for signals", "INFO", "signal")
     tries = 0
     keep_running = True
     while keep_running:
-        if STOP_TRADING:
-            logger.info(f"Event processor #{count + 1} stopping (STOP_TRADING)")
-            keep_running = False
-            break
         try:
             # Get the event data from the queue
-            event_data = event_queue.get(block=True, timeout=0.05)
+            event_data = event_queue.get(block=False, timeout=0.20)
             tick: Tick = event_data["tick"]
             sym = getattr(tick.contract, "symbol", "") or getattr(tick.contract, "localSymbol", "") or getattr(tick, "symbol", "")
             sec_type = getattr(tick.contract, "secType", "")
@@ -2083,7 +1916,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
                 except (ValueError, TypeError):
                     pass  # fallback: allow scan if time parsing fails
                 # Get the result of the call/put engulf check
-                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick → Engulfing-based)", "DEBUG", "signal")
+                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick received → SuperTrend + Engulfing)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
                 logger.info(f"\n dataEngulf = {dataEngulf}\n")
                 if dataEngulf[0]:
@@ -2106,10 +1939,6 @@ def event_processor(event_queue: Queue, count: int) -> None:
                             float(underlying_price),
                             sig_strength or "signal",
                         )
-                    # Skip trading on first snapshot per symbol and on unchanged signal (wait for *next* signal after start)
-                    if _post_start_signal_blocks_trade(tick.contract.symbol, dataEngulf):
-                        event_queue.task_done()
-                        continue
                     result = checkConditionsAndTrade((dataEngulf, dataStrike), tick)
                     logger.info(f"checkConditionsAndTrade: {result}")
                     if result == "orderPlaced":
@@ -2123,23 +1952,17 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     elif isinstance(result, str) and result != "None":
                         _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
                 else:
-                    _emit_log(f"{tick.contract.symbol}: No signal (engulfing no match)", "DEBUG", "signal")
+                    _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged)", "DEBUG", "signal")
             
             # Mark the event as processed
             event_queue.task_done()
         except Empty:
-            if STOP_TRADING:
-                keep_running = False
-            elif client is not None and not client.isConnected():
-                # Re-check STOP_TRADING to avoid logging during shutdown (race with engine.stop)
-                if STOP_TRADING:
+            if client is not None and not client.isConnected():
+                logger.error("TWS is disconnected — engine loop handles reconnect")
+                _emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
+                time.sleep(5.0)
+                if getattr(client, "connection_closed", False):
                     keep_running = False
-                else:
-                    logger.error("TWS is disconnected — engine loop handles reconnect")
-                    _emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
-                    time.sleep(5.0)
-                    if getattr(client, "connection_closed", False):
-                        keep_running = False
         except Exception as ex:
             logger.error(f"Event processor error: {ex}", exc_info=True)
             _emit_log(f"Event processor error: {ex}", "ERROR", "trading")
@@ -2183,7 +2006,6 @@ def check_and_close_all_open_positions():
 def init_start_event_processors():
     processors = None
     if client.isConnected():
-        arm_trading_session_gates()
         # Create the specified number of event processors
         processors = [Thread(target=event_processor, args=(event_queue, count,)) for count in range(PROCESSORS_COUNT)]
         # Start the event processors
@@ -2201,8 +2023,6 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
 
     logger.info("PnL Watchdog started")
 
-    limit_hit_detail = None  # dict passed to hard_exit when a P&L threshold trips
-
     while True:
         if STOP_TRADING:
             logger.info("PnL watchdog stopping (STOP_TRADING)")
@@ -2211,15 +2031,12 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
             pnl, realizedPNL = client.get_pnl(account_id)
 
             if pnl >= day_profit_limit or pnl <= day_loss_limit:
-                side = "profit" if pnl >= day_profit_limit else "loss"
                 logger.error(
-                    f" DAILY LIMIT HIT  side={side}  PnL={pnl} "
-                    f"profit_target={day_profit_limit}  loss_limit={day_loss_limit}"
-                )
+                    f" DAILY LIMIT HIT  PnL={pnl} "
+                    f"Limits=({day_profit_limit}, {day_loss_limit})")
                 _emit_log(
-                    f"DAY LOCK ({side}): IBKR daily P&L ${float(pnl):.2f} vs "
-                    f"profit_target=${float(day_profit_limit):.2f}, loss_limit=${float(day_loss_limit):.2f} — trading stopped",
-                    "ERROR", "risk",
+                    f"DAY LOCK: P&L ${pnl:.2f} hit limit (profit=${day_profit_limit:.2f}, loss=${day_loss_limit:.2f}) — trading stopped",
+                    "ERROR", "risk"
                 )
 
                 STOP_TRADING = True
@@ -2231,12 +2048,6 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
                 CLOSE_ALL_ORDERS = True
 
                 logger.error(" Trading LOCKED for the day until manual restart")
-                limit_hit_detail = {
-                    "daily_pnl": float(pnl),
-                    "profit_limit": float(day_profit_limit),
-                    "loss_limit": float(day_loss_limit),
-                    "side": side,
-                }
                 break
 
         except Exception as e:
@@ -2244,11 +2055,7 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
 
         time.sleep(1)
     logger.info("CLOSE CURRENT PROCESS")
-    if limit_hit_detail:
-        hard_exit(**limit_hit_detail)
-    else:
-        # Stopped without tripping profit/loss (e.g. STOP_TRADING set elsewhere); avoid claiming "P&L limit hit"
-        logger.info("PnL watchdog exited without P&L limit trip — not calling hard_exit()")
+    hard_exit()
 
 
 def synchronize_positions():
@@ -2446,7 +2253,7 @@ def monitor_positions_loop():
             logger.error(f"Position monitor error: {e}", exc_info=True)
             _emit_log(f"Position monitor error: {e}", "ERROR", "position")
 
-        time.sleep(0.05)  # 20 checks/sec for faster TP/SL detection
+        time.sleep(0.1)
 
 
 
@@ -2470,7 +2277,6 @@ def main_call(data):
     
     global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
     global VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val
-    global ADX_ON_OFF, ADX_THRESHOLD, RSI_DIVERGENCE_ON_OFF, VOLUME_DIVERGENCE_ON_OFF, LIQUIDITY_SWAP_ON_OFF, LIQUIDITY_CHECK_ON_OFF, LIQUIDITY_MIN_VOLUME, LIQUIDITY_MAX_SPREAD_PCT
     global trade_time_dict, signal_dict, profit_amount_day, loss_amount_day
     global starting_profit, starting_loss
     starting_profit = 0
@@ -2513,15 +2319,6 @@ def main_call(data):
     BODY = data["BODY"]
     loss_amount_day = float(data["loss_amount_day"])
     profit_amount_day = float(data["profit_amount_day"])
-
-    ADX_ON_OFF = str(data.get("ADX_ON_OFF", fileData.get("ADX_ON_OFF", "OFF"))).upper()
-    ADX_THRESHOLD = float(data.get("ADX_THRESHOLD", fileData.get("ADX_THRESHOLD", 25)))
-    RSI_DIVERGENCE_ON_OFF = str(data.get("RSI_DIVERGENCE_ON_OFF", fileData.get("RSI_DIVERGENCE_ON_OFF", "OFF"))).upper()
-    VOLUME_DIVERGENCE_ON_OFF = str(data.get("VOLUME_DIVERGENCE_ON_OFF", fileData.get("VOLUME_DIVERGENCE_ON_OFF", "OFF"))).upper()
-    LIQUIDITY_SWAP_ON_OFF = str(data.get("LIQUIDITY_SWAP_ON_OFF", fileData.get("LIQUIDITY_SWAP_ON_OFF", "OFF"))).upper()
-    LIQUIDITY_CHECK_ON_OFF = str(data.get("LIQUIDITY_CHECK_ON_OFF", fileData.get("LIQUIDITY_CHECK_ON_OFF", "OFF"))).upper()
-    LIQUIDITY_MIN_VOLUME = int(data.get("LIQUIDITY_MIN_VOLUME", fileData.get("LIQUIDITY_MIN_VOLUME", 20)))
-    LIQUIDITY_MAX_SPREAD_PCT = float(data.get("LIQUIDITY_MAX_SPREAD_PCT", fileData.get("LIQUIDITY_MAX_SPREAD_PCT", 15)))
     
     # 
     USE_DIFF_EXPIRY_INDEX = fileData["USE_DIFF_EXPIRY_INDEX"]
@@ -2594,8 +2391,8 @@ def main_call(data):
         init_data_feed()
         # Fetch all the strike expiries for all stocks
         dataStrike = fetch_all_strike_expiries()
-        # synchronize positions to be monitored for closing (required for TP/SL on pre-existing TWS positions)
-        synchronize_positions()
+        # synchronize positions to be monitored for closing.
+        #synchronize_positions()
         # synchronize previous days open orders
         synchronize_orders()
 

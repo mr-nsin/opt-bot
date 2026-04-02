@@ -244,6 +244,8 @@ This will:
 3. Launch the Tauri desktop window
 4. Enable hot module replacement (HMR) for instant UI updates
 
+**Trading engine Python / `.venv`:** The packaged dev binary `target/debug/trading-engine` is a script with `#!/usr/bin/env python3`, so it uses **system** `python3`, not a venv you activated in Terminal. Put **`.venv` in the repo root** (same level as `trading-engine/`) and run `pip install -r trading-engine/requirements.txt` there; the app will prefer `.venv/bin/python3` + `trading-engine/main.py` when running from `tauri dev`. Or set **`QUANTDRIFT_PYTHON`** to your interpreter path (and **`QUANTDRIFT_ENGINE_MAIN`** to `trading-engine/main.py` if needed). Git worktrees need their own `.venv` or the env override.
+
 ### Frontend only (no native window)
 
 If you only want to work on the React UI without the Tauri shell:

@@ -3,7 +3,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   X,
-  Loader2,
   TrendingUp,
   TrendingDown,
   ChevronDown,
@@ -16,13 +15,10 @@ import {
 import type { Position } from "@/lib/types";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 import { usePositions } from "@/hooks/usePositions";
-import { usePositionStore, positionKey } from "@/stores/positionStore";
 
 export const PositionRow = memo(function PositionRow({ position }: { position: Position }) {
   const { closePosition } = usePositions();
   const [expanded, setExpanded] = useState(false);
-  const closingPositions = usePositionStore((s) => s.closingPositions);
-  const isClosing = closingPositions.has(positionKey(position.symbol, position.strike, position.right, position.expiry));
 
   const pnl = position.pnl ?? 0;
   const pnlPct = position.pnl_percent ?? 0;
@@ -62,32 +58,32 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        <td className="text-center">
+        <td>
           <Badge variant={position.right === "C" || position.right === "CALL" ? "success" : "danger"} className="text-xs font-bold px-1.5 py-0">
             {position.right === "C" || position.right === "CALL" ? "CALL" : "PUT"}
           </Badge>
         </td>
 
-        <td className="font-mono tabular-nums text-xs text-right">${position.strike?.toFixed(1)}</td>
+        <td className="font-mono tabular-nums text-xs">${position.strike?.toFixed(1)}</td>
         <td className="text-muted-foreground/70 text-xs">{position.expiry}</td>
-        <td className="font-mono tabular-nums text-xs text-right">{position.quantity}</td>
-
-        {/* Entry / Current — stacked like Bid/Ask */}
-        <td className="text-xs font-mono tabular-nums text-right">
-          <span className="flex flex-col gap-0.5 items-end">
-            <span className="text-muted-foreground/80" title="Entry (avg cost)">
-              ${position.avg_price?.toFixed(2)}
+        <td className="font-mono tabular-nums text-xs">{position.quantity}</td>
+        <td className="text-xs font-mono tabular-nums">
+          <div className="flex flex-col gap-0.5 leading-tight">
+            <span className="text-muted-foreground/70" title="Average entry (fill)">
+              <span className="text-[10px] uppercase text-muted-foreground/50 mr-0.5">Entry</span>
+              ${position.avg_price?.toFixed(2) ?? "—"}
             </span>
-            <span className="font-medium" title="Current market price">
-              ${position.current_price?.toFixed(2)}
+            <span className="font-medium text-foreground/90" title="Live mark (last, bid, or mid)">
+              <span className="text-[10px] uppercase text-muted-foreground/50 mr-0.5">Now</span>
+              ${position.current_price?.toFixed(2) ?? "—"}
             </span>
-          </span>
+          </div>
         </td>
 
         {/* Bid / Ask — visible in main row when available */}
-        <td className="text-xs font-mono tabular-nums text-right">
+        <td className="text-xs font-mono tabular-nums">
           {(position.bid != null && position.bid > 0) || (position.ask != null && position.ask > 0) ? (
-            <span className="flex flex-col gap-0.5 items-end">
+            <span className="flex flex-col gap-0.5">
               {position.bid != null && position.bid > 0 && <span>${Number(position.bid).toFixed(2)}</span>}
               {position.ask != null && position.ask > 0 && <span className="text-muted-foreground/80">${Number(position.ask).toFixed(2)}</span>}
             </span>
@@ -97,9 +93,9 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         </td>
 
         {/* TP | SL — visible in main row when set */}
-        <td className="text-xs text-right">
+        <td className="text-xs">
           {(position.profit_price != null && position.profit_price > 0) || (position.stoploss_price != null && position.stoploss_price > 0) ? (
-            <span className="flex flex-col gap-0.5 items-end">
+            <span className="flex flex-col gap-0.5">
               {position.profit_price != null && position.profit_price > 0 && (
                 <span className="text-emerald-500/90 font-mono tabular-nums" title="Take Profit">
                   TP ${Number(position.profit_price).toFixed(2)}{position.trailing_active ? " ↺" : ""}
@@ -117,9 +113,9 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         </td>
 
         {/* P&L with gauge */}
-        <td className="text-right">
-          <div className="space-y-0.5 inline-block text-right">
-            <div className="flex items-center gap-1 justify-end">
+        <td>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-1">
               <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
                 {formatCurrency(pnl)}
               </span>
@@ -127,7 +123,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                 ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
               </span>
             </div>
-            <div className="pnl-gauge w-14 ml-auto">
+            <div className="pnl-gauge w-14">
               <div
                 className={cn("pnl-gauge-fill", isProfit ? "bg-emerald-500" : "bg-red-500")}
                 style={{ width: `${gaugePct}%` }}
@@ -136,27 +132,17 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        <td className="text-right">
+        <td>
           <Button
             variant="ghost"
             size="sm"
-            disabled={isClosing}
             onClick={(e) => {
               e.stopPropagation();
-              closePosition(position.symbol, position.strike, position.right, position.expiry);
+              closePosition(position.symbol, position.strike, position.right);
             }}
-            className={cn(
-              "h-5 px-1 text-xs transition-opacity",
-              isClosing
-                ? "text-amber-500 opacity-100 cursor-not-allowed"
-                : "text-red-500 hover:text-red-600 hover:bg-red-500/10 opacity-0 group-hover:opacity-100"
-            )}
+            className="text-red-500 hover:text-red-600 hover:bg-red-500/10 h-5 px-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
           >
-            {isClosing ? (
-              <><Loader2 className="h-2.5 w-2.5 mr-0.5 animate-spin" /> Closing...</>
-            ) : (
-              <><X className="h-2.5 w-2.5 mr-0.5" /> Close</>
-            )}
+            <X className="h-2.5 w-2.5 mr-0.5" /> Close
           </Button>
         </td>
       </tr>

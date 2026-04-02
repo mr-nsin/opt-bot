@@ -1,18 +1,10 @@
-use std::collections::{HashMap, HashSet};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
-use tokio::sync::{Mutex, oneshot};
-
-/// Recently-closed position keys with timestamps.
-/// Prevents position_update from re-adding positions that trade_closed just removed.
-static RECENTLY_CLOSED: once_cell::sync::Lazy<
-    Arc<Mutex<HashMap<String, std::time::Instant>>>,
-> = once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
-
-const RECENTLY_CLOSED_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+use tokio::sync::Mutex;
 
 use super::protocol::{SidecarMessage, SidecarRequest};
 use crate::commands::logs::{push_log, LogEntry};
@@ -26,6 +18,8 @@ const EMBEDDED_ENGINE: &[u8] = include_bytes!("../../binaries/trading-engine-x86
 
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 const EMBEDDED_ENGINE: &[u8] = &[];
+
+type EngineProcess = (tokio::sync::mpsc::Receiver<CommandEvent>, tauri_plugin_shell::process::CommandChild);
 
 /// Global sidecar child process handle
 static SIDECAR_CHILD: once_cell::sync::Lazy<
@@ -86,6 +80,151 @@ pub async fn init(_handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// When running `cargo run` / `tauri dev`, the app binary lives under `src-tauri/target/debug|release/`.
+/// From there we can find the repo/workspace root that contains `trading-engine/main.py` and `.venv/`.
+/// Returns `None` for packaged `.app` / installers where this layout does not apply.
+fn workspace_root_from_cargo_dev_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let profile_dir = exe.parent()?;
+    let name = profile_dir.file_name()?.to_str()?;
+    if name != "debug" && name != "release" {
+        return None;
+    }
+    let target_dir = profile_dir.parent()?;
+    let src_tauri_crate_dir = target_dir.parent()?;
+    Some(src_tauri_crate_dir.parent()?.to_path_buf())
+}
+
+fn preferred_venv_python(workspace: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let p = workspace.join(".venv").join("Scripts").join("python.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        for name in ["python3", "python"] {
+            let p = workspace.join(".venv").join("bin").join(name);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        None
+    }
+}
+
+/// Optional override: absolute Python to use + optional `QUANTDRIFT_ENGINE_MAIN` script path.
+fn try_spawn_from_env_python(handle: &AppHandle) -> Result<Option<EngineProcess>, String> {
+    let Ok(py_s) = std::env::var("QUANTDRIFT_PYTHON") else {
+        return Ok(None);
+    };
+    let py = PathBuf::from(py_s);
+    if !py.is_file() {
+        return Err(format!(
+            "QUANTDRIFT_PYTHON is set but is not a file: {}",
+            py.display()
+        ));
+    }
+    let main_py = std::env::var("QUANTDRIFT_ENGINE_MAIN")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            workspace_root_from_cargo_dev_exe()
+                .map(|r| r.join("trading-engine/main.py"))
+                .filter(|p| p.is_file())
+        });
+    let Some(main_py) = main_py else {
+        return Err(
+            "QUANTDRIFT_PYTHON is set but engine script not found; set QUANTDRIFT_ENGINE_MAIN to trading-engine/main.py"
+                .into(),
+        );
+    };
+    log::info!(
+        "Trading engine: QUANTDRIFT_PYTHON — {} {}",
+        py.display(),
+        main_py.display()
+    );
+    let shell = handle.shell();
+    let pair = shell
+        .command(&py)
+        .args([&main_py])
+        .spawn()
+        .map_err(|e| format!("Spawn trading engine (QUANTDRIFT_PYTHON): {}", e))?;
+    Ok(Some(pair))
+}
+
+/// Use `<workspace>/.venv/.../python` + `trading-engine/main.py` when running via `tauri dev` / `cargo run`.
+fn try_spawn_from_workspace_venv(handle: &AppHandle) -> Option<Result<EngineProcess, String>> {
+    let root = workspace_root_from_cargo_dev_exe()?;
+    let venv_py = preferred_venv_python(&root)?;
+    let main_py = root.join("trading-engine/main.py");
+    if !main_py.is_file() {
+        return None;
+    }
+    log::info!(
+        "Trading engine: workspace .venv — {} {}",
+        venv_py.display(),
+        main_py.display()
+    );
+    let shell = handle.shell();
+    Some(
+        shell
+            .command(&venv_py)
+            .args([&main_py])
+            .spawn()
+            .map_err(|e| format!("Spawn trading engine (.venv): {}", e)),
+    )
+}
+
+/// Spawn the copied `trading-engine` external binary (often a Python script with `#!/usr/bin/env python3`).
+fn spawn_trading_engine_sidecar(handle: &AppHandle) -> Result<EngineProcess, String> {
+    let shell = handle.shell();
+    match shell.sidecar("trading-engine") {
+        Ok(cmd) => match cmd.spawn() {
+            Ok(pair) => Ok(pair),
+            Err(e) => {
+                let msg = e.to_string();
+                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+                if msg.contains("not compatible")
+                    || msg.contains("os error 216")
+                    || msg.contains("not found")
+                    || msg.contains("The system cannot find")
+                {
+                    let exe_path = extract_embedded_engine()?;
+                    shell
+                        .command(exe_path.to_string_lossy().as_ref())
+                        .spawn()
+                        .map_err(|e2| format!("Failed to spawn embedded trading engine: {}", e2))
+                } else {
+                    Err(format!("Failed to spawn trading engine: {}", msg))
+                }
+                #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+                Err(format!("Failed to spawn trading engine: {}", msg))
+            }
+        },
+        Err(e) => {
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            {
+                log::warn!("Sidecar not found ({}), trying embedded engine", e);
+                let exe_path = extract_embedded_engine()?;
+                shell
+                    .command(exe_path.to_string_lossy().as_ref())
+                    .spawn()
+                    .map_err(|e2| format!("Failed to spawn embedded trading engine: {}", e2))
+            }
+            #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+            Err(format!(
+                "Trading engine not found: {}. Build with: cd trading-engine && python build.py",
+                e
+            ))
+        }
+    }
+}
+
 /// Extract embedded trading-engine to temp file and return path.
 fn extract_embedded_engine() -> Result<PathBuf, String> {
     if EMBEDDED_ENGINE.is_empty() {
@@ -102,8 +241,36 @@ fn extract_embedded_engine() -> Result<PathBuf, String> {
     Ok(exe_path)
 }
 
+/// Kill any stale Python trading-engine processes from previous sessions.
+/// This prevents TWS client ID 326 "already in use" errors when the app restarts.
+fn kill_stale_sidecar_processes() {
+    #[cfg(unix)]
+    {
+        // pkill -f "trading-engine/main.py" kills any Python process running the sidecar script
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", "-f", "trading-engine/main.py"])
+            .output();
+        // Small delay to let TWS release the client ID slot
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        log::info!("Killed stale trading-engine processes (if any)");
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, taskkill by image name
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "trading-engine.exe"])
+            .output();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        log::info!("Killed stale trading-engine.exe processes (if any)");
+    }
+}
+
 /// Spawn the Python trading engine sidecar.
-/// Tries Tauri sidecar first (when binaries/ exists); falls back to embedded exe for single-file distribution.
+///
+/// Order:
+/// 1. `QUANTDRIFT_PYTHON` (+ optional `QUANTDRIFT_ENGINE_MAIN`) if set.
+/// 2. Else `<workspace>/.venv/.../python` + `trading-engine/main.py` when running from `src-tauri/target/{debug,release}/` (so your venv deps like `loguru` are used).
+/// 3. Else Tauri `externalBin` `trading-engine` (script uses `#!/usr/bin/env python3` → **system** Python, not your shell-activated `.venv`).
 pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
     let mut child_lock = SIDECAR_CHILD.lock().await;
 
@@ -111,44 +278,24 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
         return Err("Sidecar is already running".into());
     }
 
-    let shell = handle.shell();
+    // Kill any stale Python sidecar processes from previous sessions before spawning.
+    // This prevents TWS error 326 "client id already in use" on app restart.
+    kill_stale_sidecar_processes();
 
-    // Try sidecar first (when running from build or installed bundle)
-    let (mut rx, child) = match shell.sidecar("trading-engine") {
-        Ok(cmd) => match cmd.spawn() {
-            Ok((rx, child)) => (rx, child),
-            Err(e) => {
-                let msg = e.to_string();
-                // Fallback to embedded when sidecar binary not found
-                #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-                if msg.contains("not compatible") || msg.contains("os error 216") || msg.contains("not found") || msg.contains("The system cannot find") {
-                    let exe_path = extract_embedded_engine()?;
-                    let (rx, child) = shell
-                        .command(exe_path.to_string_lossy().as_ref())
-                        .spawn()
-                        .map_err(|e2| format!("Failed to spawn embedded trading engine: {}", e2))?;
-                    (rx, child)
-                } else {
-                    return Err(format!("Failed to spawn trading engine: {}", msg));
-                }
-                #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-                return Err(format!("Failed to spawn trading engine: {}", msg));
+    let (mut rx, child) = match try_spawn_from_env_python(handle) {
+        Err(e) => return Err(e),
+        Ok(Some(pair)) => pair,
+        Ok(None) => match try_spawn_from_workspace_venv(handle) {
+            Some(Ok(pair)) => pair,
+            Some(Err(e)) => {
+                log::warn!(
+                    "Workspace .venv spawn failed ({}); falling back to packaged sidecar (uses system python3, not .venv)",
+                    e
+                );
+                spawn_trading_engine_sidecar(handle)?
             }
+            None => spawn_trading_engine_sidecar(handle)?,
         },
-        Err(e) => {
-            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-            {
-                log::warn!("Sidecar not found ({}), trying embedded engine", e);
-                let exe_path = extract_embedded_engine()?;
-                let (rx, child) = shell
-                    .command(exe_path.to_string_lossy().as_ref())
-                    .spawn()
-                    .map_err(|e2| format!("Failed to spawn embedded trading engine: {}", e2))?;
-                (rx, child)
-            }
-            #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-            return Err(format!("Trading engine not found: {}. Build with: cd trading-engine && python build.py", e));
-        }
     };
 
     let pid = child.pid();
@@ -166,8 +313,6 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
     // Spawn event listener task
     let app_handle = handle.clone();
     tauri::async_runtime::spawn(async move {
-        use tauri_plugin_shell::process::CommandEvent;
-
         // Get AppState from the managed state so we can update it from sidecar events
         let app_state: Arc<Mutex<AppState>> =
             app_handle.state::<Arc<Mutex<AppState>>>().inner().clone();
@@ -294,25 +439,15 @@ pub async fn is_running() -> bool {
     SIDECAR_CHILD.lock().await.is_some()
 }
 
-/// Pending request-response: request_id -> oneshot sender for result
-static PENDING_REQUESTS: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
-
-/// Send request to sidecar and wait for response (with 5s timeout).
-/// Returns the result from the sidecar, or error if timeout/sidecar not running.
-pub async fn send_request_and_wait(request: &SidecarRequest) -> Result<serde_json::Value, String> {
-    let (tx, rx) = oneshot::channel();
-    {
-        let mut pending = PENDING_REQUESTS.lock().map_err(|e| e.to_string())?;
-        pending.insert(request.id.clone(), tx);
+/// CALL/C/P/PUT → C or P so merges match TWS vs app emits.
+fn norm_opt_right(s: &str) -> String {
+    let u = s.trim().to_ascii_uppercase();
+    match u.as_str() {
+        "CALL" | "C" => "C".to_string(),
+        "PUT" | "P" => "P".to_string(),
+        _ if u.len() == 1 => u,
+        _ => u,
     }
-
-    send_request(request).await?;
-
-    tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-        .await
-        .map_err(|_| "Timeout waiting for sidecar response".to_string())?
-        .map_err(|_| "Sidecar response channel closed".to_string())?
 }
 
 /// Handle incoming messages from the sidecar.
@@ -347,92 +482,39 @@ async fn handle_sidecar_message(
                         .unwrap_or(0.0);
 
                     let mut app = state.lock().await;
-                    app.trading.daily_pnl.total = daily;
-                    app.trading.daily_pnl.unrealized = unrealized;
-                    app.trading.daily_pnl.realized = realized;
+                    let unchanged = (app.trading.daily_pnl.total - daily).abs() < 1e-9
+                        && (app.trading.daily_pnl.unrealized - unrealized).abs() < 1e-9
+                        && (app.trading.daily_pnl.realized - realized).abs() < 1e-9;
+                    if unchanged {
+                        should_forward = false;
+                    } else {
+                        app.trading.daily_pnl.total = daily;
+                        app.trading.daily_pnl.unrealized = unrealized;
+                        app.trading.daily_pnl.realized = realized;
+                    }
                 }
 
                 "position_update" => {
-                    if let Ok(pos) = serde_json::from_value::<Position>(event.data.clone()) {
-                        let norm_exp = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
-                        let norm_right = |r: &str| -> String {
-                            let u = r.to_uppercase();
-                            if u.starts_with('C') {
-                                "C".to_string()
-                            } else if u.starts_with('P') {
-                                "P".to_string()
-                            } else {
-                                r.to_string()
-                            }
-                        };
-
-                        // Guard: skip updates for recently-closed positions to prevent ghost re-adds
-                        let rc_key = format!(
-                            "{}-{}-{}-{}",
-                            pos.symbol,
-                            format!("{:.0}", pos.strike),
-                            norm_right(&pos.right),
-                            norm_exp(&pos.expiry)
-                        );
-                        let is_recently_closed = {
-                            let rc = RECENTLY_CLOSED.lock().await;
-                            rc.get(&rc_key).map_or(false, |ts| ts.elapsed() < RECENTLY_CLOSED_TTL)
-                        };
-                        if is_recently_closed {
-                            log::debug!("Skipping position_update for recently-closed: {}", rc_key);
-                            should_forward = false;
-                        } else {
+                    match serde_json::from_value::<Position>(event.data.clone()) {
+                        Ok(pos) => {
                             let mut app = state.lock().await;
-                            if let Some(existing) = app
-                                .trading
-                                .positions
-                                .iter_mut()
-                                .find(|p| {
-                                    p.symbol == pos.symbol
-                                        && (p.strike - pos.strike).abs() < 0.01
-                                        && norm_right(&p.right) == norm_right(&pos.right)
-                                        && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
-                                })
-                            {
+                            let norm_exp =
+                                |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
+                            let nr = norm_opt_right(&pos.right);
+                            if let Some(existing) = app.trading.positions.iter_mut().find(|p| {
+                                p.symbol == pos.symbol
+                                    && (p.strike - pos.strike).abs() < 0.01
+                                    && norm_opt_right(&p.right) == nr
+                                    && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
+                            }) {
                                 *existing = pos;
                             } else {
                                 app.trading.positions.push(pos);
                             }
                         }
-                    }
-                }
-
-                "positions_snapshot" => {
-                    // Batch position update: replace all positions at once (1 IPC call)
-                    // Recently-closed positions are filtered out to prevent ghost re-adds
-                    if let Some(arr) = event.data.get("positions").and_then(|v| v.as_array()) {
-                        let rc = RECENTLY_CLOSED.lock().await;
-                        let norm_exp_fn = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
-                        let norm_right_fn = |r: &str| -> String {
-                            let u = r.to_uppercase();
-                            if u.starts_with('C') { "C".to_string() }
-                            else if u.starts_with('P') { "P".to_string() }
-                            else { r.to_string() }
-                        };
-                        let mut new_positions = Vec::new();
-                        for item in arr {
-                            if let Ok(pos) = serde_json::from_value::<Position>(item.clone()) {
-                                let rc_key = format!(
-                                    "{}-{}-{}-{}",
-                                    pos.symbol,
-                                    format!("{:.0}", pos.strike),
-                                    norm_right_fn(&pos.right),
-                                    norm_exp_fn(&pos.expiry)
-                                );
-                                if rc.get(&rc_key).map_or(false, |ts| ts.elapsed() < RECENTLY_CLOSED_TTL) {
-                                    continue; // skip recently-closed
-                                }
-                                new_positions.push(pos);
-                            }
+                        Err(e) => {
+                            log::warn!("position_update deserialize failed (Active Positions skip): {}", e);
                         }
-                        drop(rc);
-                        let mut app = state.lock().await;
-                        app.trading.positions = new_positions;
                     }
                 }
 
@@ -467,10 +549,9 @@ async fn handle_sidecar_message(
                     if let Some(pnl_val) = pnl {
                         if pnl_val > 0.0 {
                             app.trading.winning_trades += 1;
-                        } else if pnl_val < 0.0 {
+                        } else {
                             app.trading.losing_trades += 1;
                         }
-                        // pnl == 0: break-even, don't count as win or loss
                     }
 
                     // Update matching open trade in trades_today with pnl so hydration returns complete data
@@ -505,6 +586,7 @@ async fn handle_sidecar_message(
 
                     // Remove matching position (by symbol + strike + right for options)
                     if !closed_symbol.is_empty() {
+                        let closed_nr = norm_opt_right(closed_right);
                         app.trading.positions.retain(|p| {
                             if p.symbol != closed_symbol {
                                 return true;
@@ -514,24 +596,13 @@ async fn handle_sidecar_message(
                                     return true;
                                 }
                             }
-                            if !closed_right.is_empty() && p.right != closed_right {
+                            if !closed_right.is_empty()
+                                && norm_opt_right(&p.right) != closed_nr
+                            {
                                 return true;
                             }
                             false
                         });
-
-                        // Add to recently-closed guard so position_update doesn't re-add this position
-                        let rc_key = format!(
-                            "{}-{}-{}-{}",
-                            closed_symbol,
-                            closed_strike.map_or("0".to_string(), |s| format!("{:.0}", s)),
-                            norm_right(closed_right),
-                            closed_expiry
-                        );
-                        let mut rc = RECENTLY_CLOSED.lock().await;
-                        rc.insert(rc_key, std::time::Instant::now());
-                        // Prune expired entries
-                        rc.retain(|_, ts| ts.elapsed() < RECENTLY_CLOSED_TTL);
                     }
                 }
 
@@ -550,11 +621,6 @@ async fn handle_sidecar_message(
                     app.trading.last_signal = Some(signal_str);
                     app.trading.last_signal_time =
                         Some(chrono::Utc::now().to_rfc3339());
-                }
-
-                "signal_data" => {
-                    let mut app = state.lock().await;
-                    app.trading.signal_data = Some(event.data.clone());
                 }
 
                 "account_metrics" => {
@@ -653,16 +719,6 @@ async fn handle_sidecar_message(
         }
 
         SidecarMessage::Response(response) => {
-            // Complete any pending request waiting for this response
-            if let Ok(mut pending) = PENDING_REQUESTS.lock() {
-                if let Some(tx) = pending.remove(&response.id) {
-                    let result = match &response.error {
-                        Some(err) => Err(err.message.clone()),
-                        None => Ok(response.result.clone().unwrap_or(serde_json::Value::Array(vec![]))),
-                    };
-                    let _ = tx.send(result);
-                }
-            }
             // Forward responses with a consistent event name
             if let Err(e) = handle.emit("sidecar:response", &response) {
                 log::error!("Failed to emit response: {}", e);

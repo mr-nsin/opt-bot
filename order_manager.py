@@ -13,6 +13,7 @@ try:
         emit_order_update as _emit_order_update,
         emit_trade_executed as _emit_trade_executed,
         emit_trade_closed as _emit_trade_closed,
+        emit_position as _emit_position,
     )
 except ImportError:
     def _emit_log(message, level="INFO", category="trading"):
@@ -23,6 +24,20 @@ except ImportError:
         pass
     def _emit_trade_closed(*args, **kwargs):
         pass
+    def _emit_position(*args, **kwargs):
+        pass
+
+
+def _norm_right_letter(r: Optional[str]) -> str:
+    """Normalize CALL/PUT/C/P to C or P for UI + Rust position merge."""
+    if not r:
+        return ""
+    u = str(r).strip().upper()
+    if u in ("CALL", "C"):
+        return "C"
+    if u in ("PUT", "P"):
+        return "P"
+    return u[:1] if u else ""
 
 
 
@@ -49,7 +64,6 @@ class OrderManager:
         self.order_id_tick_lookup = {}
         self.recent_trade_closures = {}  # Track cooldowns
         self.order_lock = Lock()
-        self._tp_sl_locks: dict = {}  # Per-order locks for TP/SL checks (replaces tick.busy)
 
     def set_client(self, client: TwsApiClient) -> None:
         """
@@ -61,59 +75,26 @@ class OrderManager:
         self.api_client = client
 
     def _option_key(self, order: OptionOrder) -> str:
-        """Composite key for option orders (symbol+expiry+right+strike). Uses normalized expiry and right
-        so the same option never gets multiple cache entries when formats differ (e.g. 20260313 vs 2026-03-13)."""
-        exp = self._norm_expiry(order.expiration or "")
-        r = self._norm_right(order.right or "")
-        return f"{order.symbol}{exp}{r}{order.strike}"
+        """Composite key for option orders (symbol+expiry+right+strike) to support multiple positions per underlying."""
+        return getattr(order, "option_symbol", None) or f"{order.symbol}{order.expiration}{order.right}{order.strike}"
 
-    def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None, expiry: str = None, reason: str = "manual") -> bool:
+    def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None, expiry: str = None, reason: str = "manual") -> None:
         """
         Close an open position by symbol (and optionally strike/right/expiry for options).
         Used by Tauri/sidecar when user clicks Close, and by monitor_positions_loop.
-        Returns True if close order was placed, False otherwise.
         """
         if not self.api_client or not self.api_client.isConnected():
             logger.warning("Cannot close position: TWS not connected")
-            return False
+            return
         order = self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
         if not order:
             logger.warning(f"No managed position found for symbol {symbol}" + (f" strike={strike} right={right}" if strike or right else ""))
-            return False
+            return
         option_tick = self.order_id_tick_lookup.get(order.id)
         if option_tick is None:
             option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
         logger.info(f"CLOSE POSITION REQUEST: {order.option_symbol} — reason={reason}")
         self.close_position(order=order, option_tick=option_tick)
-        return True
-
-    def close_positions_by_right(self, right: str) -> int:
-        """
-        Close all managed positions matching the given right (CALL or PUT).
-        Returns the number of positions closed.
-        """
-        if not self.api_client or not self.api_client.isConnected():
-            logger.warning("Cannot close positions: TWS not connected")
-            return 0
-        right_norm = (right or "").upper()
-        if right_norm not in ("CALL", "PUT", "C", "P"):
-            logger.warning(f"Invalid right for close_positions_by_right: {right}")
-            return 0
-        r_match = "C" if right_norm in ("CALL", "C") else "P"
-        with self.order_lock:
-            orders = [o for o in self.entry_orders_cache.values() if o and (o.right or "")[0:1].upper() == r_match]
-        count = 0
-        for order in orders:
-            try:
-                option_tick = self.order_id_tick_lookup.get(order.id)
-                if option_tick is None:
-                    option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
-                self.close_position(order=order, option_tick=option_tick)
-                count += 1
-            except Exception as ex:
-                logger.error(f"Error closing position {order.option_symbol}: {ex}", exc_info=True)
-        logger.info(f"Close {right_norm} positions: {count} closed")
-        return count
 
     def close_all_positions(self) -> None:
         """
@@ -158,37 +139,28 @@ class OrderManager:
         return r[0] if r else ""
 
     def _find_entry_order(self, symbol: str, strike: float = None, right: str = None, expiry: str = None) -> Optional[OptionOrder]:
-        """Find entry order matching position (symbol, strike, right, expiry).
-        If expiry formats differ (e.g. UI vs TWS), falls back to symbol+strike+right."""
+        """Find entry order matching position (symbol, strike, right, expiry)."""
         if not symbol:
             return None
         pos_exp = self._norm_expiry(expiry or "")
         pos_right = self._norm_right(right or "")
         pos_strike = float(strike) if strike is not None else None
         with self.order_lock:
-            orders = [o for o in self.entry_orders_cache.values() if o]
-
-        def _row_match(order: OptionOrder, require_expiry: bool) -> bool:
-            if (order.symbol or "").upper() != (symbol or "").upper():
-                return False
-            if pos_strike is not None and order.strike is not None:
-                if abs(float(order.strike) - pos_strike) > 0.01:
-                    return False
-            if pos_right and order.right:
-                if self._norm_right(order.right) != pos_right:
-                    return False
-            if require_expiry and pos_exp:
-                if order.expiration and self._norm_expiry(order.expiration) != pos_exp:
-                    return False
-            return True
-
-        for order in orders:
-            if _row_match(order, require_expiry=True):
+            for order in self.entry_orders_cache.values():
+                if not order:
+                    continue
+                if (order.symbol or "").upper() != (symbol or "").upper():
+                    continue
+                if pos_strike is not None and order.strike is not None:
+                    if abs(float(order.strike) - pos_strike) > 0.01:
+                        continue
+                if pos_right and order.right:
+                    if self._norm_right(order.right) != pos_right:
+                        continue
+                if pos_exp and order.expiration:
+                    if self._norm_expiry(order.expiration) != pos_exp:
+                        continue
                 return order
-        if pos_strike is not None and pos_right:
-            for order in orders:
-                if _row_match(order, require_expiry=False):
-                    return order
         return None
 
     def check_exit_conditions(self, pos) -> None:
@@ -210,19 +182,6 @@ class OrderManager:
             )
             return
         option_tick = self.order_id_tick_lookup.get(entry_order.id)
-        # Fallback: when no tick in lookup (e.g. after restart, tick never stored), try get_options_data
-        if option_tick is None and self.api_client and hasattr(self.api_client, "get_options_data"):
-            try:
-                exp = self._norm_expiry(expiry or "")
-                r = self._norm_right(right or "")
-                if exp and r:
-                    option_tick = self.api_client.get_options_data(symbol, exp, r, float(strike or 0))
-                    if option_tick:
-                        # Store for future lookups so we don't re-fetch every 0.1s
-                        self.order_id_tick_lookup[entry_order.id] = option_tick
-                        logger.info(f"Position {symbol} {strike} {right}: using get_options_data fallback tick for TP/SL")
-            except Exception as e:
-                logger.debug(f"get_options_data fallback failed for {symbol} {strike}: {e}")
         if option_tick is None:
             logger.debug(f"Position {symbol} {strike} {right}: matched order but NO TICK")
             return
@@ -238,7 +197,6 @@ class OrderManager:
                 self.entry_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
-        self._tp_sl_locks.pop(order.id, None)
 
     def add_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
@@ -294,26 +252,11 @@ class OrderManager:
             if status == 'filled' and trade.contract is not None:
                 contract = trade.contract
                 logger.info(f"Untracked order {order_id} filled — emitting trade_closed for {contract.symbol}")
-                exp_raw = getattr(contract, 'lastTradeDateOrContractMonth', '') or ""
-                exp = str(exp_raw).replace("-", "").replace(" ", "").strip()
-                sym = contract.symbol or ""
-                rgt = getattr(contract, 'right', '') or ""
-                try:
-                    import BOT
-                    sk = BOT._side_cooldown_key(sym, rgt)
-                    BOT.trade_time_dict[sk] = datetime.datetime.now()
-                    logger.info(f"Cooldown recorded for {sk} (untracked exit)")
-                except Exception:
-                    pass
-                # Clean up entry cache so we don't show ghost positions when TWS has none
-                entry_order = self._find_entry_order(sym, strike=float(getattr(contract, 'strike', 0) or 0), right=rgt, expiry=exp)
-                if entry_order:
-                    self.del_entry_order(entry_order, self.order_id_tick_lookup.get(entry_order.id))
                 _emit_trade_closed({
-                    "symbol": sym,
-                    "right": rgt,
+                    "symbol": contract.symbol or "",
+                    "right": getattr(contract, 'right', '') or "",
                     "strike": float(getattr(contract, 'strike', 0) or 0),
-                    "expiry": exp_raw,
+                    "expiry": getattr(contract, 'lastTradeDateOrContractMonth', '') or "",
                     "quantity": int(trade.executed_qty or 0),
                     "pnl": 0,
                     "entry_price": 0,
@@ -321,8 +264,7 @@ class OrderManager:
                     "timestamp": datetime.datetime.now().isoformat(),
                 })
             else:
-                # Untracked order (e.g. from reqGlobalCancel or previous session)
-                logger.warning(f"Order: {order_id} not found in orders cache (untracked or already closed)")
+                logger.error(f"Order: {order_id} not found")
             return
 
         logger.info(f"{status} - {order_id} - {order}")
@@ -399,20 +341,17 @@ class OrderManager:
 
         # If this was an exit order, deactivate the corresponding entry order
         if order.exit_order == True:
-            # Find the corresponding entry order first (for symbol/right → side cooldown key)
-            entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
-
+            # Assign last trade time
             option_tick.last_trade_time = datetime.datetime.now()
+            key = f"{order.symbol}_{order.right}"
+            self.recent_trade_closures[key] = option_tick.last_trade_time
+            logger.info(f"Cooldown recorded for {key} at {self.recent_trade_closures[key]}")
+            
             import BOT
-            sym_cd = (entry_order.symbol if entry_order else None) or order.symbol
-            right_cd = (entry_order.right if entry_order else None) or order.right
-            side_key = BOT._side_cooldown_key(sym_cd, right_cd)
-            self.recent_trade_closures[side_key] = option_tick.last_trade_time
-            logger.info(f"Cooldown recorded for {side_key} at {self.recent_trade_closures[side_key]}")
+            BOT.trade_time_dict[key] = option_tick.last_trade_time
 
-            BOT.trade_time_dict[side_key] = option_tick.last_trade_time
-
-            # entry_order already looked up above
+            # Find the corresponding entry order and deactivate it
+            entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
             logger.info(f'EXIT Order ({order.id}) [{entry_order.id if entry_order else "?"}] {order.option_symbol} {order.order_side} {order.order_type} {order.order_qty}@{order.order_price} was {status}')
             # Calculate P&L for the closed trade
             entry_avg = entry_order.average_price if entry_order else 0
@@ -425,10 +364,6 @@ class OrderManager:
             if entry_order is not None:
                 option_tick.active_order = None
                 entry_order.active = False
-
-                # Clean up caches so we don't show ghost positions when TWS has none
-                self.del_entry_order(entry_order, option_tick)
-                self.del_exit_order(order, option_tick)
 
                 # Notify UI that position was closed (trade_closed). Use underlying symbol to match UI positions.
                 _emit_trade_closed({
@@ -467,6 +402,25 @@ class OrderManager:
                 "status": "open",
                 "timestamp": datetime.datetime.now().isoformat(),
             })
+            # Active Positions uses `position_update` (Rust AppState + get_positions), not `trade_executed`.
+            # TWS position() callbacks can lag or be filtered by account; sync UI immediately on our fill.
+            pos_payload = {
+                "symbol": order.symbol or "",
+                "strike": float(order.strike or 0),
+                "right": _norm_right_letter(order.right),
+                "expiry": (order.expiration or "").replace("-", "").strip(),
+                "quantity": int(order.executed_qty or 0),
+                "avg_price": round(float(order.average_price or 0), 4),
+                "current_price": round(float(order.average_price or 0), 4),
+                "pnl": 0.0,
+                "pnl_percent": 0.0,
+            }
+            if order.stoploss_price is not None and float(order.stoploss_price) > 0:
+                pos_payload["stoploss_price"] = round(float(order.stoploss_price), 2)
+            pp = getattr(order, "current_profit_price", None) or order.profit_price
+            if pp is not None and float(pp) > 0:
+                pos_payload["profit_price"] = round(float(pp), 2)
+            _emit_position(pos_payload)
 
 
     def close_position(self, order: OptionOrder, option_tick: Tick) -> None:
@@ -557,66 +511,81 @@ class OrderManager:
             self.save_order(order=exit_order)
         except Exception as ex:
             self.del_exit_order(order=exit_order, options_tick=option_tick)
+            option_tick.busy = False
             logger.error(f"Placing Exit order failed: {ex}", exc_info=True)
 
     def check_and_close_position(self, tick: Tick) -> None:
         """
         Check if the current position should be closed based on the given tick data.
-        Uses per-order locks instead of tick.busy to avoid silently dropping ticks.
+
+        Args:
+            tick (Tick): The latest tick data for the position's underlying instrument.
+
+        Returns:
+            None
+
+        Raises:
+            N/A
+
+        Example:
+            check_and_close_position(my_tick)
+
+        Notes:
+            - The function checks if an exit order has already been placed for the current position.
+            - If an exit order has already been placed, the function logs a message and returns.
+            - If the current position is filled, the function checks if the take profit or stop loss conditions have been met.
+            - If the take profit condition is met, the position is closed using a market order.
+            - If the stop loss condition is met, the position is closed using a market order.
         """
-        order = tick.active_order
-        if order is None:
+
+        if tick.busy:
             return
-
-        # Per-order lock: waits briefly (10ms) instead of silently dropping the tick
-        order_id = getattr(order, 'id', id(order))
-        if order_id not in self._tp_sl_locks:
-            self._tp_sl_locks[order_id] = Lock()
-        lock = self._tp_sl_locks[order_id]
-
-        if not lock.acquire(timeout=0.01):
-            # Another thread is checking this order's TP/SL — skip but don't drop permanently
-            return
-
+        
+        tick.busy = True
+        
         try:
+            order = tick.active_order
+            
+            # check if exit order is not already placed.
+            if order is None:
+                tick.busy = False
+                return 
+
             if order.exit_placed == True:
                 logger.info(f"{order.option_symbol} EXIT order already placed.")
+                tick.busy = False
                 return
 
+            # check if order is already filled
             if order.order_status != "filled":
                 logger.info(f"{order.option_symbol} Order not filled yet: {order.order_status}")
+                tick.busy = False
                 return
-
+                
+            # Valdate we have valid price data
             if tick.last <= 0 and tick.bid <= 0:
                 logger.warning(f"{order.option_symbol} No valid price data available")
+                tick.busy = False
                 return
-
+                
+            # ✓ ADD THIS: Log comprehensive status every time we check
             self.log_order_status(order=order, tick=tick)
-
+            
             self.check_take_profit(tick=tick, order=order, option_tick=tick)
 
+
+            """if tick.active_order.order_status == "filled":
+                # check take profit
+                self.check_take_profit(tick=tick, order=order, option_tick=tick)"""
+            
+            # check stoploss
             if not order.exit_placed:
                 self.check_stop_loss(last_price=tick.last, order=order, option_tick=tick)
-
+                
         except Exception as ex:
             logger.error(f"Error in check_and_close_position for {tick.symbol}: {ex}", exc_info=True)
         finally:
-            lock.release()
-
-    def _cap_trailing_tp(self, order: OptionOrder, is_long: bool) -> None:
-        """Keep trailing TP within ATR cap vs entry (max_tp_price / symmetric floor for short)."""
-        cap = getattr(order, "max_tp_price", None)
-        if cap is None:
-            return
-        entry = float(order.order_price or 0)
-        if is_long:
-            if order.current_profit_price > cap:
-                order.current_profit_price = cap
-        else:
-            if entry > 0:
-                floor_tp = round(2 * entry - float(cap), 2)
-                if order.current_profit_price < floor_tp:
-                    order.current_profit_price = floor_tp
+            tick.busy = False
 
     def check_take_profit(self, tick: Tick, order: OptionOrder, option_tick: Tick) -> None:
         """
@@ -728,7 +697,6 @@ class OrderManager:
                     )
                 order.profit_trigger = True
                 order.current_profit_price = round(exit_price + order.profit_increment, 2)
-                self._cap_trailing_tp(order, is_long=True)
                 logger.info(f" Trailing Profit Updated: Next target: ${order.current_profit_price:.2f}")
                 _emit_log(
                     f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
@@ -757,7 +725,6 @@ class OrderManager:
                     )
                 order.profit_trigger = True
                 order.current_profit_price = round(exit_price - order.profit_increment, 2)
-                self._cap_trailing_tp(order, is_long=False)
                 logger.info(f" Trailing Profit Updated [SHORT]: Next target: ${order.current_profit_price:.2f}")
                 _emit_log(
                     f"TP TRAIL: {order.option_symbol} — new target ${order.current_profit_price:.2f} (increment ${order.profit_increment:.2f})",
@@ -810,19 +777,13 @@ class OrderManager:
             logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
             return
 
-        sl_price = float(order.stoploss_price or 0)
-        floor_sl = getattr(order, "min_sl_price", None)
-        # Long options: do not allow a stop wider than ATR cap (SL premium must stay >= min_sl_price)
-        if floor_sl is not None and is_long:
-            sl_price = max(sl_price, float(floor_sl))
-
         # Long: close when exit <= SL. Short: close when exit >= SL
-        sl_hit = exit_price <= sl_price if is_long else exit_price >= sl_price
+        sl_hit = exit_price <= order.stoploss_price if is_long else exit_price >= order.stoploss_price
         cond_str = f"exit<=SL" if is_long else f"exit>=SL"
         logger.info(f"STOPLOSS CHECK - Order({order.id}) {order.option_symbol} [{order_side}]: "
             f"Exit: ${exit_price:.2f}, Bid: ${option_tick.bid:.2f}, Ask: ${option_tick.ask:.2f}, Last: ${option_tick.last:.2f}, "
-            f"StopLoss: ${sl_price:.2f} | "
-            f"CONDITION ({cond_str} → close): {sl_hit} [${exit_price:.2f} {'<=' if is_long else '>='} ${sl_price:.2f}]")
+            f"StopLoss: ${order.stoploss_price:.2f} | "
+            f"CONDITION ({cond_str} → close): {sl_hit} [${exit_price:.2f} {'<=' if is_long else '>='} ${order.stoploss_price:.2f}]")
         
         # Use the higher price, bid or last price
         #exit_price = option_tick.last if option_tick.last >= option_tick.bid else option_tick.bid
@@ -834,15 +795,15 @@ class OrderManager:
         # Execute stop loss when condition is met
         if sl_hit:
             op = "≤" if is_long else "≥"
-            logger.info(f"✓ HIT STOPLOSS: Order({order.id}) {order.option_symbol}: Exit ${exit_price:.2f} {op} SL ${sl_price:.2f} — CLOSING")
+            logger.info(f"✓ HIT STOPLOSS: Order({order.id}) {order.option_symbol}: Exit ${exit_price:.2f} {op} SL ${order.stoploss_price:.2f} — CLOSING")
             _emit_log(
-                f"HIT STOP LOSS: {order.option_symbol} — exit ${exit_price:.2f} {op} SL ${sl_price:.2f} — CLOSING",
+                f"HIT STOP LOSS: {order.option_symbol} — exit ${exit_price:.2f} {op} SL ${order.stoploss_price:.2f} — CLOSING",
                 "WARN", "order"
             )
             self.close_position(order=order, option_tick=option_tick)
 
         # Show distance to stoploss for monitoring (positive = safe for long, negative = safe for short)
-        distance_to_sl = (exit_price - sl_price) if is_long else (sl_price - exit_price)
+        distance_to_sl = (exit_price - order.stoploss_price) if is_long else (order.stoploss_price - exit_price)
         distance_pct = (distance_to_sl / order.order_price) * 100 if order.order_price > 0 else 0
         logger.info(f"Distance to StopLoss: ${distance_to_sl:.2f} ({distance_pct:.1f}% of entry)")
 
