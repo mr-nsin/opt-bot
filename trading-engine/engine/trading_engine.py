@@ -581,6 +581,27 @@ class TradingEngine:
         """If disconnected, try to reconnect to TWS periodically so starting TWS later is detected."""
         if self.connected or not self._client or not self.config:
             return
+
+        # Before attempting reconnect, check if the client is actually still connected
+        # (TWS may have sent connectionClosed but the socket is still alive)
+        if self._client.isConnected():
+            self.connected = True
+            emit_connection_status(True, "TWS connection restored (was marked disconnected)")
+            return
+
+        # Also check BOT.client — it may be a working connection
+        try:
+            import BOT
+            bot_client = getattr(BOT, "client", None)
+            if bot_client and bot_client.isConnected():
+                self._client = bot_client
+                self.connected = True
+                self._data_feed_started = True
+                emit_connection_status(True, "Using BOT.client connection")
+                return
+        except Exception:
+            pass
+
         now = time.time()
         if now - self._last_tws_reconnect_attempt < self._tws_reconnect_interval_sec:
             return
@@ -888,10 +909,20 @@ class TradingEngine:
                 if self._client and getattr(self._client, "isConnected", None):
                     if self._client.isConnected() and not self.connected:
                         self.connected = True
-                        self._account_metrics_first_emit_done = False  # Emit account metrics as soon as we have data
+                        self._account_metrics_first_emit_done = False
                         emit_connection_status(True, "Reconnected to TWS")
                         emit_log("TWS connection restored", "INFO", "system")
                     elif not self._client.isConnected() and self.connected:
+                        # Before marking disconnected, check if BOT.client is still alive
+                        # The engine's _client ref may be stale after a failed reconnect
+                        try:
+                            import BOT
+                            bc = getattr(BOT, "client", None)
+                            if bc and bc.isConnected():
+                                self._client = bc
+                                continue
+                        except Exception:
+                            pass
                         self.connected = False
                         self._data_feed_started = False
                         self._account_metrics_first_emit_done = False
@@ -932,10 +963,22 @@ class TradingEngine:
                     self._last_data_status_time = now
                     self._emit_data_status()
 
-                # Every 5s: emit current positions so UI Positions page stays in sync
-                if self._client and self.connected and now - self._last_positions_time >= self._positions_interval_sec:
+                # Every 0.5s: emit current positions so UI Positions page stays in sync
+                if self._client and now - self._last_positions_time >= self._positions_interval_sec:
                     self._last_positions_time = now
-                    self._emit_positions()
+                    if not self.connected:
+                        # Even when engine reports disconnected, BOT.client may be connected
+                        # (the engine's _try_connect_tws failed with error 326 but BOT.client works)
+                        try:
+                            import BOT
+                            if BOT.client and BOT.client.isConnected():
+                                self._client = BOT.client
+                                self.connected = True
+                                emit_connection_status(True, "Recovered connection via BOT.client")
+                        except Exception:
+                            pass
+                    if self.connected:
+                        self._emit_positions()
 
                 # Every 30s: heartbeat to show the engine is alive and scanning for signals
                 if self._data_feed_started and now - self._last_signal_heartbeat_time >= self._signal_heartbeat_interval_sec:
