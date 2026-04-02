@@ -1,10 +1,18 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{Mutex, oneshot};
+
+/// Recently-closed position keys with timestamps.
+/// Prevents position_update from re-adding positions that trade_closed just removed.
+static RECENTLY_CLOSED: once_cell::sync::Lazy<
+    Arc<Mutex<HashMap<String, std::time::Instant>>>,
+> = once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+const RECENTLY_CLOSED_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
 use super::protocol::{SidecarMessage, SidecarRequest};
 use crate::commands::logs::{push_log, LogEntry};
@@ -339,21 +347,13 @@ async fn handle_sidecar_message(
                         .unwrap_or(0.0);
 
                     let mut app = state.lock().await;
-                    let unchanged = (app.trading.daily_pnl.total - daily).abs() < 1e-9
-                        && (app.trading.daily_pnl.unrealized - unrealized).abs() < 1e-9
-                        && (app.trading.daily_pnl.realized - realized).abs() < 1e-9;
-                    if unchanged {
-                        should_forward = false;
-                    } else {
-                        app.trading.daily_pnl.total = daily;
-                        app.trading.daily_pnl.unrealized = unrealized;
-                        app.trading.daily_pnl.realized = realized;
-                    }
+                    app.trading.daily_pnl.total = daily;
+                    app.trading.daily_pnl.unrealized = unrealized;
+                    app.trading.daily_pnl.realized = realized;
                 }
 
                 "position_update" => {
                     if let Ok(pos) = serde_json::from_value::<Position>(event.data.clone()) {
-                        let mut app = state.lock().await;
                         let norm_exp = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
                         let norm_right = |r: &str| -> String {
                             let u = r.to_uppercase();
@@ -365,21 +365,74 @@ async fn handle_sidecar_message(
                                 r.to_string()
                             }
                         };
-                        if let Some(existing) = app
-                            .trading
-                            .positions
-                            .iter_mut()
-                            .find(|p| {
-                                p.symbol == pos.symbol
-                                    && (p.strike - pos.strike).abs() < 0.01
-                                    && norm_right(&p.right) == norm_right(&pos.right)
-                                    && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
-                            })
-                        {
-                            *existing = pos;
+
+                        // Guard: skip updates for recently-closed positions to prevent ghost re-adds
+                        let rc_key = format!(
+                            "{}-{}-{}-{}",
+                            pos.symbol,
+                            format!("{:.0}", pos.strike),
+                            norm_right(&pos.right),
+                            norm_exp(&pos.expiry)
+                        );
+                        let is_recently_closed = {
+                            let rc = RECENTLY_CLOSED.lock().await;
+                            rc.get(&rc_key).map_or(false, |ts| ts.elapsed() < RECENTLY_CLOSED_TTL)
+                        };
+                        if is_recently_closed {
+                            log::debug!("Skipping position_update for recently-closed: {}", rc_key);
+                            should_forward = false;
                         } else {
-                            app.trading.positions.push(pos);
+                            let mut app = state.lock().await;
+                            if let Some(existing) = app
+                                .trading
+                                .positions
+                                .iter_mut()
+                                .find(|p| {
+                                    p.symbol == pos.symbol
+                                        && (p.strike - pos.strike).abs() < 0.01
+                                        && norm_right(&p.right) == norm_right(&pos.right)
+                                        && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
+                                })
+                            {
+                                *existing = pos;
+                            } else {
+                                app.trading.positions.push(pos);
+                            }
                         }
+                    }
+                }
+
+                "positions_snapshot" => {
+                    // Batch position update: replace all positions at once (1 IPC call)
+                    // Recently-closed positions are filtered out to prevent ghost re-adds
+                    if let Some(arr) = event.data.get("positions").and_then(|v| v.as_array()) {
+                        let rc = RECENTLY_CLOSED.lock().await;
+                        let norm_exp_fn = |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
+                        let norm_right_fn = |r: &str| -> String {
+                            let u = r.to_uppercase();
+                            if u.starts_with('C') { "C".to_string() }
+                            else if u.starts_with('P') { "P".to_string() }
+                            else { r.to_string() }
+                        };
+                        let mut new_positions = Vec::new();
+                        for item in arr {
+                            if let Ok(pos) = serde_json::from_value::<Position>(item.clone()) {
+                                let rc_key = format!(
+                                    "{}-{}-{}-{}",
+                                    pos.symbol,
+                                    format!("{:.0}", pos.strike),
+                                    norm_right_fn(&pos.right),
+                                    norm_exp_fn(&pos.expiry)
+                                );
+                                if rc.get(&rc_key).map_or(false, |ts| ts.elapsed() < RECENTLY_CLOSED_TTL) {
+                                    continue; // skip recently-closed
+                                }
+                                new_positions.push(pos);
+                            }
+                        }
+                        drop(rc);
+                        let mut app = state.lock().await;
+                        app.trading.positions = new_positions;
                     }
                 }
 
@@ -466,6 +519,19 @@ async fn handle_sidecar_message(
                             }
                             false
                         });
+
+                        // Add to recently-closed guard so position_update doesn't re-add this position
+                        let rc_key = format!(
+                            "{}-{}-{}-{}",
+                            closed_symbol,
+                            closed_strike.map_or("0".to_string(), |s| format!("{:.0}", s)),
+                            norm_right(closed_right),
+                            closed_expiry
+                        );
+                        let mut rc = RECENTLY_CLOSED.lock().await;
+                        rc.insert(rc_key, std::time::Instant::now());
+                        // Prune expired entries
+                        rc.retain(|_, ts| ts.elapsed() < RECENTLY_CLOSED_TTL);
                     }
                 }
 

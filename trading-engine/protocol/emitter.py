@@ -55,6 +55,11 @@ def emit_position(position_data: dict):
     send_event("position_update", position_data)
 
 
+def emit_positions_snapshot(positions: list):
+    """Emit all positions as a single batch event (1 IPC call instead of N)."""
+    send_event("positions_snapshot", {"positions": positions})
+
+
 def emit_pnl(daily_pnl: float, unrealized: float, realized: float):
     send_event("pnl_update", {
         "daily_pnl": daily_pnl,

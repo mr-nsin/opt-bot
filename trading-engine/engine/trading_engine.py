@@ -23,7 +23,7 @@ if PARENT_DIR not in sys.path:
 
 from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
-    emit_pnl, emit_position, emit_signal, emit_trade_executed,
+    emit_pnl, emit_position, emit_positions_snapshot, emit_signal, emit_trade_executed,
     emit_trade_closed, emit_order_update, emit_error,
     emit_data_status, emit_account_metrics, emit_signal_data,
 )
@@ -55,12 +55,16 @@ class TradingEngine:
         self._account_metrics_interval_sec: float = 5.0
         self._account_metrics_first_emit_done: bool = False
         self._last_positions_time: float = 0
-        self._positions_interval_sec: float = 0.5  # Faster position/price updates
+        self._positions_interval_sec: float = 0.1  # 10 updates/sec for near-realtime UI prices
         self._last_signal_heartbeat_time: float = 0
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
-        self._pnl_throttle_sec: float = 0.5  # Emit PnL at most twice per second
+        self._pnl_throttle_sec: float = 0.1  # 10 PnL updates/sec to match position emission rate
         self._close_all_thread: Optional[threading.Thread] = None
+        # Cached get_positions() result to avoid O(N) rebuilds every 100ms
+        self._positions_cache: list = []
+        self._positions_cache_time: float = 0
+        self._positions_cache_ttl: float = 0.05  # 50ms cache TTL
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -243,11 +247,18 @@ class TradingEngine:
             "config_loaded": self.config is not None,
         }
 
+    def invalidate_positions_cache(self):
+        """Force next get_positions() to rebuild (call after trade_executed/trade_closed)."""
+        self._positions_cache_time = 0
+
     def get_positions(self) -> list:
         """Get current positions with live price and P&L from tick cache and order manager.
-        Uses TWS client.positions first; falls back to order_manager.entry_orders_cache when
-        TWS positions are empty but we have open trades (e.g. TWS sync delay or account mismatch).
+        Results are cached for 50ms to avoid O(N) rebuilds at 10 calls/sec.
         """
+        now = time.time()
+        if now - self._positions_cache_time < self._positions_cache_ttl:
+            return self._positions_cache
+
         if not self._client:
             return []
 
@@ -348,7 +359,10 @@ class TradingEngine:
 
         # Deduplicate by (symbol, strike, right, expiry) — TWS can produce duplicates
         # when expiry format differs (e.g. 20260313 vs 2026-03-13) or multiple orders same option
-        return self._deduplicate_positions(positions)
+        result = self._deduplicate_positions(positions)
+        self._positions_cache = result
+        self._positions_cache_time = time.time()
+        return result
 
     def _deduplicate_positions(self, positions: list) -> list:
         """Deduplicate positions by (symbol, strike, right, expiry). Keep first; prefer one with current_price if duplicate."""
@@ -490,8 +504,18 @@ class TradingEngine:
         if strike is not None:
             strike = float(strike)
         emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right} expiry={expiry}" if strike or right or expiry else ""), "INFO", "orders")
-        if self._order_mgr and hasattr(self._order_mgr, 'close_position_by_symbol'):
-            self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right, expiry=expiry)
+        if not self._order_mgr or not hasattr(self._order_mgr, 'close_position_by_symbol'):
+            msg = f"Cannot close {symbol}: order manager not available"
+            emit_log(msg, "ERROR", "orders")
+            emit_error(msg)
+            return {"status": "error", "message": msg}
+        result = self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right, expiry=expiry)
+        self.invalidate_positions_cache()
+        if result is False:
+            msg = f"Close failed for {symbol}: no matching position or TWS not connected"
+            emit_log(msg, "ERROR", "orders")
+            emit_error(msg)
+            return {"status": "error", "message": msg}
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
@@ -1065,7 +1089,7 @@ class TradingEngine:
                             self._last_eod_check_time = now
                             self._check_eod_time()
 
-                time.sleep(0.05)  # 50ms loop
+                time.sleep(0.02)  # 20ms loop for faster position/PnL emission triggers
 
             except Exception as e:
                 emit_error(f"Engine loop error: {e}")
@@ -1128,9 +1152,10 @@ class TradingEngine:
             pass  # Silently skip P&L errors
 
     def _emit_positions(self):
-        """Emit current positions to the UI so the Positions page shows active positions."""
+        """Emit current positions as a single batch snapshot (1 IPC call instead of N)."""
         try:
             positions = self.get_positions()
+            payloads = []
             for pos in positions:
                 payload = {
                     "symbol": pos.get("symbol", ""),
@@ -1159,7 +1184,8 @@ class TradingEngine:
                 if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
                     payload["exit_price_used"] = float(pos["exit_price_used"])
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
-                emit_position(payload)
+                payloads.append(payload)
+            emit_positions_snapshot(payloads)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")
 

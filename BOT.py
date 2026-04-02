@@ -106,14 +106,41 @@ global ADX_ON_OFF, ADX_THRESHOLD, RSI_DIVERGENCE_ON_OFF, VOLUME_DIVERGENCE_ON_OF
 LICENSE_FILE = "license.json"
 LICENSE_KEY = "TraderNova_987_90_1"
 
-def hard_exit():
+def hard_exit(
+    *,
+    daily_pnl=None,
+    profit_limit=None,
+    loss_limit=None,
+    side=None,
+):
+    """Lock trading for the day. If ``side`` is ``'profit'`` or ``'loss'``, logs which limit tripped and IBKR daily P&L vs thresholds."""
     global STOP_TRADING, DAY_LOCKED, CLOSE_ALL_ORDERS
-    logger.error("HARD EXIT: Daily limit hit — locking trading for the day")
     STOP_TRADING = True
     DAY_LOCKED = True
     CLOSE_ALL_ORDERS = True
+
+    if (
+        side in ("profit", "loss")
+        and daily_pnl is not None
+        and profit_limit is not None
+        and loss_limit is not None
+    ):
+        which = "PROFIT target" if side == "profit" else "LOSS limit"
+        log_msg = (
+            f"HARD EXIT: {which} hit — IBKR daily P&L ${float(daily_pnl):.2f} "
+            f"(profit_target=${float(profit_limit):.2f}, loss_limit=${float(loss_limit):.2f}) — locking trading for the day"
+        )
+        emit_msg = (
+            f"Daily P&L limit hit — {which}: daily P&L ${float(daily_pnl):.2f} vs "
+            f"profit_target=${float(profit_limit):.2f}, loss_limit=${float(loss_limit):.2f} — trading locked"
+        )
+    else:
+        log_msg = "HARD EXIT: Trading stopped — locking trading for the day (no P&L limit details)"
+        emit_msg = "Trading locked for the day — engine stopped (see prior risk/system logs for reason)"
+
+    logger.error(log_msg)
     try:
-        _emit_log("Daily P&L limit hit — trading locked for the day", "ERROR", "system")
+        _emit_log(emit_msg, "ERROR", "system")
     except Exception:
         pass
     
@@ -1685,7 +1712,7 @@ def timeDecayDiff(expiryDate):
     
 
 
-def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick):
+def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, right: str, options_tick: Tick, stock_tick: Tick, action: str = "BUY"):
     if DAY_LOCKED and CLOSE_ALL_ORDERS:
         logger.warning("Trading blocked: DAY LOCK active (PnL limit hit)")
         return "DayLocked"
@@ -1762,24 +1789,48 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
     if "spy" in stock_symbol.lower() or "qqq" in stock_symbol.lower():
         TimeDecayDiffVal = -1
         
+    # Get underlying stock price for percentage-based ATR scaling
+    underlying_price = stock_tick.last if stock_tick and stock_tick.last > 0 else 0
+
     # Log the calculation parameters
     logger.info(
         f"PL_CALC {stock_symbol}: Entry=${tradePrice:.2f} ATR=${atrVale:.4f} "
-        f"Time={marketTime} DTE={TimeDecayDiffVal} SPY/QQQ={'spy' in stock_symbol.lower() or 'qqq' in stock_symbol.lower()}"
+        f"StockPrice=${underlying_price:.2f} Time={marketTime} DTE={TimeDecayDiffVal} "
+        f"SPY/QQQ={'spy' in stock_symbol.lower() or 'qqq' in stock_symbol.lower()}"
     )
 
-    # ATR 1:1 risk reward; TP/SL distance capped at 0.9 * underlying ATR (never wider)
-    atr_risk_cap = (atrVale * 0.9) if atrVale > 0.01 else 0.018
-    if atrVale <= 0.01:
-        base_dist = 0.02
-    else:
-        base_dist = float(atrVale) * float(ATR_VALUE)
-    atr_dist = min(base_dist, float(atr_risk_cap))
+    # TP/SL calculation using ATR vs 30% of option price
+    # ATR is scaled from stock ATR to option premium terms
+    price_30pct = tradePrice * 0.30  # 30% of option entry price
 
-    profitPrice = round(tradePrice + atr_dist, 2)
-    auxPrice = round(tradePrice - atr_dist, 2)
-    max_tp_price = round(tradePrice + float(atr_risk_cap), 2)
-    min_sl_price = round(max(0.01, tradePrice - float(atr_risk_cap)), 2)
+    if underlying_price > 0 and atrVale > 0.01:
+        atr_pct = atrVale / underlying_price
+        option_pct = atr_pct * float(ATR_VALUE)
+        atr_dist = tradePrice * option_pct  # ATR distance in option $ terms
+        logger.info(
+            f"ATR_SCALE {stock_symbol}: atr_pct={atr_pct*100:.3f}% option_pct={option_pct*100:.1f}% "
+            f"atr_dist=${atr_dist:.4f} price_30pct=${price_30pct:.4f}"
+        )
+    else:
+        atr_dist = 0.0
+        atr_pct = 0.0
+        option_pct = 0.0
+        logger.warning(
+            f"ATR_SCALE {stock_symbol}: no ATR available (stock_price={underlying_price}, ATR={atrVale}), using 30% cap"
+        )
+
+    # If ATR > 30% of price → cap at 30%; otherwise use ATR
+    if atr_dist > price_30pct:
+        tp_sl_dist = price_30pct
+        logger.info(f"TP/SL {stock_symbol}: ATR ${atr_dist:.4f} > 30% ${price_30pct:.4f} → using 30% cap")
+    else:
+        tp_sl_dist = atr_dist if atr_dist > 0 else price_30pct
+        logger.info(f"TP/SL {stock_symbol}: ATR ${atr_dist:.4f} <= 30% ${price_30pct:.4f} → using ATR")
+
+    profitPrice = round(tradePrice + tp_sl_dist, 2)
+    auxPrice = round(tradePrice - tp_sl_dist, 2)
+    max_tp_price = round(tradePrice + tp_sl_dist, 2)
+    min_sl_price = round(max(0.01, tradePrice - tp_sl_dist), 2)
 
     # Special 0DTE returns (no trade in these cases)
     if TimeDecayDiffVal == 0:
@@ -1793,23 +1844,6 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         auxPrice = 0.01
     if min_sl_price > auxPrice:
         min_sl_price = auxPrice
-
-    # If ATR-based TP implies >20% premium gain vs entry, cap take-profit at fixed 15% (investment-proportional check == premium %)
-    atr_tp_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
-    if atr_tp_pct > 20.0:
-        profitPrice = round(tradePrice * 1.15, 2)
-        max_tp_price = profitPrice
-        logger.info(
-            f"TP cap: ATR target was {atr_tp_pct:.1f}% (>20% of premium) → using fixed 15% TP ${profitPrice:.2f}"
-        )
-        try:
-            _emit_log(
-                f"{stock_symbol}: ATR TP {atr_tp_pct:.1f}% > 20% — using fixed 15% target ${profitPrice:.2f}",
-                "INFO",
-                "order",
-            )
-        except Exception:
-            pass
 
     # ============ LOG FINAL CALCULATED VALUES ============
     profit_pct = ((profitPrice - tradePrice) / tradePrice * 100) if tradePrice > 0 else 0
@@ -2023,7 +2057,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
             break
         try:
             # Get the event data from the queue
-            event_data = event_queue.get(block=False, timeout=0.20)
+            event_data = event_queue.get(block=True, timeout=0.05)
             tick: Tick = event_data["tick"]
             sym = getattr(tick.contract, "symbol", "") or getattr(tick.contract, "localSymbol", "") or getattr(tick, "symbol", "")
             sec_type = getattr(tick.contract, "secType", "")
@@ -2167,6 +2201,8 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
 
     logger.info("PnL Watchdog started")
 
+    limit_hit_detail = None  # dict passed to hard_exit when a P&L threshold trips
+
     while True:
         if STOP_TRADING:
             logger.info("PnL watchdog stopping (STOP_TRADING)")
@@ -2175,12 +2211,15 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
             pnl, realizedPNL = client.get_pnl(account_id)
 
             if pnl >= day_profit_limit or pnl <= day_loss_limit:
+                side = "profit" if pnl >= day_profit_limit else "loss"
                 logger.error(
-                    f" DAILY LIMIT HIT  PnL={pnl} "
-                    f"Limits=({day_profit_limit}, {day_loss_limit})")
+                    f" DAILY LIMIT HIT  side={side}  PnL={pnl} "
+                    f"profit_target={day_profit_limit}  loss_limit={day_loss_limit}"
+                )
                 _emit_log(
-                    f"DAY LOCK: P&L ${pnl:.2f} hit limit (profit=${day_profit_limit:.2f}, loss=${day_loss_limit:.2f}) — trading stopped",
-                    "ERROR", "risk"
+                    f"DAY LOCK ({side}): IBKR daily P&L ${float(pnl):.2f} vs "
+                    f"profit_target=${float(day_profit_limit):.2f}, loss_limit=${float(day_loss_limit):.2f} — trading stopped",
+                    "ERROR", "risk",
                 )
 
                 STOP_TRADING = True
@@ -2192,6 +2231,12 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
                 CLOSE_ALL_ORDERS = True
 
                 logger.error(" Trading LOCKED for the day until manual restart")
+                limit_hit_detail = {
+                    "daily_pnl": float(pnl),
+                    "profit_limit": float(day_profit_limit),
+                    "loss_limit": float(day_loss_limit),
+                    "side": side,
+                }
                 break
 
         except Exception as e:
@@ -2199,7 +2244,11 @@ def pnl_watchdog_thread(account_id, day_profit_limit, day_loss_limit):
 
         time.sleep(1)
     logger.info("CLOSE CURRENT PROCESS")
-    hard_exit()
+    if limit_hit_detail:
+        hard_exit(**limit_hit_detail)
+    else:
+        # Stopped without tripping profit/loss (e.g. STOP_TRADING set elsewhere); avoid claiming "P&L limit hit"
+        logger.info("PnL watchdog exited without P&L limit trip — not calling hard_exit()")
 
 
 def synchronize_positions():
@@ -2397,7 +2446,7 @@ def monitor_positions_loop():
             logger.error(f"Position monitor error: {e}", exc_info=True)
             _emit_log(f"Position monitor error: {e}", "ERROR", "position")
 
-        time.sleep(0.1)
+        time.sleep(0.05)  # 20 checks/sec for faster TP/SL detection
 
 
 

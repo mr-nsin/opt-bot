@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   X,
+  Loader2,
   TrendingUp,
   TrendingDown,
   ChevronDown,
@@ -15,10 +16,13 @@ import {
 import type { Position } from "@/lib/types";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 import { usePositions } from "@/hooks/usePositions";
+import { usePositionStore, positionKey } from "@/stores/positionStore";
 
 export const PositionRow = memo(function PositionRow({ position }: { position: Position }) {
   const { closePosition } = usePositions();
   const [expanded, setExpanded] = useState(false);
+  const closingPositions = usePositionStore((s) => s.closingPositions);
+  const isClosing = closingPositions.has(positionKey(position.symbol, position.strike, position.right, position.expiry));
 
   const pnl = position.pnl ?? 0;
   const pnlPct = position.pnl_percent ?? 0;
@@ -136,13 +140,23 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           <Button
             variant="ghost"
             size="sm"
+            disabled={isClosing}
             onClick={(e) => {
               e.stopPropagation();
               closePosition(position.symbol, position.strike, position.right, position.expiry);
             }}
-            className="text-red-500 hover:text-red-600 hover:bg-red-500/10 h-5 px-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+            className={cn(
+              "h-5 px-1 text-xs transition-opacity",
+              isClosing
+                ? "text-amber-500 opacity-100 cursor-not-allowed"
+                : "text-red-500 hover:text-red-600 hover:bg-red-500/10 opacity-0 group-hover:opacity-100"
+            )}
           >
-            <X className="h-2.5 w-2.5 mr-0.5" /> Close
+            {isClosing ? (
+              <><Loader2 className="h-2.5 w-2.5 mr-0.5 animate-spin" /> Closing...</>
+            ) : (
+              <><X className="h-2.5 w-2.5 mr-0.5" /> Close</>
+            )}
           </Button>
         </td>
       </tr>

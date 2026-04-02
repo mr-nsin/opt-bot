@@ -1,12 +1,12 @@
 import { useRef } from "react";
 import { useTauriEvent } from "./useTauri";
 import { useTradingStore } from "@/stores/tradingStore";
-import { usePositionStore } from "@/stores/positionStore";
+import { usePositionStore, positionKey } from "@/stores/positionStore";
 import { useConfigStore } from "@/stores/configStore";
 import { useLogStore } from "@/stores/logStore";
 import { useNotificationStore } from "@/stores/notificationStore";
 
-const PNL_THROTTLE_MS = 500;  // Flush P&L every 500ms for more responsive display
+const PNL_THROTTLE_MS = 100;  // Flush P&L every 100ms to match position emission rate
 const LOG_BATCH_MS = 150;
 
 /**
@@ -317,12 +317,30 @@ export function useTradingEvents() {
     // Notifications only for orders (trade_executed, trade_closed), not signals
   });
 
-  // ---- Position updates (app-level so positions update on any page) ----
+  // ---- Batch position snapshot (replaces all positions at once, filters recently-closed) ----
+  useTauriEvent("trading:positions_snapshot", (data: any) => {
+    if (!data || !Array.isArray(data.positions)) return;
+    const store = usePositionStore.getState();
+    // Filter out recently-closed positions and zero-price entries
+    const filtered = data.positions.filter((p: any) => {
+      if (!p.symbol || p.quantity <= 0) return false;
+      const key = positionKey(p.symbol, p.strike, p.right, p.expiry);
+      return !store.isRecentlyClosed(key);
+    });
+    store.setPositions(filtered);
+  });
+
+  // ---- Individual position updates (legacy fallback, kept for trade_executed optimistic adds) ----
   useTauriEvent("trading:position_update", (data: any) => {
     const store = usePositionStore.getState();
     const current = store.positions;
     const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
     const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
+
+    // Guard: skip updates for positions that were recently closed to prevent ghost re-adds
+    const key = positionKey(data.symbol, data.strike, data.right, data.expiry);
+    if (store.isRecentlyClosed(key)) return;
+
     const existing = current.find(
       (p) =>
         p.symbol === data.symbol &&
@@ -330,10 +348,19 @@ export function useTradingEvents() {
         nrFn(p.right) === nrFn(data.right) &&
         normExp(p.expiry) === normExp(data.expiry)
     );
+    // When tick data is temporarily unavailable the engine sends current_price=0.
+    // Strip zero-price fields so the store keeps the last known good values
+    // instead of overwriting them with 0.
+    const updates = { ...data };
+    if (!updates.current_price || updates.current_price <= 0) {
+      delete updates.current_price;
+      delete updates.pnl;
+      delete updates.pnl_percent;
+    }
     if (existing) {
-      store.updatePosition(data.symbol, data);
-    } else if (data.quantity > 0) {
-      store.setPositions([...current, data]);
+      store.updatePosition(updates.symbol, updates);
+    } else if (updates.quantity > 0) {
+      store.setPositions([...current, updates]);
     }
   });
 

@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { positions as positionsApi } from "@/lib/tauri-commands";
-import { usePositionStore } from "@/stores/positionStore";
+import { usePositionStore, positionKey } from "@/stores/positionStore";
 import type { Position } from "@/lib/types";
 
 export function usePositions() {
@@ -24,7 +24,18 @@ export function usePositions() {
 
   const closePosition = useCallback(
     async (symbol: string, strike?: number, right?: string, expiry?: string) => {
-      await positionsApi.close(symbol, strike, right, expiry);
+      const key = positionKey(symbol, strike, right, expiry);
+      const store = usePositionStore.getState();
+      // Prevent duplicate close requests
+      if (store.closingPositions.has(key)) return;
+      store.setClosing(key, true);
+      try {
+        await positionsApi.close(symbol, strike, right, expiry);
+      } catch (err) {
+        // Clear closing state on error so user can retry
+        usePositionStore.getState().setClosing(key, false);
+        console.error("Failed to close position:", err);
+      }
     },
     []
   );

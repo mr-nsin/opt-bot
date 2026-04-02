@@ -49,6 +49,7 @@ class OrderManager:
         self.order_id_tick_lookup = {}
         self.recent_trade_closures = {}  # Track cooldowns
         self.order_lock = Lock()
+        self._tp_sl_locks: dict = {}  # Per-order locks for TP/SL checks (replaces tick.busy)
 
     def set_client(self, client: TwsApiClient) -> None:
         """
@@ -66,23 +67,25 @@ class OrderManager:
         r = self._norm_right(order.right or "")
         return f"{order.symbol}{exp}{r}{order.strike}"
 
-    def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None, expiry: str = None, reason: str = "manual") -> None:
+    def close_position_by_symbol(self, symbol: str, strike: float = None, right: str = None, expiry: str = None, reason: str = "manual") -> bool:
         """
         Close an open position by symbol (and optionally strike/right/expiry for options).
         Used by Tauri/sidecar when user clicks Close, and by monitor_positions_loop.
+        Returns True if close order was placed, False otherwise.
         """
         if not self.api_client or not self.api_client.isConnected():
             logger.warning("Cannot close position: TWS not connected")
-            return
+            return False
         order = self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
         if not order:
             logger.warning(f"No managed position found for symbol {symbol}" + (f" strike={strike} right={right}" if strike or right else ""))
-            return
+            return False
         option_tick = self.order_id_tick_lookup.get(order.id)
         if option_tick is None:
             option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
         logger.info(f"CLOSE POSITION REQUEST: {order.option_symbol} — reason={reason}")
         self.close_position(order=order, option_tick=option_tick)
+        return True
 
     def close_positions_by_right(self, right: str) -> int:
         """
@@ -235,6 +238,7 @@ class OrderManager:
                 self.entry_orders_cache.pop(key)
             if self.order_id_tick_lookup.get(order.id, None):
                 self.order_id_tick_lookup.pop(order.id)
+        self._tp_sl_locks.pop(order.id, None)
 
     def add_entry_order(self, order: OptionOrder, option_tick: Tick) -> None:
         """
@@ -553,81 +557,51 @@ class OrderManager:
             self.save_order(order=exit_order)
         except Exception as ex:
             self.del_exit_order(order=exit_order, options_tick=option_tick)
-            option_tick.busy = False
             logger.error(f"Placing Exit order failed: {ex}", exc_info=True)
 
     def check_and_close_position(self, tick: Tick) -> None:
         """
         Check if the current position should be closed based on the given tick data.
-
-        Args:
-            tick (Tick): The latest tick data for the position's underlying instrument.
-
-        Returns:
-            None
-
-        Raises:
-            N/A
-
-        Example:
-            check_and_close_position(my_tick)
-
-        Notes:
-            - The function checks if an exit order has already been placed for the current position.
-            - If an exit order has already been placed, the function logs a message and returns.
-            - If the current position is filled, the function checks if the take profit or stop loss conditions have been met.
-            - If the take profit condition is met, the position is closed using a market order.
-            - If the stop loss condition is met, the position is closed using a market order.
+        Uses per-order locks instead of tick.busy to avoid silently dropping ticks.
         """
-
-        if tick.busy:
+        order = tick.active_order
+        if order is None:
             return
-        
-        tick.busy = True
-        
-        try:
-            order = tick.active_order
-            
-            # check if exit order is not already placed.
-            if order is None:
-                tick.busy = False
-                return 
 
+        # Per-order lock: waits briefly (10ms) instead of silently dropping the tick
+        order_id = getattr(order, 'id', id(order))
+        if order_id not in self._tp_sl_locks:
+            self._tp_sl_locks[order_id] = Lock()
+        lock = self._tp_sl_locks[order_id]
+
+        if not lock.acquire(timeout=0.01):
+            # Another thread is checking this order's TP/SL — skip but don't drop permanently
+            return
+
+        try:
             if order.exit_placed == True:
                 logger.info(f"{order.option_symbol} EXIT order already placed.")
-                tick.busy = False
                 return
 
-            # check if order is already filled
             if order.order_status != "filled":
                 logger.info(f"{order.option_symbol} Order not filled yet: {order.order_status}")
-                tick.busy = False
                 return
-                
-            # Valdate we have valid price data
+
             if tick.last <= 0 and tick.bid <= 0:
                 logger.warning(f"{order.option_symbol} No valid price data available")
-                tick.busy = False
                 return
-                
-            # ✓ ADD THIS: Log comprehensive status every time we check
+
             self.log_order_status(order=order, tick=tick)
-            
+
             self.check_take_profit(tick=tick, order=order, option_tick=tick)
 
-
-            """if tick.active_order.order_status == "filled":
-                # check take profit
-                self.check_take_profit(tick=tick, order=order, option_tick=tick)"""
-            
-            # check stoploss
             if not order.exit_placed:
                 self.check_stop_loss(last_price=tick.last, order=order, option_tick=tick)
-                
+
         except Exception as ex:
             logger.error(f"Error in check_and_close_position for {tick.symbol}: {ex}", exc_info=True)
         finally:
-            tick.busy = False
+            lock.release()
 
     def _cap_trailing_tp(self, order: OptionOrder, is_long: bool) -> None:
         """Keep trailing TP within ATR cap vs entry (max_tp_price / symmetric floor for short)."""
