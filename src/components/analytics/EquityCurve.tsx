@@ -11,7 +11,7 @@ const tooltipStyle = {
 };
 
 export function EquityCurve() {
-  const { todayTrades } = useTradingStore();
+  const todayTrades = useTradingStore((s) => s.todayTrades);
   let cum = 0;
   const data = todayTrades.filter((t) => t.pnl !== undefined).map((t, i) => { cum += t.pnl ?? 0; return { trade: i + 1, equity: cum }; });
   const pos = cum >= 0;

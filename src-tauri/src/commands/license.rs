@@ -86,39 +86,56 @@ pub async fn validate_license(
         e
     })?;
 
-    // Re-check against registry and use registry's expiry (so days_remaining matches registry, not stale local file)
-    let reg = registry::fetch_registry(&url).await.map_err(|e| {
-        format!("Registry check failed: {}. License may be revoked or expired.", e)
-    })?;
-    let entry = reg
-        .licenses
-        .iter()
-        .find(|e| e.license_key == license.license_key && e.email == license.customer_email)
-        .ok_or("License not found in registry (revoked or invalid)")?;
-    let license_from_registry = registry::verify_registry_entry(entry, &key_hex).map_err(|e| {
-        if is_machine_mismatch(&e) {
-            push_machine_mismatch_log();
+    // Try to re-check against remote registry. If the network is unreachable, fall back to
+    // local-only validation so a transient outage never kills a valid license.
+    match registry::fetch_registry(&url).await {
+        Ok(reg) => {
+            let entry = reg
+                .licenses
+                .iter()
+                .find(|e| e.license_key == license.license_key && e.email == license.customer_email)
+                .ok_or("License not found in registry (revoked or invalid)")?;
+            let license_from_registry = registry::verify_registry_entry(entry, &key_hex).map_err(|e| {
+                if is_machine_mismatch(&e) {
+                    push_machine_mismatch_log();
+                }
+                e
+            })?;
+
+            let status = validator::validate_license(&license_from_registry).map_err(|e| {
+                let err_str = e.to_string();
+                if is_machine_mismatch(&err_str) {
+                    push_machine_mismatch_log();
+                }
+                err_str
+            })?;
+
+            let _ = encrypted_store::save_license(&license_from_registry);
+
+            let mut app = state.lock().await;
+            app.license = Some(license_from_registry);
+            app.licensed = status.valid;
+
+            Ok(status)
         }
-        e
-    })?;
+        Err(_network_err) => {
+            // Network unreachable — validate locally so the user can keep working offline.
+            // The periodic re-validation will re-check the registry when connectivity returns.
+            let status = validator::validate_license(&license).map_err(|e| {
+                let err_str = e.to_string();
+                if is_machine_mismatch(&err_str) {
+                    push_machine_mismatch_log();
+                }
+                err_str
+            })?;
 
-    // Status from registry license so days_remaining / expires_at match the registry (e.g. 30 days)
-    let status = validator::validate_license(&license_from_registry).map_err(|e| {
-        let err_str = e.to_string();
-        if is_machine_mismatch(&err_str) {
-            push_machine_mismatch_log();
+            let mut app = state.lock().await;
+            app.license = Some(license);
+            app.licensed = status.valid;
+
+            Ok(status)
         }
-        err_str
-    })?;
-
-    // Keep local file in sync with registry expiry
-    let _ = encrypted_store::save_license(&license_from_registry);
-
-    let mut app = state.lock().await;
-    app.license = Some(license_from_registry);
-    app.licensed = status.valid;
-
-    Ok(status)
+    }
 }
 
 #[tauri::command]

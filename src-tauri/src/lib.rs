@@ -7,10 +7,14 @@ pub mod utils;
 
 use state::app_state::AppState;
 use state::config_state::ConfigState;
-use state::trading_state::TradingStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
+
+/// Lock-free flag for window close safety — set true when trading is active.
+/// Updated by start_trading/stop_trading/sidecar-terminated; read by on_window_event.
+pub static IS_TRADING: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 async fn confirm_close(app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -74,18 +78,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app_handle = window.app_handle().clone();
-                let state_arc = app_handle.state::<Arc<Mutex<AppState>>>().inner().clone();
 
-                // Check if trading engine is active (non-blocking try_lock)
-                let is_trading = state_arc
-                    .try_lock()
-                    .map(|app| {
-                        matches!(app.trading.status, TradingStatus::Running | TradingStatus::Starting)
-                            || app.sidecar_running
-                    })
-                    .unwrap_or(false);
-
-                if is_trading {
+                // Lock-free check — never fails even when AppState mutex is held
+                if IS_TRADING.load(Ordering::Relaxed) {
                     // Prevent the window from closing immediately
                     api.prevent_close();
                     // Tell the frontend to show a confirmation dialog

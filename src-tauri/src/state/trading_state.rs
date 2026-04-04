@@ -110,3 +110,36 @@ impl Default for TradingState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Position;
+
+    /// Demo / engine emit_position shape must deserialize for Rust AppState + IPC.
+    #[test]
+    fn position_deserializes_from_engine_emit_shape() {
+        let json = r#"{
+            "symbol": "AAPL",
+            "strike": 230.0,
+            "right": "C",
+            "expiry": "20260418",
+            "quantity": 2,
+            "qty": 2,
+            "avg_price": 3.85,
+            "current_price": 3.90,
+            "bid": 3.88,
+            "ask": 3.92,
+            "last": 3.90,
+            "pnl": 10.0,
+            "pnl_percent": 1.3,
+            "profit_price": 5.0,
+            "stoploss_price": 2.5,
+            "exit_price_used": 3.88,
+            "exit_price_source": "bid"
+        }"#;
+        let p: Position = serde_json::from_str(json).expect("demo position_update");
+        assert_eq!(p.symbol, "AAPL");
+        assert_eq!(p.last, Some(3.90));
+        assert_eq!(p.bid, Some(3.88));
+    }
+}

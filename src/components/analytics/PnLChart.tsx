@@ -11,7 +11,7 @@ const tooltipStyle = {
 };
 
 export function PnLChart() {
-  const { todayTrades } = useTradingStore();
+  const todayTrades = useTradingStore((s) => s.todayTrades);
   const chartData = todayTrades.filter((t) => t.pnl !== undefined).map((t, i) => ({ name: `#${i + 1}`, pnl: t.pnl ?? 0, symbol: t.symbol }));
 
   return (

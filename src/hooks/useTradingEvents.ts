@@ -8,6 +8,7 @@ import { useNotificationStore } from "@/stores/notificationStore";
 
 const PNL_THROTTLE_MS = 100;  // Flush P&L every 100ms to match position emission rate
 const LOG_BATCH_MS = 150;
+const POSITION_BATCH_MS = 250;  // Batch position updates per animation frame (~4/sec max)
 
 /**
  * Global trading event listeners.
@@ -16,28 +17,49 @@ const LOG_BATCH_MS = 150;
  * PnL updates are throttled to 1s to avoid UI hang on tab switch.
  */
 export function useTradingEvents() {
-  const {
-    setStatus,
-    setSidecarRunning,
-    setConnectedToTws,
-    setDailyPnl,
-    setTradeStats,
-    setOpenClosedTrades,
-    setLastSignal,
-    addSignalToSession,
-    addTrade,
-    updateTradePnl,
-    setDataStatus,
-    setAccountMetrics,
-    setSignalScanning,
-    setSignalData,
-  } = useTradingStore();
-  const { settings } = useConfigStore();
-  const { addLogsBatch } = useLogStore();
-  const { addToast } = useNotificationStore();
+  // Use getState() for action-only access — avoids subscribing to every tradingStore change
+  const getTradingActions = () => useTradingStore.getState();
+  const settings = useConfigStore((s) => s.settings);
+  const addLogsBatch = useLogStore((s) => s.addLogsBatch);
+  const addToast = useNotificationStore((s) => s.addToast);
 
   const logPending = useRef<Array<{ timestamp: string; level: string; category: string; message: string }>>([]);
   const logFlushScheduled = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Batch position updates to reduce store writes (20 events/sec → ~4 store writes/sec)
+  const positionPending = useRef<Map<string, any>>(new Map());
+  const positionFlushScheduled = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPositions = () => {
+    positionFlushScheduled.current = null;
+    if (positionPending.current.size === 0) return;
+    const batch = new Map(positionPending.current);
+    positionPending.current.clear();
+    const store = usePositionStore.getState();
+    const current = [...store.positions];
+    let changed = false;
+    for (const [key, updates] of batch) {
+      const nrFn = (r?: string) => (r === "CALL" ? "C" : r === "PUT" ? "P" : r);
+      const normExpFn = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
+      const idx = current.findIndex(
+        (p) =>
+          p.symbol === updates.symbol &&
+          Number(p.strike) === Number(updates.strike) &&
+          nrFn(p.right) === nrFn(updates.right) &&
+          normExpFn(p.expiry) === normExpFn(updates.expiry)
+      );
+      if (idx >= 0) {
+        current[idx] = { ...current[idx], ...updates };
+        changed = true;
+      } else if (updates.quantity > 0) {
+        current.push(updates);
+        changed = true;
+      }
+    }
+    if (changed) {
+      store.setPositions(current);
+    }
+  };
 
   const flushLogs = () => {
     if (logPending.current.length === 0) return;
@@ -63,13 +85,14 @@ export function useTradingEvents() {
     ) {
       return;
     }
-    setDailyPnl(next);
+    getTradingActions().setDailyPnl(next);
   };
 
   // ---- Engine status ----
   useTauriEvent("trading:engine_status", (data: any) => {
-    if (data.status) setStatus(data.status);
-    if (data.connected !== undefined) setConnectedToTws(data.connected);
+    const actions = getTradingActions();
+    if (data.status) actions.setStatus(data.status);
+    if (data.connected !== undefined) actions.setConnectedToTws(data.connected);
   });
 
   // ---- P&L updates (throttled to 1s; first update flushes immediately so UI shows value right away) ----
@@ -112,7 +135,7 @@ export function useTradingEvents() {
         }
         if (same) return;
       }
-      setAccountMetrics(metrics);
+      getTradingActions().setAccountMetrics(metrics);
     }
   });
 
@@ -138,7 +161,7 @@ export function useTradingEvents() {
         category === "signal" &&
         message.toLowerCase().includes("signal scanner active")
       ) {
-        setSignalScanning(true, ts);
+        getTradingActions().setSignalScanning(true, ts);
       }
     }
     if (logFlushScheduled.current == null) {
@@ -151,7 +174,7 @@ export function useTradingEvents() {
   // ---- Data feed status (every ~10s when running) ----
   useTauriEvent("trading:data_status", (data: any) => {
     if (data && typeof data.connected === "boolean") {
-      setDataStatus({
+      getTradingActions().setDataStatus({
         timestamp: data.timestamp || new Date().toISOString(),
         connected: data.connected,
         data_feed_started: !!data.data_feed_started,
@@ -167,7 +190,7 @@ export function useTradingEvents() {
   // ---- TWS connection status ----
   useTauriEvent("trading:connection_status", (data: any) => {
     if (data.connected !== undefined) {
-      setConnectedToTws(data.connected);
+      getTradingActions().setConnectedToTws(data.connected);
       if (settings.show_notifications) {
         addToast({
           title: data.connected ? "TWS Connected" : "TWS Disconnected",
@@ -187,7 +210,7 @@ export function useTradingEvents() {
       data?.error?.message ||
       "Trading engine error. Check Logs for details.";
 
-    setStatus({ Error: message });
+    getTradingActions().setStatus({ Error: message });
 
     if (settings.show_notifications) {
       addToast({
@@ -200,7 +223,8 @@ export function useTradingEvents() {
 
   // ---- Trade executed ----
   useTauriEvent("trading:trade_executed", (data: any) => {
-    addTrade({
+    const actions = getTradingActions();
+    actions.addTrade({
       id: data.id || Date.now(),
       symbol: data.symbol || "",
       right: data.right || "",
@@ -240,8 +264,8 @@ export function useTradingEvents() {
     const state = useTradingStore.getState();
     const newTotal = state.totalTrades + 1;
     const closed = state.winningTrades + state.losingTrades;
-    setTradeStats(newTotal, state.winningTrades, state.losingTrades);
-    setOpenClosedTrades(newTotal - closed, closed);
+    actions.setTradeStats(newTotal, state.winningTrades, state.losingTrades);
+    actions.setOpenClosedTrades(newTotal - closed, closed);
 
     if (settings.show_notifications) {
       addToast({
@@ -252,13 +276,14 @@ export function useTradingEvents() {
     }
   });
 
-  // ---- Trade closed ----
+  // ---- Trade closed (unified: updates tradingStore stats + moves position active → closed) ----
   useTauriEvent("trading:trade_closed", (data: any) => {
     const pnl = data.pnl ?? 0;
     const state = useTradingStore.getState();
 
     // Update the matching open trade in todayTrades with PnL so Analytics shows it
-    updateTradePnl(
+    const closedActions = getTradingActions();
+    closedActions.updateTradePnl(
       {
         symbol: data.symbol != null ? String(data.symbol) : undefined,
         right: data.right != null ? String(data.right) : undefined,
@@ -273,8 +298,32 @@ export function useTradingEvents() {
     const newLosses = pnl < 0 ? state.losingTrades + 1 : state.losingTrades;
     const closed = newWins + newLosses;
     const open = state.totalTrades - closed;
-    setTradeStats(state.totalTrades, newWins, newLosses);
-    setOpenClosedTrades(Math.max(0, open), closed);
+    closedActions.setTradeStats(state.totalTrades, newWins, newLosses);
+    closedActions.setOpenClosedTrades(Math.max(0, open), closed);
+
+    // Move position from active → closed in positionStore
+    if (data.symbol) {
+      const posStore = usePositionStore.getState();
+      const current = posStore.positions;
+      const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
+      const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
+      const pos = current.find(
+        (p) =>
+          p.symbol === data.symbol &&
+          (data.strike == null || Number(p.strike) === Number(data.strike)) &&
+          (data.right == null || nrFn(p.right) === nrFn(data.right)) &&
+          (data.expiry == null || data.expiry === "" || normExp(p.expiry) === normExp(data.expiry))
+      );
+      if (pos) {
+        posStore.addClosedPosition({ ...pos, ...data });
+        posStore.removePosition(
+          data.symbol,
+          data.strike != null ? Number(data.strike) : undefined,
+          data.right != null ? String(data.right) : undefined,
+          data.expiry != null ? String(data.expiry) : undefined
+        );
+      }
+    }
 
     if (settings.show_notifications) {
       addToast({
@@ -288,7 +337,7 @@ export function useTradingEvents() {
   // ---- Signal data (DataFrame of candle signals from initial scan) ----
   useTauriEvent("trading:signal_data", (data: any) => {
     if (data && Array.isArray(data.signals)) {
-      setSignalData({
+      getTradingActions().setSignalData({
         signals: data.signals,
         system_started_at: data.system_started_at ?? "",
         timestamp: data.timestamp ?? new Date().toISOString(),
@@ -312,8 +361,8 @@ export function useTradingEvents() {
       strength: data.reason || "",
       indicator: "SuperTrend",
     };
-    setLastSignal(signal);
-    addSignalToSession(signal);
+    getTradingActions().setLastSignal(signal);
+    getTradingActions().addSignalToSession(signal);
     // Notifications only for orders (trade_executed, trade_closed), not signals
   });
 
@@ -330,64 +379,34 @@ export function useTradingEvents() {
     store.setPositions(filtered);
   });
 
-  // ---- Individual position updates (legacy fallback, kept for trade_executed optimistic adds) ----
+  // ---- Individual position updates (batched to reduce re-renders: 20/sec → ~4/sec) ----
   useTauriEvent("trading:position_update", (data: any) => {
     const store = usePositionStore.getState();
-    const current = store.positions;
-    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
-    const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
 
-    // Guard: skip updates for positions that were recently closed to prevent ghost re-adds
     const key = positionKey(data.symbol, data.strike, data.right, data.expiry);
     if (store.isRecentlyClosed(key)) return;
 
-    const existing = current.find(
-      (p) =>
-        p.symbol === data.symbol &&
-        Number(p.strike) === Number(data.strike) &&
-        nrFn(p.right) === nrFn(data.right) &&
-        normExp(p.expiry) === normExp(data.expiry)
-    );
-    // When tick data is temporarily unavailable the engine sends current_price=0.
-    // Strip zero-price fields so the store keeps the last known good values
-    // instead of overwriting them with 0.
+    // Strip zero-price fields to preserve last known good values
     const updates = { ...data };
     if (!updates.current_price || updates.current_price <= 0) {
       delete updates.current_price;
       delete updates.pnl;
       delete updates.pnl_percent;
     }
-    if (existing) {
-      store.updatePosition(updates.symbol, updates);
-    } else if (updates.quantity > 0) {
-      store.setPositions([...current, updates]);
+    if (updates.bid != null && updates.bid <= 0) delete updates.bid;
+    if (updates.ask != null && updates.ask <= 0) delete updates.ask;
+    if (updates.last != null && updates.last <= 0) delete updates.last;
+
+    // Merge into pending batch (latest values win per key)
+    const existing = positionPending.current.get(key);
+    positionPending.current.set(key, existing ? { ...existing, ...updates } : updates);
+
+    if (positionFlushScheduled.current == null) {
+      positionFlushScheduled.current = setTimeout(flushPositions, POSITION_BATCH_MS);
     }
   });
 
-  // ---- Position closed (move active → closed, app-level) ----
-  useTauriEvent("trading:trade_closed", (closedData: any) => {
-    if (!closedData.symbol) return;
-    const store = usePositionStore.getState();
-    const current = store.positions;
-    const nrFn = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
-    const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
-    const pos = current.find(
-      (p) =>
-        p.symbol === closedData.symbol &&
-        (closedData.strike == null || Number(p.strike) === Number(closedData.strike)) &&
-        (closedData.right == null || nrFn(p.right) === nrFn(closedData.right)) &&
-        (closedData.expiry == null || closedData.expiry === "" || normExp(p.expiry) === normExp(closedData.expiry))
-    );
-    if (pos) {
-      store.addClosedPosition({ ...pos, ...closedData });
-      store.removePosition(
-        closedData.symbol,
-        closedData.strike != null ? Number(closedData.strike) : undefined,
-        closedData.right != null ? String(closedData.right) : undefined,
-        closedData.expiry != null ? String(closedData.expiry) : undefined
-      );
-    }
-  });
+  // (trade_closed position removal is handled in the unified handler above)
 
   // ---- Sidecar process terminated ----
   useTauriEvent("sidecar-terminated", (payload: { reason?: string } | number | null) => {
@@ -401,10 +420,11 @@ export function useTradingEvents() {
     // Discard any further buffered logs that arrive after termination
     logPending.current = [];
 
-    setSidecarRunning(false);
-    setStatus("Idle");
-    setConnectedToTws(false);
-    setSignalScanning(false);
+    const termActions = getTradingActions();
+    termActions.setSidecarRunning(false);
+    termActions.setStatus("Idle");
+    termActions.setConnectedToTws(false);
+    termActions.setSignalScanning(false);
 
     // Emergency stop: clear positions, mark open trades closed, reset unrealized PnL
     const reason = payload && typeof payload === "object" && "reason" in payload ? payload.reason : undefined;

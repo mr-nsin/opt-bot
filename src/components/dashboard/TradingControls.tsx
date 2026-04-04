@@ -130,7 +130,7 @@ export function TradingControls() {
                   demoStartedRef.current = false;
                   setDemoRunning(false);
                 }
-              }, 30000);
+              }, 45000);
               try {
                 await tradingApi.simulateDemo();
               } catch (e) {

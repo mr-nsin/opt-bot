@@ -34,6 +34,13 @@ static SIDECAR_PID: once_cell::sync::Lazy<Arc<Mutex<Option<u32>>>> =
 static EXPECTED_TERMINATION: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Pending RPC responses: request_id → oneshot sender.
+/// When `send_request_and_wait` sends a request it registers a sender here;
+/// when `handle_sidecar_message` receives a `Response` it completes it.
+static PENDING_RESPONSES: once_cell::sync::Lazy<
+    Arc<Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>>>>,
+> = once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(std::collections::HashMap::new())));
+
 /// Assign the trading-engine child to a Windows Job Object with kill-on-close.
 /// When the main process exits (X button, Task Manager, crash), the OS closes
 /// all job handles and automatically terminates the child.
@@ -96,20 +103,30 @@ fn workspace_root_from_cargo_dev_exe() -> Option<PathBuf> {
 }
 
 fn preferred_venv_python(workspace: &Path) -> Option<PathBuf> {
+    // Check trading-engine's own .venv first (has loguru and other engine deps),
+    // then fall back to the workspace-root .venv.
+    let candidates = [
+        workspace.join("trading-engine").join(".venv"),
+        workspace.join(".venv"),
+    ];
     #[cfg(windows)]
     {
-        let p = workspace.join(".venv").join("Scripts").join("python.exe");
-        if p.is_file() {
-            return Some(p);
+        for venv in &candidates {
+            let p = venv.join("Scripts").join("python.exe");
+            if p.is_file() {
+                return Some(p);
+            }
         }
         None
     }
     #[cfg(not(windows))]
     {
-        for name in ["python3", "python"] {
-            let p = workspace.join(".venv").join("bin").join(name);
-            if p.is_file() {
-                return Some(p);
+        for venv in &candidates {
+            for name in ["python3", "python"] {
+                let p = venv.join("bin").join(name);
+                if p.is_file() {
+                    return Some(p);
+                }
             }
         }
         None
@@ -349,13 +366,13 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
                     log::info!("Sidecar terminated with code: {:?}", payload.code);
                     let _ = app_handle.emit("sidecar-terminated", &payload.code);
 
-                    // Update app state when sidecar dies
                     {
                         let mut app = app_state.lock().await;
                         app.sidecar_running = false;
                         app.trading.status = TradingStatus::Idle;
                         app.connected_to_tws = false;
                     }
+                    crate::IS_TRADING.store(false, std::sync::atomic::Ordering::Relaxed);
 
                     // Only log "terminated" when it was unexpected (crash); skip when we killed it
                     if !EXPECTED_TERMINATION.swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -369,6 +386,14 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
                             ),
                         })
                         .await;
+                    }
+
+                    // Unblock any commands waiting for a response from the dead sidecar
+                    {
+                        let mut pending = PENDING_RESPONSES.lock().await;
+                        for (_id, tx) in pending.drain() {
+                            let _ = tx.send(Err("Sidecar process terminated".into()));
+                        }
                     }
 
                     // Clean up child handle and PID
@@ -399,6 +424,37 @@ pub async fn send_request(request: &SidecarRequest) -> Result<(), String> {
         Ok(())
     } else {
         Err("Sidecar is not running".into())
+    }
+}
+
+/// Send a request to the sidecar and wait for its JSON-RPC response (up to 10s).
+pub async fn send_request_and_wait(
+    request: &SidecarRequest,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut pending = PENDING_RESPONSES.lock().await;
+        pending.insert(request.id.clone(), tx);
+    }
+
+    // Send the actual request
+    if let Err(e) = send_request(request).await {
+        // Clean up on send failure
+        let mut pending = PENDING_RESPONSES.lock().await;
+        pending.remove(&request.id);
+        return Err(e);
+    }
+
+    // Wait for response with a 10-second timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("Response channel closed".into()),
+        Err(_) => {
+            // Timeout — clean up pending entry
+            let mut pending = PENDING_RESPONSES.lock().await;
+            pending.remove(&request.id);
+            Err("Sidecar request timed out after 10s".into())
+        }
     }
 }
 
@@ -498,14 +554,13 @@ async fn handle_sidecar_message(
                     match serde_json::from_value::<Position>(event.data.clone()) {
                         Ok(pos) => {
                             let mut app = state.lock().await;
-                            let norm_exp =
-                                |e: &str| e.replace('-', "").replace(' ', "").trim().to_string();
                             let nr = norm_opt_right(&pos.right);
+                            let ne = pos.expiry.replace('-', "").replace(' ', "");
                             if let Some(existing) = app.trading.positions.iter_mut().find(|p| {
                                 p.symbol == pos.symbol
                                     && (p.strike - pos.strike).abs() < 0.01
                                     && norm_opt_right(&p.right) == nr
-                                    && norm_exp(&p.expiry) == norm_exp(&pos.expiry)
+                                    && p.expiry.replace('-', "").replace(' ', "") == ne
                             }) {
                                 *existing = pos;
                             } else {
@@ -513,7 +568,21 @@ async fn handle_sidecar_message(
                             }
                         }
                         Err(e) => {
-                            log::warn!("position_update deserialize failed (Active Positions skip): {}", e);
+                            log::warn!("position_update deserialize failed: {}", e);
+                        }
+                    }
+                    // Must forward to the webview: live demo and TWS both use emit_position
+                    // (position_update). Suppressing forward leaves bid/ask/P&L frozen in the UI.
+                }
+
+                "positions_snapshot" => {
+                    if let Some(arr) = event.data.get("positions").and_then(|v| v.as_array()) {
+                        let positions: Vec<Position> = arr.iter()
+                            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                            .collect();
+                        if !positions.is_empty() {
+                            let mut app = state.lock().await;
+                            app.trading.positions = positions;
                         }
                     }
                 }
@@ -719,9 +788,20 @@ async fn handle_sidecar_message(
         }
 
         SidecarMessage::Response(response) => {
-            // Forward responses with a consistent event name
-            if let Err(e) = handle.emit("sidecar:response", &response) {
-                log::error!("Failed to emit response: {}", e);
+            // Route to pending send_request_and_wait caller if one is waiting
+            let mut pending = PENDING_RESPONSES.lock().await;
+            if let Some(tx) = pending.remove(&response.id) {
+                let result = if let Some(err) = response.error {
+                    Err(err.message)
+                } else {
+                    Ok(response.result.unwrap_or(serde_json::Value::Null))
+                };
+                let _ = tx.send(result);
+            } else {
+                // No pending caller — forward as event for any frontend listeners
+                if let Err(e) = handle.emit("sidecar:response", &response) {
+                    log::error!("Failed to emit response: {}", e);
+                }
             }
         }
     }

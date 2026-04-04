@@ -7,7 +7,10 @@ import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 
 export function RiskManagement({ disabled }: { disabled?: boolean }) {
   const { tradingConfig, updateTradingConfig } = useConfigStore();
-  const { dailyPnl, totalTrades, openTrades, closedTrades } = useTradingStore();
+  const dailyPnl = useTradingStore((s) => s.dailyPnl);
+  const totalTrades = useTradingStore((s) => s.totalTrades);
+  const openTrades = useTradingStore((s) => s.openTrades);
+  const closedTrades = useTradingStore((s) => s.closedTrades);
   if (!tradingConfig) return null;
 
   const profitPct = Math.min(100, Math.abs((dailyPnl.total / tradingConfig.profit_amount_day) * 100));

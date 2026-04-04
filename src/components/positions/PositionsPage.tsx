@@ -17,24 +17,30 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Clock,
+  Tag,
+  Hash,
+  BarChart3,
+  DollarSign,
+  Calendar,
+  ShieldAlert,
+  Settings2,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 import type { Position } from "@/lib/types";
 
-type SortField = "symbol" | "pnl" | "strike" | "qty";
+type SortField = "time" | "symbol" | "pnl" | "strike" | "qty";
 type SortDir = "asc" | "desc";
 
 export const PositionsPage = memo(function PositionsPage() {
-  const { positions, closedPositions, loading, refreshPositions, closeAll } = usePositions();
+  const { positions, closedPositions, loading, refreshPositions, forceRefreshPositions, closeAll } = usePositions();
   const [showCloseAll, setShowCloseAll] = useState(false);
-  const [sortField, setSortField] = useState<SortField>("pnl");
+  const [sortField, setSortField] = useState<SortField>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   useEffect(() => {
     refreshPositions();
-    const i = setInterval(refreshPositions, 1000);
-    return () => clearInterval(i);
   }, [refreshPositions]);
 
   const toggleSort = useCallback(
@@ -53,6 +59,12 @@ export const PositionsPage = memo(function PositionsPage() {
     const sorted = [...positions].sort((a, b) => {
       let cmp = 0;
       switch (sortField) {
+        case "time": {
+          const ta = a.entry_time ? new Date(a.entry_time as string).getTime() : 0;
+          const tb = b.entry_time ? new Date(b.entry_time as string).getTime() : 0;
+          cmp = ta - tb;
+          break;
+        }
         case "symbol":
           cmp = (a.symbol ?? "").localeCompare(b.symbol ?? "");
           break;
@@ -90,7 +102,7 @@ export const PositionsPage = memo(function PositionsPage() {
           <p className="text-xs text-muted-foreground/60">Active and closed positions</p>
         </div>
         <div className="flex gap-1.5">
-          <Button variant="outline" size="sm" onClick={refreshPositions} disabled={loading} className="h-8 text-xs">
+          <Button variant="outline" size="sm" onClick={forceRefreshPositions} disabled={loading} className="h-8 text-xs">
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
           {positions.length > 0 && (
@@ -144,51 +156,88 @@ export const PositionsPage = memo(function PositionsPage() {
           </Badge>
         </CardHeader>
         <CardContent className="p-0">
-          {loading && positions.length === 0 ? (
-            <div className="space-y-1 p-3">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-9 w-full rounded-md" />
-              ))}
-            </div>
-          ) : positions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8">
-              <Briefcase className="h-6 w-6 text-muted-foreground/10 mb-1.5" />
-              <p className="text-sm text-muted-foreground/70">No active positions</p>
-              <p className="text-xs text-muted-foreground/50 mt-0.5">
-                Positions appear when trades are executed
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto min-w-0">
-              <table className="w-full table-pro min-w-max">
-                <thead>
-                  <tr>
-                    <th className="w-6" />
-                    <SortTh field="symbol" label="Symbol" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th>Type</th>
-                    <SortTh field="strike" label="Strike" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th>Expiry</th>
-                    <SortTh field="qty" label="Qty" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th className="text-muted-foreground/70 font-normal min-w-[5.5rem]" title="Average fill (entry) and live mark">
+          <div className="overflow-x-auto min-w-0">
+            <table className="w-full table-pro min-w-max">
+              <thead>
+                <tr>
+                  <th className="w-6" />
+                  <SortTh field="time" label="Time" icon={Clock} sort={sortField} dir={sortDir} onClick={toggleSort} align="left" />
+                  <SortTh field="symbol" label="Symbol" icon={Tag} sort={sortField} dir={sortDir} onClick={toggleSort} align="left" />
+                  <th className="text-center">
+                    <span className="flex items-center justify-center gap-1">
+                      <Briefcase className="h-3 w-3 opacity-60" />
+                      Type
+                    </span>
+                  </th>
+                  <SortTh field="strike" label="Strike" icon={Target} sort={sortField} dir={sortDir} onClick={toggleSort} align="right" />
+                  <th className="text-left">
+                    <span className="flex items-center gap-1">
+                      <Calendar className="h-3 w-3 opacity-60" />
+                      Expiry
+                    </span>
+                  </th>
+                  <SortTh field="qty" label="Qty" icon={Hash} sort={sortField} dir={sortDir} onClick={toggleSort} align="right" />
+                  <th className="text-right min-w-[5.5rem]" title="Average fill (entry) and live mark">
+                    <span className="flex items-center justify-end gap-1">
+                      <BarChart3 className="h-3 w-3 opacity-60" />
                       Entry / Current
-                    </th>
-                    <th className="text-muted-foreground/70 font-normal" title="Bid / Ask prices used for TP/SL">Bid / Ask</th>
-                    <th className="text-muted-foreground/70 font-normal">TP / SL</th>
-                    <SortTh field="pnl" label="P&L" sort={sortField} dir={sortDir} onClick={toggleSort} />
-                    <th className="w-16" />
+                    </span>
+                  </th>
+                  <th className="text-right" title="Bid / Ask prices used for TP/SL">
+                    <span className="flex items-center justify-end gap-1">
+                      <BarChart3 className="h-3 w-3 opacity-60" />
+                      Bid / Ask
+                    </span>
+                  </th>
+                  <th className="text-left">
+                    <span className="flex items-center gap-1">
+                      <ShieldAlert className="h-3 w-3 opacity-60" />
+                      TP / SL
+                    </span>
+                  </th>
+                  <SortTh field="pnl" label="P&L" icon={DollarSign} sort={sortField} dir={sortDir} onClick={toggleSort} align="right" />
+                  <th className="text-center w-16">
+                    <span className="flex items-center justify-center gap-1">
+                      <Settings2 className="h-3 w-3 opacity-60" />
+                      Actions
+                    </span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && positions.length === 0 ? (
+                  <tr>
+                    <td colSpan={12} className="p-3">
+                      <div className="space-y-1">
+                        {Array.from({ length: 3 }).map((_, i) => (
+                          <Skeleton key={i} className="h-9 w-full rounded-md" />
+                        ))}
+                      </div>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {sortedPositions.map((p) => (
+                ) : positions.length === 0 ? (
+                  <tr>
+                    <td colSpan={12}>
+                      <div className="flex flex-col items-center justify-center py-8">
+                        <Briefcase className="h-6 w-6 text-muted-foreground/10 mb-1.5" />
+                        <p className="text-sm text-muted-foreground/70">No active positions</p>
+                        <p className="text-xs text-muted-foreground/50 mt-0.5">
+                          Positions appear when trades are executed
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  sortedPositions.map((p) => (
                     <PositionRow
                       key={`${p.symbol}-${p.strike}-${p.right}-${(p.expiry || "").replace(/-/g, "")}`}
                       position={p}
                     />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </CardContent>
       </Card>
 
@@ -216,29 +265,37 @@ function SortTh({
   sort,
   dir,
   onClick,
+  icon: Icon,
+  align = "left",
 }: {
   field: SortField;
   label: string;
   sort: SortField;
   dir: SortDir;
   onClick: (f: SortField) => void;
+  icon?: React.ComponentType<{ className?: string }>;
+  align?: "left" | "right";
 }) {
   const isActive = sort === field;
   return (
     <th
       className={cn(
         "cursor-pointer select-none transition-colors",
+        align === "right" ? "text-right" : "text-left",
         isActive ? "!text-primary" : "hover:!text-foreground/70"
       )}
       onClick={() => onClick(field)}
     >
-      <div className="flex items-center gap-0.5">
-        {label}
-        {isActive ? (
-          dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
-        ) : (
-          <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
-        )}
+      <div className={cn("flex items-center gap-1", align === "right" && "justify-end")}>
+        {Icon && <Icon className="h-3 w-3 opacity-60 shrink-0" />}
+        <span className="flex items-center gap-0.5">
+          {label}
+          {isActive ? (
+            dir === "asc" ? <ArrowUp className="h-2.5 w-2.5" /> : <ArrowDown className="h-2.5 w-2.5" />
+          ) : (
+            <ArrowUpDown className="h-2.5 w-2.5 opacity-30" />
+          )}
+        </span>
       </div>
     </th>
   );

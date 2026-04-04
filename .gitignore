@@ -194,7 +194,8 @@ license.json
 # Test directories and files
 test-img/
 test/
-tests/
+# Repo-root tests only (allow trading-engine/tests/ for engine unit tests)
+/tests/
 *.test
 
 # Temporary files

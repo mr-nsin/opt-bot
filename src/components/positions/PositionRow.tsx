@@ -14,10 +14,9 @@ import {
 } from "lucide-react";
 import type { Position } from "@/lib/types";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
-import { usePositions } from "@/hooks/usePositions";
+import { positions as positionsApi } from "@/lib/tauri-commands";
 
 export const PositionRow = memo(function PositionRow({ position }: { position: Position }) {
-  const { closePosition } = usePositions();
   const [expanded, setExpanded] = useState(false);
 
   const pnl = position.pnl ?? 0;
@@ -47,6 +46,10 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           )}
         </td>
 
+        <td className="text-xs text-muted-foreground/60 font-mono tabular-nums whitespace-nowrap">
+          {entryTime ? new Date(entryTime as string).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+        </td>
+
         <td>
           <div className="flex items-center gap-1">
             <span className="font-mono font-bold text-xs">{position.symbol}</span>
@@ -58,17 +61,17 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        <td>
+        <td className="text-center">
           <Badge variant={position.right === "C" || position.right === "CALL" ? "success" : "danger"} className="text-xs font-bold px-1.5 py-0">
             {position.right === "C" || position.right === "CALL" ? "CALL" : "PUT"}
           </Badge>
         </td>
 
-        <td className="font-mono tabular-nums text-xs">${position.strike?.toFixed(1)}</td>
+        <td className="font-mono tabular-nums text-xs text-right">${position.strike?.toFixed(1)}</td>
         <td className="text-muted-foreground/70 text-xs">{position.expiry}</td>
-        <td className="font-mono tabular-nums text-xs">{position.quantity}</td>
-        <td className="text-xs font-mono tabular-nums">
-          <div className="flex flex-col gap-0.5 leading-tight">
+        <td className="font-mono tabular-nums text-xs text-right">{position.quantity}</td>
+        <td className="text-xs font-mono tabular-nums text-right">
+          <div className="flex flex-col gap-0.5 leading-tight items-end">
             <span className="text-muted-foreground/70" title="Average entry (fill)">
               <span className="text-[10px] uppercase text-muted-foreground/50 mr-0.5">Entry</span>
               ${position.avg_price?.toFixed(2) ?? "—"}
@@ -80,10 +83,9 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        {/* Bid / Ask — visible in main row when available */}
-        <td className="text-xs font-mono tabular-nums">
+        <td className="text-xs font-mono tabular-nums text-right">
           {(position.bid != null && position.bid > 0) || (position.ask != null && position.ask > 0) ? (
-            <span className="flex flex-col gap-0.5">
+            <span className="flex flex-col gap-0.5 items-end">
               {position.bid != null && position.bid > 0 && <span>${Number(position.bid).toFixed(2)}</span>}
               {position.ask != null && position.ask > 0 && <span className="text-muted-foreground/80">${Number(position.ask).toFixed(2)}</span>}
             </span>
@@ -112,9 +114,8 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           )}
         </td>
 
-        {/* P&L with gauge */}
-        <td>
-          <div className="space-y-0.5">
+        <td className="text-right">
+          <div className="space-y-0.5 flex flex-col items-end">
             <div className="flex items-center gap-1">
               <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
                 {formatCurrency(pnl)}
@@ -132,13 +133,13 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
           </div>
         </td>
 
-        <td>
+        <td className="text-center">
           <Button
             variant="ghost"
             size="sm"
             onClick={(e) => {
               e.stopPropagation();
-              closePosition(position.symbol, position.strike, position.right);
+              positionsApi.close(position.symbol, position.strike, position.right, position.expiry);
             }}
             className="text-red-500 hover:text-red-600 hover:bg-red-500/10 h-5 px-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
           >
@@ -149,7 +150,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
 
       {expanded && (
         <tr>
-          <td colSpan={13} className="!p-0">
+          <td colSpan={14} className="!p-0">
             <div className="px-3 py-2 bg-muted/10 border-t border-border/10">
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 text-xs animate-fade-up">
                 <DetailItem icon={Target} label="Entry Price" value={`$${position.avg_price?.toFixed(2) ?? "—"}`} color="text-foreground" />

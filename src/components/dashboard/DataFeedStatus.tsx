@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 /** Shows what data is being fetched (updated every ~10s when engine is running). */
 export function DataFeedStatus() {
-  const { dataStatus } = useTradingStore();
+  const dataStatus = useTradingStore((s) => s.dataStatus);
 
   if (!dataStatus) {
     return (

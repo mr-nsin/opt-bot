@@ -3,6 +3,7 @@ Event emitter for sending messages back to the Rust host via stdout.
 All output to stdout is JSON-formatted, one message per line.
 """
 
+import os
 import sys
 import json
 import threading
@@ -11,17 +12,19 @@ from typing import Any, Dict
 
 
 _write_lock = threading.Lock()
+_stdout_fd = sys.stdout.fileno()
 
 
 def _send(message: dict):
-    """Thread-safe write to stdout"""
+    """Thread-safe, atomic write to stdout.
+    Uses os.write() on the raw fd so a single JSON line cannot be split
+    by print() or any other thread writing to stdout.
+    """
     with _write_lock:
         try:
-            line = json.dumps(message, default=str)
-            sys.stdout.write(line + "\n")
-            sys.stdout.flush()
+            line = json.dumps(message, default=str) + "\n"
+            os.write(_stdout_fd, line.encode("utf-8"))
         except Exception as e:
-            # Write error to stderr (won't interfere with protocol)
             sys.stderr.write(f"Emitter error: {e}\n")
             sys.stderr.flush()
 

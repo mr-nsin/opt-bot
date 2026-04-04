@@ -24,8 +24,8 @@ def getExpiry(EXPIRY):
     else:  # Sunday to Thursday
         next_trade_date = today + datetime.timedelta(days=1)
 
-    print(f"tody - {todayDate}")
-    print(f"next_trade_date - {next_trade_date}")
+    logger.debug(f"today - {todayDate}")
+    logger.debug(f"next_trade_date - {next_trade_date}")
 
     # Have current and next expiry
 

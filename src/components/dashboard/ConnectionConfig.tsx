@@ -8,7 +8,7 @@ import { Wifi, WifiOff } from "lucide-react";
 
 export function ConnectionConfig({ disabled }: { disabled?: boolean }) {
   const { tradingConfig, updateTradingConfig } = useConfigStore();
-  const { connectedToTws } = useTradingStore();
+  const connectedToTws = useTradingStore((s) => s.connectedToTws);
   if (!tradingConfig) return null;
 
   return (

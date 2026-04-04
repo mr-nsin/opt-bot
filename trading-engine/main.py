@@ -36,23 +36,22 @@ from protocol.emitter import emit_log, emit_engine_status, send_response
 from protocol import messages
 from engine.trading_engine import TradingEngine
 
+import builtins
+
+_original_print = builtins.print
+
+
+def _stderr_print(*args, **kwargs):
+    """Redirect all print() calls to stderr so they never corrupt the JSON protocol on stdout."""
+    kwargs["file"] = sys.stderr
+    _original_print(*args, **kwargs)
+
+
+builtins.print = _stderr_print
+
 
 def main():
     """Main entry point for the trading engine sidecar."""
-
-    # Redirect print statements to stderr so they don't interfere with protocol
-    class StderrWriter:
-        def write(self, text):
-            if text.strip():
-                sys.stderr.write(text)
-                sys.stderr.flush()
-        def flush(self):
-            sys.stderr.flush()
-
-    # Keep original stdout for protocol, redirect prints to stderr
-    original_stdout = sys.stdout
-    # Uncomment below to redirect prints:
-    # sys.stdout = StderrWriter()
 
     # Initialize engine
     engine = TradingEngine()

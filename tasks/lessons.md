@@ -1,5 +1,22 @@
 # Lessons Learned
 
+## Demo / live position row frozen (bid, ask, P&L) (2026-04-04)
+
+### Problem
+- During Demo Test, current price, bid/ask, and P&L stopped updating continuously in the UI.
+
+### Root cause
+- The demo streams **only** `emit_position` → sidecar event **`position_update`** (not `positions_snapshot`). In `handle_sidecar_message`, Rust updated `AppState` but set **`should_forward = false`** for `position_update`, so **`trading:position_update` never reached React** — only the initial fills appeared, then the row looked frozen.
+
+### Fix
+- Do **not** suppress forwarding for `position_update` (same as other live events). `account_metrics` is the pattern that sets `should_forward = false` **only** when it also calls `handle.emit("trading:account_metrics", ...)` explicitly.
+
+### Tests
+- Rust: `Position` deserializes from engine/demo JSON (`trading_state` tests).
+- Python: `trading-engine/tests/test_emitter_contract.py` asserts `emit_position` uses event `position_update`.
+
+---
+
 ## Bug Fix Workflow (2026-03-12)
 
 ### Rule: Test Every Fix
@@ -116,3 +133,32 @@ Multiple rows for the same trade (same symbol, strike, right, expiry) appeared i
 ### Pattern
 - **Match on full identity** — For options, always match by (symbol, strike, right, expiry). Normalize expiry (strip dashes/spaces) and right (C/CALL, P/PUT) across the pipeline.
 - **Defense in depth** — Deduplicate at source (backend) and at sink (store) to handle edge cases.
+
+---
+
+## License Silently Deleted by Automated Checks (2026-04-03)
+
+### Problem
+User's `license.enc` was silently deleted. App showed "No license found" on next startup despite having a valid license (expires 2026-04-29).
+
+### Root Cause
+**Three automated frontend paths called `invalidateLicenseState()` which deletes `license.enc`:**
+1. **`checkLicense()` on startup** — if `isRevocationError(err)` matched
+2. **Proactive expiry timer** (every 60s) — if `Date.now() > exp`, directly called delete
+3. **Periodic re-validation** (1min + every 30min) — if `isRevocationError(err)` matched
+
+**The trigger:** Rust `validate_license` fetches registry from Google Drive. When fetch fails (network timeout, DNS, throttling), the error message was:
+`"Registry check failed: <error>. License may be revoked or expired."`
+
+The old `isRevocationError` matched on `"expired"` AND `"registry check failed"` in that error string, so a transient network failure was misclassified as revocation → `invalidateLicenseState()` → `license.enc` deleted → license gone forever.
+
+### Fixes
+1. **`isRevocationError` tightened** — Only matches `"not found in registry"` or `"revoked"`. Network errors, timeouts, "expired", "registry check failed" no longer match.
+2. **Removed ALL `invalidateLicenseState()` calls from automated paths** — Only manual deactivation (user clicks "Deactivate") can delete `license.enc` now.
+3. **Expiry check no longer deletes file** — Just marks invalid in UI and stops trading; file preserved for renewal.
+4. **Rust `validate_license` falls back to local validation on network failure** — No more hard error when Google Drive is unreachable.
+
+### Pattern
+- **NEVER delete persistent credentials from automated code** — Only explicit user action (deactivate) or confirmed server-side revocation (key explicitly removed from registry, verified by finding the key) should delete stored credentials.
+- **Network failures are NOT revocations** — Any error message matching must be precise. Broad substring matches (`"expired"`, `"failed"`) are dangerous when error messages embed multiple concepts.
+- **Fail-open for license validation** — When the remote registry is unreachable, fall back to local validation. The user paid for the license; don't punish them for a network blip.

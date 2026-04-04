@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useEffect } from "react";
+import { memo, useMemo, useRef, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useTradingStore } from "@/stores/tradingStore";
@@ -34,11 +34,11 @@ export const PnLSparkline = memo(function PnLSparkline() {
   const status = useTradingStore((s) => s.status);
   const isRunning = status === "Running";
 
-  // Accumulate P&L history in a ref to persist across re-renders
   const historyRef = useRef<PnlPoint[]>([]);
   const lastRecordedRef = useRef<number>(0);
+  const [chartVersion, setChartVersion] = useState(0);
 
-  // Record a new point every ~2 seconds when running
+  // Record a new point every ~2 seconds when running and trigger chart re-render only then
   useEffect(() => {
     if (!isRunning) return;
 
@@ -57,6 +57,7 @@ export const PnLSparkline = memo(function PnLSparkline() {
       ...historyRef.current,
       { time: timeStr, pnl: dailyPnl.total },
     ].slice(-MAX_POINTS);
+    setChartVersion((v) => v + 1);
   }, [dailyPnl.total, isRunning]);
 
   const data = historyRef.current;
@@ -69,7 +70,8 @@ export const PnLSparkline = memo(function PnLSparkline() {
       maxPnl: Math.max(...values),
       minPnl: Math.min(...values),
     };
-  }, [data.length, dailyPnl.total]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartVersion]);
 
   const currentPnl = dailyPnl.total;
   const isPositive = currentPnl >= 0;

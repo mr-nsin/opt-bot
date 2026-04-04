@@ -128,13 +128,13 @@ def decrypt_string(encoded_text):
 def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
     try:
         if not Path(file_path).exists():
-            print("License file not found/Deleted.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
+            logger.error("License file not found/Deleted.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
             time.sleep(10)
             sys.exit()
             sys.exit(0)
             sys.exit(1)
         elif Path(file_path).exists():
-            print("License file present, Validating it")
+            logger.info("License file present, Validating it")
 
         with open(file_path, "r",  encoding="utf-8") as f:
             license_data = json.load(f)
@@ -145,20 +145,20 @@ def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
         now = datetime.now()
         delta = now - issued_date
         if delta.days <= 90:
-            print("License is valid.")
+            logger.info("License is valid.")
             return True
         else:
-            print("Your License has expired.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
+            logger.error("Your License has expired.\nPlease Contact Support Team at 'quantdrift@gmail.com'")
             time.sleep(20)
             sys.exit(1)
 
     except Exception as e:
-        print("License validation error:", e)
+        logger.error(f"License validation error: {e}")
         return False
 
 
 def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
-    print("calling init_api_client")
+    logger.info("calling init_api_client")
     #_client = TwsApiClient(event_queue=_event_queue, callback=_order_mgr.process_trade)
     _client = TwsApiClient(
         host=IP, port=PORT, clientId=CLIENTID,
@@ -198,8 +198,8 @@ def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
 
 
 def start_client(_client: TwsApiClient)-> None:
-    print("calling start_client")
-    print("_client value is = {}".format(_client))
+    logger.info("calling start_client")
+    logger.debug("_client value is = {}".format(_client))
     if _client is None or not _client.isConnected():
         logger.error("TWS not connected")
         return
@@ -770,66 +770,7 @@ def checkVWAPValue(stock, Right, candlesData):
 
     return toVWAP
 
-def checkVWAPValue_OLD(stock, Right, candlesData):
-    from datetime import datetime
-    toVWAP = False
-    logger.info(f"getting VWAP Value for stock = {stock}")
-    getCandlesData = candlesData
-    getCandleLenghtRange = len(getCandlesData)
-    # logger.info("Candle data is = {}".format(getCandlesData))
-    # exit()
-    totalVWAP = 0
-    curtVWAPList = []
-    curtVWAPCum = []
-    curtVWAPVol = []
-
-    # logger.info("\n\n Full Candle list is = {}\n\n".format(getCandlesData))
-
-    runningCandle = getCandlesData[0]
-    logger.info(f"Running Candle Value is = {runningCandle}")
-    runningHigh = float(runningCandle[2])
-    # logger.info("Running Candle High is = {}".format(runningHigh))
-
-    for eachCount in range(getCandleLenghtRange):
-        candle_0 = [float(eachCount) for eachCount in getCandlesData[eachCount][1:]]
-
-        candle_0_open = candle_0[0]
-        curtHigh = candle_0[1]
-        candle_0_low = candle_0[2]
-        candle_0_close = candle_0[3]
-        candle_0_vol = int(candle_0[4]) * 100
-
-        curtCumTotal = ((curtHigh + candle_0_low + candle_0_close) / 3) * candle_0_vol
-        curtVWAPCum.append(curtCumTotal)
-        curtVWAPVol.append(candle_0_vol)
-
-    sumCummlative = sum(curtVWAPCum)
-    sumVolume = sum(curtVWAPVol)
-    if sumVolume == 0:
-        logger.warning(f"VWAP_OLD: total volume is 0 for {stock}, returning False")
-        return False
-    intradayVWAP = sumCummlative / sumVolume
-
-    logger.info(("Current Time is = {} \
-                Current NewYork Trade Time is = {} \
-                Current MID VWAP Value is = {} for Stock = {}".format(
-                datetime.now().strftime("%Y-%m-%d-%H-%M-%S"),
-                datetime.now().astimezone(NY_TZ).strftime("%Y-%m-%d-%H-%M-%S"),
-                intradayVWAP,
-                stock)))
-
-    if Right == "CALL":
-        if runningHigh <= intradayVWAP:
-            logger.info(f"VWAP Condition matched For CALL for stock = {stock}")
-            toVWAP = True
-    elif Right == "PUT":
-        if runningHigh > intradayVWAP:
-            logger.info(f"VWAP Condition matched For PUT for stock = {stock}")
-            toVWAP = True
-    else:
-        logger.info(f"VWAP Condition not matched for stock = {stock}")
-
-    return toVWAP
+## checkVWAPValue_OLD — removed (dead code, replaced by checkVWAPValue)
 
 def getATRValue(stock, candlesData, days=21):
     formatList = []
@@ -2191,29 +2132,8 @@ def synchronize_orders():
             # logs a message to indicate that the order has been successfully synchronized
             logger.info(f"Order synchronized: {order.option_symbol} {order}")
 
-def account_pnl_monitor(account_id, ACCOUNT_TP, ACCOUNT_SL):
-    while True:
-        try:
-            daily_pnl, realizedpnl = client.get_pnl(account_id)
-            if daily_pnl >= ACCOUNT_TP:
-                logger.info(f"Account profit target reached (${daily_pnl} >= ${ACCOUNT_TP}), closing all positions...")
-                client.cancel_all_orders()
-                check_and_close_all_open_positions()
-                break
-            elif daily_pnl <= -ACCOUNT_SL:
-                logger.info(f"Account stop-loss hit (${daily_pnl} <= ${ACCOUNT_SL}), closing all positions...")
-                client.cancel_all_orders()
-                check_and_close_all_open_positions()
-                break
-            else:
-                logger.info(f"Accoun Current: ${daily_pnl} SL: ${ACCOUNT_SL} TP: ${ACCOUNT_TP}...")
-        except Exception as e:
-            logger.error(f"PnL monitor error: {e}")
-        time.sleep(1)  # check every 1 sec
-    sys.exit(0)
-    sys.exit(1)
-    sys._exit(1)
-    
+## account_pnl_monitor — removed (dead code with triple sys.exit; PnL is handled by pnl_watchdog_thread)
+
 # ===== ADD THIS BELOW OrderManager / helper functions =====
 
 def monitor_positions_loop():
@@ -2259,7 +2179,7 @@ def monitor_positions_loop():
 
 def main_call(data):
     logger.info("Starting BOT")
-    print("DATA is = {}\n\n\n".format(data))
+    logger.debug("DATA is = {}".format(data))
     
     # ============ RE-READ CONFIG FILE TO GET LATEST VALUES ============
     global fileData
@@ -2339,14 +2259,14 @@ def main_call(data):
         signal_dict[each] = {"last_signal":"", "current_signal":"", "last_trade_short_strike":"", "last_trade_buy_strike":"", "right":"", "conIdDetails_short":"", "conIdDetails_buy":""}
     logger.info("Signal Dict is = {}".format(signal_dict))
     
-    print("PORT = {}".format(PORT))
+    logger.info("PORT = {}".format(PORT))
     global client, client_thread, NY_TZ, event_queue, order_mgr, reconnect_time, dataStrike
     
     client_thread = None
     client = None
     event_queue = Queue()
     db = DAL()
-    order_mgr = OrderManager(db=db)
+    order_mgr = OrderManager(db=db, trade_time_dict=trade_time_dict, sub_account_id=SUB_ACCOUNT_ID)
     client = init_api_client(_event_queue=event_queue, _order_mgr = order_mgr)
 
     # Start the TWS client connection
@@ -2418,7 +2338,7 @@ def main_call(data):
 def start_trading(data):
     global _process
     if _process and _process.is_alive():
-        print("BOT already running")
+        logger.warning("BOT already running")
         return
     _process = Process(target=main_call, args=(data,))
     _process.start()
@@ -2430,55 +2350,7 @@ def stop_trading():
         _process.terminate()
         _process.join()
         _process = None
-        print("BOT process stopped")
+        logger.info("BOT process stopped")
     
 
-"""if __name__ == "__main__":
-    logger.info("Starting BOT")
-    while True:
-        client_thread = None
-        client = None
-        event_queue = Queue()
-        db = DAL()
-        order_mgr = OrderManager(db=db)
-        client = init_api_client(_event_queue=event_queue, _order_mgr = order_mgr)
-        
-        if client is None:
-            time.sleep(10.0)
-            continue
-
-        # Start the TWS client connection
-        start_client(_client=client)
-
-        # Start the timer to check and close the program if needed
-        timeCheckAndCloseProgram()
-        
-        # Initialize the order requests
-        init_order_requests()
-
-        # wait 3 seconds to get response of orders & positions request
-        time.sleep(3.0)
-
-        # Initialize the data feed
-        init_data_feed()
-        # Fetch all the strike expiries for all stocks
-        data = fetch_all_strike_expiries()
-        # synchronize positions to be monitored for closing.
-        synchronize_positions()
-        # synchronize previous days open orders
-        synchronize_orders()
-
-        # Initialize the event processors if the TWS client is connected
-        processors = init_start_event_processors()
-        
-        # set the flag to start putting market data in the event queue
-        client.initialization_done = True
-        
-        try:
-            for processor in processors:
-                processor.join()
-        except Exception as ex:
-            pass
-
-        if client.connection_closed == True:
-            logger.error(f"TWS connection is closed, trying re-connect in {reconnect_time} seconds")"""
+## Legacy __main__ block removed — the entry point is now trading-engine/main.py

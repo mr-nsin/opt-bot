@@ -2,6 +2,8 @@ use crate::commands::logs::{push_log, LogEntry};
 use crate::sidecar::{manager, protocol::*};
 use crate::state::app_state::AppState;
 use crate::state::trading_state::TradingStatus;
+use crate::IS_TRADING;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
@@ -48,10 +50,10 @@ pub async fn start_trading(
         return Err(e);
     }
 
-    // Update state
     let mut app = state.lock().await;
     app.trading.status = TradingStatus::Running;
     app.sidecar_running = true;
+    IS_TRADING.store(true, Ordering::Relaxed);
 
     Ok("Trading started".into())
 }
@@ -89,9 +91,9 @@ pub async fn stop_trading(
     app.trading.status = TradingStatus::Idle;
     app.sidecar_running = false;
     app.connected_to_tws = false;
+    IS_TRADING.store(false, Ordering::Relaxed);
     drop(app);
 
-    // Notify frontend so event listeners clean up (stop log display, reset indicators)
     let _ = app_handle.emit("sidecar-terminated", serde_json::json!({ "reason": "stop_trading" }));
 
     Ok("Trading stopped".into())
@@ -132,11 +134,11 @@ pub async fn emergency_stop(
         log::warn!("Failed to kill sidecar on emergency stop: {}", e);
     }
 
-    // Update state: clear positions (closed on TWS), zero unrealized PnL
     let mut app = state.lock().await;
     app.trading.status = TradingStatus::Idle;
     app.sidecar_running = false;
     app.connected_to_tws = false;
+    IS_TRADING.store(false, Ordering::Relaxed);
     app.trading.positions.clear();
     app.trading.daily_pnl.unrealized = 0.0;
     app.trading.daily_pnl.total = app.trading.daily_pnl.realized;

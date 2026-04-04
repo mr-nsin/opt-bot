@@ -1,72 +1,49 @@
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import { positions as positionsApi } from "@/lib/tauri-commands";
 import { usePositionStore } from "@/stores/positionStore";
-import { useTauriEvent } from "./useTauri";
-import type { Position } from "@/lib/types";
 
+/**
+ * Imperative position API (refresh, close, closeAll).
+ * Real-time position_update and trade_closed events are handled globally
+ * in useTradingEvents.ts (called once at AppContent root) to avoid
+ * duplicate listeners that race and overwrite each other's P&L data.
+ */
 export function usePositions() {
-  const { positions, closedPositions, loading, setPositions, updatePosition, removePosition, addClosedPosition, setLoading } =
-    usePositionStore();
-
-  // Listen to position updates — use getState() to avoid stale closure
-  useTauriEvent<Position>("trading:position_update", (data) => {
-    const current = usePositionStore.getState().positions;
-    const normalRight = (r: string | undefined) => (r === "CALL" ? "C" : r === "PUT" ? "P" : r);
-    const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
-    const existing = current.find(
-      (p) =>
-        p.symbol === data.symbol &&
-        Number(p.strike) === Number(data.strike) &&
-        normalRight(p.right) === normalRight(data.right) &&
-        normExp(p.expiry) === normExp(data.expiry)
-    );
-    if (existing) {
-      updatePosition(data.symbol, data);
-    } else {
-      usePositionStore.getState().setPositions([...current, data]);
-    }
-  });
-
-  // Move position from active → closed on trade_closed
-  useTauriEvent("trading:trade_closed", (data: any) => {
-    if (data.symbol) {
-      const current = usePositionStore.getState().positions;
-      const nr = (r: string | undefined) => r === "CALL" ? "C" : r === "PUT" ? "P" : r;
-      const normExp = (e?: string) => (e || "").replace(/-/g, "").trim();
-      const pos = current.find(
-        (p) =>
-          p.symbol === data.symbol &&
-          (data.strike == null || Number(p.strike) === Number(data.strike)) &&
-          (data.right == null || nr(p.right) === nr(data.right)) &&
-          (data.expiry == null || data.expiry === "" || normExp(p.expiry) === normExp(data.expiry))
-      );
-      if (pos) {
-        addClosedPosition({ ...pos, ...data });
-        removePosition(
-          data.symbol,
-          data.strike != null ? Number(data.strike) : undefined,
-          data.right != null ? String(data.right) : undefined,
-          data.expiry != null ? String(data.expiry) : undefined
-        );
-      }
-    }
-  });
+  const positions = usePositionStore((s) => s.positions);
+  const closedPositions = usePositionStore((s) => s.closedPositions);
+  const loading = usePositionStore((s) => s.loading);
 
   const refreshPositions = useCallback(async () => {
-    setLoading(true);
+    const store = usePositionStore.getState();
+    if (store.positions.length > 0) return;
+    store.setLoading(true);
     try {
       const result = await positionsApi.getAll();
-      setPositions(result);
+      if (result.length > 0) {
+        usePositionStore.getState().setPositions(result);
+      }
     } catch (err) {
       console.error("Failed to fetch positions:", err);
     } finally {
-      setLoading(false);
+      usePositionStore.getState().setLoading(false);
     }
-  }, [setPositions, setLoading]);
+  }, []);
+
+  const forceRefreshPositions = useCallback(async () => {
+    usePositionStore.getState().setLoading(true);
+    try {
+      const result = await positionsApi.getAll();
+      usePositionStore.getState().setPositions(result);
+    } catch (err) {
+      console.error("Failed to fetch positions:", err);
+    } finally {
+      usePositionStore.getState().setLoading(false);
+    }
+  }, []);
 
   const closePosition = useCallback(
-    async (symbol: string, strike?: number, right?: string) => {
-      await positionsApi.close(symbol, strike, right);
+    async (symbol: string, strike?: number, right?: string, expiry?: string) => {
+      await positionsApi.close(symbol, strike, right, expiry);
     },
     []
   );
@@ -80,6 +57,7 @@ export function usePositions() {
     closedPositions,
     loading,
     refreshPositions,
+    forceRefreshPositions,
     closePosition,
     closeAll,
   };

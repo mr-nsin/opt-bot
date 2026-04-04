@@ -23,8 +23,8 @@ if PARENT_DIR not in sys.path:
 
 from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
-    emit_pnl, emit_position, emit_signal, emit_trade_executed,
-    emit_trade_closed, emit_order_update, emit_error,
+    emit_pnl, emit_position, emit_positions_snapshot, emit_signal,
+    emit_trade_executed, emit_trade_closed, emit_order_update, emit_error,
     emit_data_status, emit_account_metrics,
 )
 from engine.models import TradingConfig
@@ -48,6 +48,7 @@ class TradingEngine:
         self._last_tws_reconnect_attempt: float = 0
         self._tws_reconnect_interval_sec: float = 10.0
         self._data_feed_started: bool = False
+        self._tws_disconnect_logged: bool = False
         self._event_processor_threads: list = []
         self._last_data_status_time: float = 0
         self._data_status_interval_sec: float = 5.0
@@ -110,6 +111,9 @@ class TradingEngine:
     def _cancel_orders_only(self):
         """Cancel all open orders. Does NOT close positions (used by Stop Trading)."""
         try:
+            if "BOT" not in sys.modules:
+                emit_log("BOT not loaded yet — skipping order cancellation", "WARN", "system")
+                return
             import BOT
             if self._client and self._client.isConnected():
                 emit_log("Cancelling all open orders...", "INFO", "system")
@@ -124,6 +128,9 @@ class TradingEngine:
         """Cancel all open orders and close all positions (used by Emergency Stop).
         Uses getAndBuyAfterMarketEnd which closes ALL TWS positions (each in its own try/except so one failure does not abort the rest)."""
         try:
+            if "BOT" not in sys.modules:
+                emit_log("BOT not loaded yet — skipping emergency close", "WARN", "system")
+                return
             import BOT
             if self._client and self._client.isConnected():
                 emit_log("Emergency stop: cancelling all open orders...", "INFO", "system")
@@ -145,14 +152,13 @@ class TradingEngine:
         emit_log("Stopping trading engine...", "INFO", "system")
         self.running = False
 
-        # Signal BOT globals to stop trading loops
-        try:
-            import BOT
-            BOT.STOP_TRADING = True
-        except Exception:
-            pass
+        if "BOT" in sys.modules:
+            try:
+                import BOT
+                BOT.STOP_TRADING = True
+            except Exception:
+                pass
 
-        # Cancel orders only (do NOT close positions — user may close manually)
         self._cancel_orders_only()
 
         # Wait for engine thread to exit (it checks self.running each iteration)
@@ -202,15 +208,14 @@ class TradingEngine:
         reason = params.get("reason") if isinstance(params.get("reason"), str) else None
         self.running = False
 
-        # Signal BOT globals to stop trading loops
-        try:
-            import BOT
-            BOT.STOP_TRADING = True
-            BOT.CLOSE_ALL_ORDERS = True
-        except Exception:
-            pass
+        if "BOT" in sys.modules:
+            try:
+                import BOT
+                BOT.STOP_TRADING = True
+                BOT.CLOSE_ALL_ORDERS = True
+            except Exception:
+                pass
 
-        # Close all orders and positions before disconnecting
         self._close_all_orders_and_positions()
 
         # Force disconnect and destroy client
@@ -374,115 +379,239 @@ class TradingEngine:
         return {"status": "demo_started"}
 
     def _run_demo_simulation(self):
-        """Background thread that simulates a full trading cycle."""
+        """Simulate a full trading cycle identical to a real TWS session.
+
+        Timeline (~25s total, fits within the 30s frontend timeout):
+          0.0s  — TWS connection established
+          0.5s  — Signal scan detects entries (one per symbol)
+          2.0s  — Entry fills arrive from TWS
+          2.5s  — Live price streaming begins (40 ticks × 0.5s = 20s)
+         22.5s  — TP hit on one position, SL hit on another, manual close on third
+         ~25s   — Engine goes Idle
+
+        Events emitted match the real engine exactly:
+          trade_executed, position_update (with qty, bid, ask, last, pnl, TP/SL),
+          pnl_update, trade_closed, engine_status, connection_status, log_message,
+          signal_detected, data_status.
+        """
         import random
         from datetime import datetime
 
         demo_symbols = [
-            {"symbol": "AAPL", "strike": 230.0, "right": "C", "expiry": "20260306"},
-            {"symbol": "TSLA", "strike": 350.0, "right": "P", "expiry": "20260306"},
-            {"symbol": "SPY",  "strike": 580.0, "right": "C", "expiry": "20260306"},
+            {"symbol": "AAPL", "strike": 230.0, "right": "C", "expiry": "20260418",
+             "base_price": 3.85, "vol": 0.025},
+            {"symbol": "TSLA", "strike": 350.0, "right": "P", "expiry": "20260418",
+             "base_price": 6.20, "vol": 0.035},
+            {"symbol": "SPY",  "strike": 580.0, "right": "C", "expiry": "20260418",
+             "base_price": 2.40, "vol": 0.020},
         ]
 
-        emit_log("DEMO: Starting simulation — 3 fake positions + trades", "INFO", "system")
+        # --- Phase 0: TWS connection ---
+        emit_engine_status("Running", connected=True)
+        emit_connection_status(True, "Connected to TWS (paper) — 127.0.0.1:7497")
+        emit_log("Connected to TWS paper trading on 127.0.0.1:7497", "INFO", "system")
+        emit_data_status(
+            connected=True, data_feed_started=True,
+            symbols=[s["symbol"] for s in demo_symbols],
+            queue_size=0, tick_count=len(demo_symbols),
+            stock_ticks=[{"symbol": s["symbol"], "last": s["base_price"]} for s in demo_symbols],
+            bar_count=0,
+        )
+        time.sleep(0.5)
 
-        # Phase 1: Emit signals
-        time.sleep(1)
+        # --- Phase 1: Signal detection ---
+        emit_log("Signal scan started — checking SuperTrend on 1-min bars", "INFO", "signal")
         for s in demo_symbols:
-            emit_signal(s["symbol"], s["right"], s["strike"], round(random.uniform(1.5, 5.0), 2),
-                        f"DEMO SuperTrend flip → {s['right']}")
-            emit_log(f"DEMO: Signal detected for {s['symbol']} {s['strike']}{s['right'][0]}", "INFO", "signal")
-            time.sleep(0.5)
+            signal_price = round(s["base_price"] * random.uniform(0.97, 1.03), 2)
+            emit_signal(s["symbol"], s["right"], s["strike"], signal_price,
+                        f"SuperTrend flip {'bullish' if s['right'] == 'C' else 'bearish'} on 1-min")
+            emit_log(f"Signal: {s['symbol']} {s['strike']}{s['right']} — SuperTrend @ ${signal_price:.2f}", "INFO", "signal")
+            time.sleep(0.2)
+        time.sleep(0.3)
 
-        # Phase 2: Emit trade_executed (entry fills)
-        time.sleep(1)
+        # --- Phase 2: Entry fills ---
         entries = {}
         for i, s in enumerate(demo_symbols):
-            entry_price = round(random.uniform(1.5, 4.5), 2)
+            entry = round(s["base_price"] * random.uniform(0.98, 1.02), 2)
             qty = random.choice([1, 2, 3])
-            trade_id = 10000 + i
-            entries[s["symbol"]] = {"entry_price": entry_price, "qty": qty, "id": trade_id}
+            tp = round(entry * random.uniform(1.20, 1.40), 2)
+            sl = round(entry * random.uniform(0.60, 0.75), 2)
+            entries[s["symbol"]] = {
+                "entry": entry, "qty": qty, "id": 10000 + i,
+                "last": entry, "tp": tp, "sl": sl, "vol": s["vol"],
+                "closed": False,
+            }
+
             emit_trade_executed({
-                "id": trade_id,
-                "symbol": s["symbol"],
-                "right": s["right"],
-                "strike": s["strike"],
-                "expiry": s["expiry"],
-                "side": "BUY",
-                "quantity": qty,
-                "entry_price": entry_price,
-                "price": entry_price,
+                "id": 10000 + i,
+                "symbol": s["symbol"], "right": s["right"],
+                "strike": s["strike"], "expiry": s["expiry"],
+                "side": "BUY", "quantity": qty,
+                "entry_price": entry, "price": entry,
                 "status": "open",
                 "timestamp": datetime.now().isoformat(),
             })
-            emit_log(f"DEMO: ENTRY FILLED {s['symbol']} {s['strike']}{s['right'][0]} {qty}x @ ${entry_price:.2f}", "INFO", "order")
-            time.sleep(0.5)
 
-        # Phase 3: Emit positions with live P&L updates (every 2s for 12s)
-        emit_log("DEMO: Positions open — updating P&L every 2s for 12s", "INFO", "system")
-        for tick in range(6):
+            emit_position({
+                "symbol": s["symbol"], "strike": s["strike"],
+                "right": s["right"], "expiry": s["expiry"],
+                "quantity": qty, "qty": qty,
+                "avg_price": entry, "current_price": entry,
+                "bid": round(entry - 0.02, 2), "ask": round(entry + 0.02, 2),
+                "last": entry, "pnl": 0.0, "pnl_percent": 0.0,
+                "profit_price": tp, "stoploss_price": sl,
+                "exit_price_used": round(entry - 0.02, 2), "exit_price_source": "bid",
+            })
+
+            emit_log(
+                f"FILL BUY {qty}x {s['symbol']} {s['strike']}{s['right']} @ ${entry:.2f}"
+                f"  TP=${tp:.2f}  SL=${sl:.2f}",
+                "INFO", "order",
+            )
+            time.sleep(0.3)
+
+        # --- Phase 3: Live price streaming (40 ticks × 0.5s = 20s) ---
+        STREAM_TICKS = 40
+        emit_log(f"Streaming live prices — {STREAM_TICKS} ticks over {STREAM_TICKS * 0.5:.0f}s", "INFO", "system")
+
+        # Pre-decide which symbols get TP/SL exits and at which tick
+        sym_list = [s["symbol"] for s in demo_symbols]
+        tp_sym = random.choice(sym_list)
+        remaining = [s for s in sym_list if s != tp_sym]
+        sl_sym = random.choice(remaining)
+        tp_tick = random.randint(STREAM_TICKS - 10, STREAM_TICKS - 5)
+        sl_tick = random.randint(STREAM_TICKS - 8, STREAM_TICKS - 3)
+
+        for tick_num in range(STREAM_TICKS):
             for s in demo_symbols:
                 e = entries[s["symbol"]]
-                price_move = round(random.uniform(-0.3, 0.5), 2)
-                current = round(e["entry_price"] + price_move * (tick + 1) / 3, 2)
-                current = max(0.01, current)
-                pnl = round((current - e["entry_price"]) * e["qty"] * 100, 2)
-                pnl_pct = round((current - e["entry_price"]) / e["entry_price"] * 100, 2) if e["entry_price"] > 0 else 0
-                emit_position({
-                    "symbol": s["symbol"],
-                    "strike": s["strike"],
-                    "right": s["right"],
-                    "expiry": s["expiry"],
-                    "quantity": e["qty"],
-                    "avg_price": e["entry_price"],
-                    "current_price": current,
-                    "pnl": pnl,
-                    "pnl_percent": pnl_pct,
-                })
-            # Emit fake P&L
-            total_pnl = sum(
-                round((entries[s["symbol"]]["entry_price"] + random.uniform(-0.2, 0.4)) - entries[s["symbol"]]["entry_price"], 2) * entries[s["symbol"]]["qty"] * 100
-                for s in demo_symbols
-            )
-            emit_pnl(daily_pnl=round(total_pnl, 2), unrealized=round(total_pnl * 0.7, 2), realized=round(total_pnl * 0.3, 2))
-            time.sleep(2)
+                if e["closed"]:
+                    continue
 
-        # Phase 4: Close positions one by one
-        emit_log("DEMO: Closing positions one by one", "INFO", "system")
+                vol = e["vol"]
+                # Mean-revert toward entry with small drift up for calls, down for puts
+                drift = 0.002 if s["right"] == "C" else -0.001
+                mean_revert = 0.01 * (e["entry"] - e["last"]) / e["entry"]
+                move = drift + mean_revert + vol * random.gauss(0, 1)
+
+                # Force toward TP/SL near target ticks
+                if s["symbol"] == tp_sym and tick_num >= tp_tick - 3:
+                    move = abs(move) + 0.015
+                if s["symbol"] == sl_sym and tick_num >= sl_tick - 3:
+                    move = -abs(move) - 0.015
+
+                e["last"] = round(max(0.05, e["last"] * (1 + move)), 2)
+                last = e["last"]
+
+                spread = round(random.uniform(0.02, 0.06), 2)
+                bid = round(max(0.01, last - spread / 2), 2)
+                ask = round(max(bid + 0.01, last + spread / 2), 2)
+                exit_price_used = bid if bid > 0 else last
+                exit_source = "bid" if bid > 0 else "last"
+
+                pnl = round((last - e["entry"]) * e["qty"] * 100, 2)
+                pnl_pct = round((last - e["entry"]) / e["entry"] * 100, 2) if e["entry"] > 0 else 0.0
+
+                emit_position({
+                    "symbol": s["symbol"], "strike": s["strike"],
+                    "right": s["right"], "expiry": s["expiry"],
+                    "quantity": e["qty"], "qty": e["qty"],
+                    "avg_price": e["entry"], "current_price": last,
+                    "bid": bid, "ask": ask, "last": last,
+                    "pnl": pnl, "pnl_percent": pnl_pct,
+                    "profit_price": e["tp"], "stoploss_price": e["sl"],
+                    "exit_price_used": exit_price_used, "exit_price_source": exit_source,
+                })
+
+                # Check for TP/SL exits
+                if s["symbol"] == tp_sym and tick_num >= tp_tick and bid >= e["tp"]:
+                    self._demo_close(s, e, bid, "TP HIT")
+                elif s["symbol"] == sl_sym and tick_num >= sl_tick and bid <= e["sl"]:
+                    self._demo_close(s, e, bid, "SL HIT")
+
+            # Account-level P&L every other tick (~1s)
+            if tick_num % 2 == 0:
+                total_unreal = sum(
+                    round((entries[sym]["last"] - entries[sym]["entry"]) * entries[sym]["qty"] * 100, 2)
+                    for sym in sym_list if not entries[sym]["closed"]
+                )
+                total_real = sum(
+                    entries[sym].get("realized_pnl", 0.0)
+                    for sym in sym_list if entries[sym]["closed"]
+                )
+                emit_pnl(
+                    daily_pnl=round(total_unreal + total_real, 2),
+                    unrealized=round(total_unreal, 2),
+                    realized=round(total_real, 2),
+                )
+
+            time.sleep(0.5)
+
+        # --- Phase 4: Close any remaining positions ---
+        emit_log("Closing remaining positions", "INFO", "system")
         for s in demo_symbols:
             e = entries[s["symbol"]]
-            exit_price = round(e["entry_price"] + random.uniform(-0.5, 1.0), 2)
-            exit_price = max(0.01, exit_price)
-            trade_pnl = round((exit_price - e["entry_price"]) * e["qty"] * 100, 2)
-            emit_trade_closed({
-                "symbol": s["symbol"],
-                "right": s["right"],
-                "strike": s["strike"],
-                "expiry": s["expiry"],
-                "quantity": e["qty"],
-                "pnl": trade_pnl,
-                "entry_price": e["entry_price"],
-                "exit_price": exit_price,
-                "timestamp": datetime.now().isoformat(),
-            })
-            emit_log(f"DEMO: EXIT FILLED {s['symbol']} {s['strike']}{s['right'][0]} @ ${exit_price:.2f} | P&L: ${trade_pnl:+.2f}", "INFO", "order")
-            time.sleep(1.5)
+            if not e["closed"]:
+                self._demo_close(s, e, e["last"], "SESSION END")
+        time.sleep(0.3)
 
-        emit_log("DEMO: Simulation complete — all positions closed", "INFO", "system")
-        emit_log("DEMO: Check Positions page (active → blotter → closed), Analytics, and Dashboard", "INFO", "system")
+        total_realized = sum(entries[sym].get("realized_pnl", 0.0) for sym in sym_list)
+        emit_pnl(daily_pnl=round(total_realized, 2), unrealized=0.0, realized=round(total_realized, 2))
+        emit_log(f"Demo complete — Total P&L: ${total_realized:+.2f}", "INFO", "system")
+
         if not self.running:
             emit_engine_status("Idle", connected=False)
+            emit_connection_status(False, "TWS disconnected — demo ended")
+
+    @staticmethod
+    def _demo_close(sym_info: dict, entry_data: dict, exit_price: float, reason: str):
+        """Helper to emit close events for one demo position."""
+        from datetime import datetime
+        entry_data["closed"] = True
+        trade_pnl = round((exit_price - entry_data["entry"]) * entry_data["qty"] * 100, 2)
+        entry_data["realized_pnl"] = trade_pnl
+
+        emit_trade_closed({
+            "symbol": sym_info["symbol"], "right": sym_info["right"],
+            "strike": sym_info["strike"], "expiry": sym_info["expiry"],
+            "quantity": entry_data["qty"], "pnl": trade_pnl,
+            "entry_price": entry_data["entry"], "exit_price": exit_price,
+            "timestamp": datetime.now().isoformat(),
+        })
+        emit_log(
+            f"{reason}: CLOSED {sym_info['symbol']} {sym_info['strike']}{sym_info['right']}"
+            f" @ ${exit_price:.2f}  P&L: ${trade_pnl:+.2f}",
+            "INFO", "order",
+        )
 
     def close_position(self, params: dict) -> dict:
-        """Close a specific position by symbol (and optionally strike/right for options)."""
+        """Close a specific position by symbol (and optionally strike/right/expiry for options)."""
         symbol = params.get("symbol", "")
         strike = params.get("strike")
         right = params.get("right")
+        expiry = params.get("expiry")
         if strike is not None:
             strike = float(strike)
-        emit_log(f"Close position requested for {symbol}" + (f" strike={strike} right={right}" if strike or right else ""), "INFO", "orders")
-        if self._order_mgr and hasattr(self._order_mgr, 'close_position_by_symbol'):
-            self._order_mgr.close_position_by_symbol(symbol, strike=strike, right=right)
+        if expiry is not None:
+            expiry = str(expiry).strip()
+        else:
+            expiry = None
+        detail = []
+        if strike is not None:
+            detail.append(f"strike={strike}")
+        if right:
+            detail.append(f"right={right}")
+        if expiry:
+            detail.append(f"expiry={expiry}")
+        emit_log(
+            f"Close position requested for {symbol}" + (f" ({', '.join(detail)})" if detail else ""),
+            "INFO",
+            "orders",
+        )
+        if self._order_mgr and hasattr(self._order_mgr, "close_position_by_symbol"):
+            self._order_mgr.close_position_by_symbol(
+                symbol, strike=strike, right=right, expiry=expiry
+            )
         return {"status": "close_requested", "symbol": symbol}
 
     def close_all(self) -> dict:
@@ -518,10 +647,17 @@ class TradingEngine:
             emit_log(f"Database init failed: {e}", "WARN", "system")
 
     def _init_order_manager(self):
-        """Initialize the order manager."""
+        """Initialize the order manager with injected dependencies (no circular imports)."""
         try:
             from order_manager import OrderManager
-            self._order_mgr = OrderManager(db=self._db)
+            try:
+                import BOT
+                ttd = getattr(BOT, "trade_time_dict", {})
+                sub_acct = getattr(BOT, "SUB_ACCOUNT_ID", "") or ""
+            except Exception:
+                ttd = {}
+                sub_acct = ""
+            self._order_mgr = OrderManager(db=self._db, trade_time_dict=ttd, sub_account_id=sub_acct)
             emit_log("Order manager initialized", "INFO", "system")
         except Exception as e:
             emit_log(f"Order manager init failed: {e}", "ERROR", "system")
@@ -585,9 +721,13 @@ class TradingEngine:
         # Before attempting reconnect, check if the client is actually still connected
         # (TWS may have sent connectionClosed but the socket is still alive)
         if self._client.isConnected():
-            self.connected = True
-            emit_connection_status(True, "TWS connection restored (was marked disconnected)")
-            return
+            # Verify it's genuinely connected, not a stale socket state
+            time.sleep(0.1)
+            if self._client.isConnected():
+                self.connected = True
+                self._tws_disconnect_logged = False
+                emit_connection_status(True, "TWS connection restored (was marked disconnected)")
+                return
 
         # Also check BOT.client — it may be a working connection
         try:
@@ -597,6 +737,7 @@ class TradingEngine:
                 self._client = bot_client
                 self.connected = True
                 self._data_feed_started = True
+                self._tws_disconnect_logged = False
                 emit_connection_status(True, "Using BOT.client connection")
                 return
         except Exception:
@@ -700,8 +841,12 @@ class TradingEngine:
                 s: {"last_signal": "", "current_signal": "", "last_trade_short_strike": "", "last_trade_buy_strike": "", "right": "", "conIdDetails_short": "", "conIdDetails_buy": ""}
                 for s in stock_list
             }
-            # Cooldown keys are symbol+right+expiry; empty at startup (first trade per combo allowed)
             BOT.trade_time_dict = {}
+
+            # Sync injected references so OrderManager sees the live BOT dicts
+            if self._order_mgr is not None:
+                self._order_mgr.trade_time_dict = BOT.trade_time_dict
+                self._order_mgr.sub_account_id = BOT.SUB_ACCOUNT_ID
 
             # --- Required for checkAlgoAndTrade, checkConditionsAndTrade, takeTrade, placeOrder (same as main_call) ---
             # Without these, BOT hits NameError or wrong behavior when processing signals/trades.
@@ -909,6 +1054,7 @@ class TradingEngine:
                 if self._client and getattr(self._client, "isConnected", None):
                     if self._client.isConnected() and not self.connected:
                         self.connected = True
+                        self._tws_disconnect_logged = False
                         self._account_metrics_first_emit_done = False
                         emit_connection_status(True, "Reconnected to TWS")
                         emit_log("TWS connection restored", "INFO", "system")
@@ -927,7 +1073,9 @@ class TradingEngine:
                         self._data_feed_started = False
                         self._account_metrics_first_emit_done = False
                         emit_connection_status(False, "TWS disconnected")
-                        emit_log("TWS disconnected", "WARN", "system")
+                        if not self._tws_disconnect_logged:
+                            self._tws_disconnect_logged = True
+                            emit_log("TWS disconnected — waiting for engine reconnect", "WARN", "system")
 
                 # When connected, start data feed and strategy processors once
                 if self.connected and not self._data_feed_started:
@@ -1003,7 +1151,7 @@ class TradingEngine:
                         self._last_eod_check_time = now
                         self._check_eod_time()
 
-                time.sleep(0.05)  # 50ms loop
+                time.sleep(0.2)  # 200ms loop — fastest periodic task is 0.5s positions
 
             except Exception as e:
                 emit_error(f"Engine loop error: {e}")
@@ -1103,6 +1251,25 @@ class TradingEngine:
         try:
             self._ensure_open_position_options_subscribed()
             positions = self.get_positions()
+
+            # Periodic diagnostic: log position count and live price health every ~10s
+            if not hasattr(self, "_pos_diag_counter"):
+                self._pos_diag_counter = 0
+            self._pos_diag_counter += 1
+            if self._pos_diag_counter % 20 == 1:  # every ~10s (20 * 0.5s)
+                n_total = len(positions)
+                n_priced = sum(1 for p in positions if p.get("current_price", 0) > 0)
+                n_bid = sum(1 for p in positions if p.get("bid") is not None and p.get("bid", -1) > 0)
+                n_ask = sum(1 for p in positions if p.get("ask") is not None and p.get("ask", -1) > 0)
+                tws_pos_count = len(self._client.positions) if self._client and hasattr(self._client, "positions") else "?"
+                tick_count = len(self._client.tick_cache) if self._client and hasattr(self._client, "tick_cache") else "?"
+                emit_log(
+                    f"Positions diag: {n_total} positions ({n_priced} with price, {n_bid} with bid, {n_ask} with ask), "
+                    f"TWS positions={tws_pos_count}, tick_cache={tick_count}",
+                    "INFO", "system"
+                )
+
+            payloads = []
             for pos in positions:
                 payload = {
                     "symbol": pos.get("symbol", ""),
@@ -1131,7 +1298,9 @@ class TradingEngine:
                 if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
                     payload["exit_price_used"] = float(pos["exit_price_used"])
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
-                emit_position(payload)
+                payloads.append(payload)
+            if payloads:
+                emit_positions_snapshot(payloads)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")
 

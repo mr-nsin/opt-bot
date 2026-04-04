@@ -11,7 +11,8 @@ const tooltipStyle = {
 };
 
 export function WinLossChart() {
-  const { winningTrades, losingTrades } = useTradingStore();
+  const winningTrades = useTradingStore((s) => s.winningTrades);
+  const losingTrades = useTradingStore((s) => s.losingTrades);
   const data = [
     { name: "Wins", value: winningTrades, color: "#10b981" },
     { name: "Losses", value: losingTrades, color: "#ef4444" },

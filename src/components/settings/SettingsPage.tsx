@@ -404,7 +404,7 @@ function DemoTestCard() {
         setRunning(false);
         setResult("Demo timed out");
       }
-    }, 30000);
+    }, 45000);
     try {
       await tradingApi.simulateDemo();
     } catch (e: unknown) {
@@ -439,8 +439,8 @@ function DemoTestCard() {
           )}
         </div>
         <p className="text-2xs text-muted-foreground">
-          Creates 3 fake option positions (AAPL, TSLA, SPY), updates P&L for ~12 seconds, then closes them.
-          The full cycle takes about 20 seconds.
+          Simulates a full trading cycle: TWS connect → signal scan → 3 option entries (AAPL, TSLA, SPY) →
+          20s of live price/bid/ask/P&L streaming → TP/SL exits. Takes about 25 seconds.
         </p>
       </CardContent>
     </Card>

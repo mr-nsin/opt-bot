@@ -16,10 +16,10 @@ pub async fn get_positions(
                 // Parse positions array from sidecar response; normalize "qty" -> "quantity" for compatibility
                 let positions: Vec<Position> = if let Some(arr) = result.as_array() {
                     arr.iter()
-                        .filter_map(|v| {
+                        .filter_map(|v: &serde_json::Value| {
                             let mut obj = v.clone();
                             if obj.get("quantity").is_none() {
-                                if let Some(q) = obj.get("qty").and_then(|q| q.as_i64()) {
+                                if let Some(q) = obj.get("qty").and_then(|q: &serde_json::Value| q.as_i64()) {
                                     obj["quantity"] = serde_json::json!(q);
                                 }
                             }

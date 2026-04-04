@@ -52,18 +52,17 @@ class OrderManager:
         exit_orders_cache (dict): A dictionary that stores exit orders with their symbols as keys and the orders themselves as values.
     """
     
-    def __init__(self, db: DAL) -> None:
-        """
-        Initializes a new instance of the OrderManager class.
-        """
+    def __init__(self, db: DAL, trade_time_dict: dict = None, sub_account_id: str = "") -> None:
         self.db = db
         self.api_client = None
         self.orders_cache = {}
         self.entry_orders_cache = {}
         self.exit_orders_cache = {}
         self.order_id_tick_lookup = {}
-        self.recent_trade_closures = {}  # Track cooldowns
+        self.recent_trade_closures = {}
         self.order_lock = Lock()
+        self.trade_time_dict = trade_time_dict if trade_time_dict is not None else {}
+        self.sub_account_id = sub_account_id
 
     def set_client(self, client: TwsApiClient) -> None:
         """
@@ -88,13 +87,65 @@ class OrderManager:
             return
         order = self._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
         if not order:
-            logger.warning(f"No managed position found for symbol {symbol}" + (f" strike={strike} right={right}" if strike or right else ""))
+            logger.warning(f"No managed entry order for {symbol} — attempting direct TWS position close")
+            self._close_position_direct(symbol, strike=strike, right=right, expiry=expiry)
             return
         option_tick = self.order_id_tick_lookup.get(order.id)
         if option_tick is None:
             option_tick = Tick(symbol=order.symbol, last=-1, bid=-1, ask=-1)
         logger.info(f"CLOSE POSITION REQUEST: {order.option_symbol} — reason={reason}")
         self.close_position(order=order, option_tick=option_tick)
+
+    def _close_position_direct(self, symbol: str, strike: float = None, right: str = None, expiry: str = None) -> None:
+        """Close a position directly via TWS when no managed entry order exists.
+        Scans TWS positions to find matching contract and places a SELL MKT order."""
+        from ibapi.contract import Contract
+        from ibapi.order import Order
+
+        norm_right = {"CALL": "C", "PUT": "P", "C": "C", "P": "P"}.get((right or "").upper(), right)
+        norm_expiry = (expiry or "").replace("-", "").strip()
+
+        for _key, pos in list(self.api_client.positions.items()):
+            c = pos.contract
+            if c.symbol != symbol:
+                continue
+            pos_right = getattr(c, "right", "")
+            pos_expiry = getattr(c, "lastTradeDateOrContractMonth", "").replace("-", "").strip()
+            if strike and abs(float(getattr(c, "strike", 0)) - float(strike)) > 0.01:
+                continue
+            if norm_right and pos_right != norm_right:
+                continue
+            if norm_expiry and pos_expiry != norm_expiry:
+                continue
+
+            qty = abs(int(getattr(pos, "position", 0) or 0))
+            if qty <= 0:
+                continue
+
+            contract = Contract()
+            contract.symbol = c.symbol
+            contract.secType = c.secType
+            contract.exchange = getattr(c, "exchange", "") or "SMART"
+            contract.currency = getattr(c, "currency", "") or "USD"
+            contract.lastTradeDateOrContractMonth = pos_expiry
+            contract.strike = float(getattr(c, "strike", 0))
+            contract.right = pos_right
+
+            closing_order = Order()
+            closing_order.action = "SELL" if int(getattr(pos, "position", 0)) > 0 else "BUY"
+            closing_order.totalQuantity = qty
+            closing_order.orderType = "MKT"
+            closing_order.eTradeOnly = False
+            closing_order.firmQuoteOnly = False
+            if self.sub_account_id:
+                closing_order.account = self.sub_account_id
+
+            oid = self.api_client.nextOrderId()
+            logger.info(f"DIRECT CLOSE: ({oid}) {symbol} {strike}{right} qty={qty} via MKT")
+            self.api_client.placeOrder(oid, contract, closing_order)
+            return
+
+        logger.warning(f"No matching TWS position found for direct close: {symbol} strike={strike} right={right} expiry={expiry}")
 
     def close_all_positions(self) -> None:
         """
@@ -341,14 +392,17 @@ class OrderManager:
 
         # If this was an exit order, deactivate the corresponding entry order
         if order.exit_order == True:
-            # Assign last trade time
-            option_tick.last_trade_time = datetime.datetime.now()
+            # Assign last trade time (guard against missing tick lookup)
+            if option_tick is not None:
+                option_tick.last_trade_time = datetime.datetime.now()
+            else:
+                logger.warning(f"No tick object for exit order {order.id} — cooldown timestamp skipped")
             key = f"{order.symbol}_{order.right}"
-            self.recent_trade_closures[key] = option_tick.last_trade_time
+            close_time = option_tick.last_trade_time if option_tick is not None else datetime.datetime.now()
+            self.recent_trade_closures[key] = close_time
             logger.info(f"Cooldown recorded for {key} at {self.recent_trade_closures[key]}")
             
-            import BOT
-            BOT.trade_time_dict[key] = option_tick.last_trade_time
+            self.trade_time_dict[key] = close_time
 
             # Find the corresponding entry order and deactivate it
             entry_order: OptionOrder = self.orders_cache.get(order.ref_order_id, None)
@@ -453,15 +507,8 @@ class OrderManager:
 
         # Create a market order object to close the current position
         closing_order = MarketOrder(action=action, totalQuantity=order.executed_qty)
-        # Route exit orders to the configured sub-account when available
-        try:
-            import BOT  # Imported at call time to avoid circular import issues
-            sub_acct = getattr(BOT, "SUB_ACCOUNT_ID", None)
-            if sub_acct:
-                closing_order.account = sub_acct
-        except Exception:
-            # If BOT or SUB_ACCOUNT_ID is unavailable, fall back to TWS default account
-            pass
+        if self.sub_account_id:
+            closing_order.account = self.sub_account_id
 
         # Set unsupported attributes to False
         closing_order.eTradeOnly = False # ERROR - Id: 180, Code: 10268, Msg: The 'EtradeOnly' order attribute is not supported.
@@ -510,8 +557,9 @@ class OrderManager:
             self.api_client.placeOrder(orderId, contract=contract, order=closing_order)
             self.save_order(order=exit_order)
         except Exception as ex:
-            self.del_exit_order(order=exit_order, options_tick=option_tick)
-            option_tick.busy = False
+            self.del_exit_order(order=exit_order, option_tick=option_tick)
+            if option_tick is not None:
+                option_tick.busy = False
             logger.error(f"Placing Exit order failed: {ex}", exc_info=True)
 
     def check_and_close_position(self, tick: Tick) -> None:
@@ -826,8 +874,8 @@ class OrderManager:
         
     # Additional helper function for debugging
     def log_order_status(self, order: OptionOrder, tick: Tick) -> None:
-        """Helper function to log comprehensive order status for debugging"""
-        logger.info(f"""
+        """Verbose order status dump — debug level to avoid ~100KB/sec log I/O in hot path."""
+        logger.debug(f"""
         ═══════════════════════════════════════════════════════
         ORDER STATUS: {order.option_symbol}
         ═══════════════════════════════════════════════════════

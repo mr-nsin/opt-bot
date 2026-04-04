@@ -2,15 +2,13 @@ import { useState, useCallback, useEffect } from "react";
 import { license, trading } from "@/lib/tauri-commands";
 import type { LicenseStatus } from "@/lib/types";
 
-/** True if validate error indicates revocation, expiry, or no license. Do NOT fall back to local; stop trading. */
+/** True ONLY when the registry explicitly says the license was revoked or the key is missing.
+ * Network failures, timeouts, and "file not found" are NOT revocations — never delete local license for those. */
 function isRevocationError(err: unknown): boolean {
   const msg = String(err ?? "").toLowerCase();
   return (
-    msg.includes("not found") ||
-    msg.includes("revoked") ||
-    msg.includes("expired") ||
-    msg.includes("registry check failed") ||
-    msg.includes("license file not found")
+    msg.includes("not found in registry") ||
+    msg.includes("revoked")
   );
 }
 
@@ -34,15 +32,12 @@ export function useLicense() {
     } catch (err) {
       if (!opts?.silent) {
         if (isRevocationError(err)) {
-          // Key removed from Drive: invalidate local, stop trading, show license gate
-          try {
-            await license.invalidateLicenseState();
-          } catch {
-            /* ignore */
-          }
+          // Key was explicitly removed from the registry — stop trading and show license gate.
+          // Do NOT delete license.enc: the user may re-subscribe, and keeping the local file
+          // lets the system auto-recover on next validate without manual re-activation.
           try {
             await trading.emergencyStop(
-              "License invalidated (removed/revoked/expired) — trading stopped"
+              "License revoked — trading stopped"
             );
           } catch {
             /* ignore if sidecar not running */
@@ -62,7 +57,7 @@ export function useLicense() {
             error: String(err),
           });
         } else {
-          // Network/timeout: fall back to local (offline grace)
+          // Network/timeout/other: fall back to local validation (offline grace)
           try {
             const status = (await license.getStatus()) as LicenseStatus;
             setLicenseStatus(status);
@@ -125,14 +120,15 @@ export function useLicense() {
     checkLicense();
   }, [checkLicense]);
 
-  // Proactive expiry check: if expires_at has passed, invalidate and stop trading within 60 sec
+  // Proactive expiry check: if expires_at has passed, mark invalid in UI and stop trading.
+  // NEVER delete license.enc here — the user may just need to renew, and deleting forces
+  // full re-activation instead of a simple registry refresh.
   useEffect(() => {
     if (!licenseStatus?.valid || !licenseStatus?.expires_at) return;
     const checkExpired = () => {
       try {
         const exp = new Date(licenseStatus!.expires_at!).getTime();
         if (Date.now() > exp) {
-          license.invalidateLicenseState().catch(() => {});
           trading.emergencyStop("License expired — trading stopped").catch(() => {});
           setLicenseStatus((p) => (p ? { ...p, valid: false, error: "License has expired" } : p));
         }
@@ -140,8 +136,8 @@ export function useLicense() {
         /* ignore parse errors */
       }
     };
-    checkExpired(); // run immediately
-    const id = setInterval(checkExpired, 60 * 1000); // then every 60 seconds
+    checkExpired();
+    const id = setInterval(checkExpired, 60 * 1000);
     return () => clearInterval(id);
   }, [licenseStatus?.valid, licenseStatus?.expires_at]);
 
@@ -154,13 +150,8 @@ export function useLicense() {
         .catch(async (err) => {
           if (isRevocationError(err)) {
             try {
-              await license.invalidateLicenseState();
-            } catch {
-              /* ignore */
-            }
-            try {
               await trading.emergencyStop(
-                "License invalidated (removed/revoked/expired) — trading stopped"
+                "License revoked — trading stopped"
               );
             } catch {
               /* ignore if sidecar not running */
@@ -184,7 +175,7 @@ export function useLicense() {
                   }
             );
           }
-          // Network/timeout: leave status as-is (offline grace)
+          // Network/timeout/other: leave status as-is (offline grace)
         });
     };
     const intervalMs = 30 * 60 * 1000; // 30 minutes

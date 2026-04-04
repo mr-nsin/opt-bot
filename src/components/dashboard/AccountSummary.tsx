@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useTradingStore } from "@/stores/tradingStore";
 import { cn, formatCurrency, pnlColor } from "@/lib/utils";
 import { trading } from "@/lib/tauri-commands";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 const TAG_LABELS: Record<string, string> = {
   NetLiquidation: "Net Liquidation",
@@ -49,41 +49,28 @@ const TAG_ORDER = [
 ];
 
 export function AccountSummary() {
-  const { accountMetrics, status, connectedToTws, setAccountMetrics } = useTradingStore();
+  const accountMetrics = useTradingStore((s) => s.accountMetrics);
+  const status = useTradingStore((s) => s.status);
+  const connectedToTws = useTradingStore((s) => s.connectedToTws);
+  const setAccountMetrics = useTradingStore((s) => s.setAccountMetrics);
   const [loading, setLoading] = useState(false);
-  const pollTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
     if (status !== "Running" && !connectedToTws) return;
     setLoading(true);
-    pollTimeoutsRef.current = [];
-    const parseAndSet = (m: Record<string, unknown> | null) => {
-      if (!m || typeof m !== "object" || Object.keys(m).length === 0) return false;
-      const parsed: Record<string, number> = {};
-      for (const [k, v] of Object.entries(m)) {
-        if (typeof v === "number" && !Number.isNaN(v)) parsed[k] = v;
-      }
-      if (Object.keys(parsed).length > 0) {
-        setAccountMetrics(parsed);
-        return true;
-      }
-      return false;
-    };
-    const fetchOnce = () =>
-      trading.getAccountMetrics().then((m) => {
-        if (m && typeof m === "object") return parseAndSet(m as Record<string, unknown>);
-        return false;
-      });
-    fetchOnce().then((hadData) => {
-      setLoading(false);
-      if (hadData) return;
-      pollTimeoutsRef.current.push(window.setTimeout(() => fetchOnce().then(() => {}), 600));
-      pollTimeoutsRef.current.push(window.setTimeout(() => fetchOnce().then(() => {}), 1600));
-    });
-    return () => {
-      pollTimeoutsRef.current.forEach((t) => window.clearTimeout(t));
-      pollTimeoutsRef.current = [];
-    };
+    trading
+      .getAccountMetrics()
+      .then((m) => {
+        if (m && typeof m === "object" && Object.keys(m as object).length > 0) {
+          const parsed: Record<string, number> = {};
+          for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+            if (typeof v === "number" && !Number.isNaN(v)) parsed[k] = v;
+          }
+          if (Object.keys(parsed).length > 0) setAccountMetrics(parsed);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [status, connectedToTws, setAccountMetrics]);
 
   const entries = accountMetrics

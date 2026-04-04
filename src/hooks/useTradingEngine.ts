@@ -8,76 +8,70 @@ import { useConfigStore } from "@/stores/configStore";
  * Event listeners are in useTradingEvents hook (called once at app root).
  */
 export function useTradingEngine() {
-  const {
-    status,
-    sidecarRunning,
-    setStatus,
-    setSidecarRunning,
-    setConnectedToTws,
-    setDailyPnl,
-    setTradeStats,
-    setOpenClosedTrades,
-    setTodayTrades,
-    clearSignalsInSession,
-  } = useTradingStore();
-  const { tradingConfig } = useConfigStore();
+  const status = useTradingStore((s) => s.status);
+  const sidecarRunning = useTradingStore((s) => s.sidecarRunning);
+  const tradingConfig = useConfigStore((s) => s.tradingConfig);
+  const getActions = () => useTradingStore.getState();
 
   const startTrading = useCallback(async () => {
     if (!tradingConfig) throw new Error("Configuration not loaded");
-    setStatus("Starting");
-    clearSignalsInSession();
+    const a = getActions();
+    a.setStatus("Starting");
+    a.clearSignalsInSession();
     try {
-      // Persist config before start so account_id and all params are saved
       await config.save(tradingConfig);
       const result = await trading.start(tradingConfig);
-      setStatus("Running");
-      setSidecarRunning(true);
+      getActions().setStatus("Running");
+      getActions().setSidecarRunning(true);
       return result;
     } catch (err) {
-      setStatus({ Error: String(err) });
+      getActions().setStatus({ Error: String(err) });
       throw err;
     }
-  }, [tradingConfig, setStatus, setSidecarRunning, clearSignalsInSession]);
+  }, [tradingConfig]);
 
   const stopTrading = useCallback(async () => {
-    setStatus("Stopping");
+    getActions().setStatus("Stopping");
     try {
       const result = await trading.stop();
-      setStatus("Idle");
-      setSidecarRunning(false);
-      setConnectedToTws(false);
+      const a = getActions();
+      a.setStatus("Idle");
+      a.setSidecarRunning(false);
+      a.setConnectedToTws(false);
       return result;
     } catch (err) {
-      setStatus({ Error: String(err) });
+      getActions().setStatus({ Error: String(err) });
       throw err;
     }
-  }, [setStatus, setSidecarRunning, setConnectedToTws]);
+  }, []);
 
   const emergencyStop = useCallback(async () => {
     try {
       const result = await trading.emergencyStop();
-      setStatus("Idle");
-      setSidecarRunning(false);
-      setConnectedToTws(false);
+      const a = getActions();
+      a.setStatus("Idle");
+      a.setSidecarRunning(false);
+      a.setConnectedToTws(false);
       return result;
     } catch (err) {
-      setStatus({ Error: String(err) });
+      getActions().setStatus({ Error: String(err) });
       throw err;
     }
-  }, [setStatus, setSidecarRunning, setConnectedToTws]);
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
       const data = await trading.getStatus();
-      setStatus(data.status);
-      setSidecarRunning(data.sidecar_running);
-      setConnectedToTws(data.connected_to_tws);
-      setDailyPnl(typeof data.daily_pnl === "object" ? data.daily_pnl : { realized: 0, unrealized: 0, total: data.daily_pnl });
-      setTradeStats(data.total_trades, data.winning_trades, data.losing_trades);
-      setOpenClosedTrades(data.open_trades ?? 0, data.closed_trades ?? 0);
+      const a = getActions();
+      a.setStatus(data.status as any);
+      a.setSidecarRunning(data.sidecar_running);
+      a.setConnectedToTws(data.connected_to_tws);
+      a.setDailyPnl(typeof data.daily_pnl === "object" ? data.daily_pnl : { realized: 0, unrealized: 0, total: data.daily_pnl });
+      a.setTradeStats(data.total_trades, data.winning_trades, data.losing_trades);
+      a.setOpenClosedTrades(data.open_trades ?? 0, data.closed_trades ?? 0);
       if (Array.isArray(data.trades_today)) {
-        setTodayTrades(
-          data.trades_today.map((t) => ({
+        a.setTodayTrades(
+          data.trades_today.map((t: any) => ({
             id: t.id,
             symbol: t.symbol,
             right: t.right,
@@ -96,7 +90,7 @@ export function useTradingEngine() {
     } catch (err) {
       console.error("Failed to refresh status:", err);
     }
-  }, [setStatus, setSidecarRunning, setConnectedToTws, setDailyPnl, setTradeStats, setOpenClosedTrades, setTodayTrades]);
+  }, []);
 
   return {
     status,

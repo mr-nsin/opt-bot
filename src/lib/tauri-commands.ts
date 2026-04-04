@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { Position } from "@/lib/types";
 
 /** Trading config: get / save */
 export const config = {
@@ -71,7 +72,7 @@ export type SignalRow = {
 
 /** Positions: getAll, close(symbol), closeAll, closeCalls, closePuts */
 export const positions = {
-  getAll: () => invoke<unknown[]>("get_positions"),
+  getAll: () => invoke<Position[]>("get_positions"),
   close: (symbol: string, strike?: number, right?: string, expiry?: string) =>
     invoke<string>("close_position", { symbol, strike, right, expiry }),
   closeAll: () => invoke<string>("close_all_positions"),

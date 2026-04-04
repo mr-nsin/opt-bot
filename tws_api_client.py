@@ -51,6 +51,7 @@ class TwsApiClient(EWrapper, EClient):
         self.pnl_cache = {}
         self.account_summary_cache = {}  # tag -> value (str from TWS; parse to float in engine)
         self._lock = threading.Lock()
+        self._positions_lock = threading.Lock()
         self.ACCOUNT_SUMMARY_REQ_ID = 2
         # When True, reconnects are done by the trading engine only (avoids multiple TWS connections)
         self.reconnect_handled_externally: bool = False
@@ -68,6 +69,7 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     def connectionClosed(self):
         logger.error("TWS connection closed.")
+        self.connection_closed = True
         if getattr(self, "reconnect_handled_externally", False):
             logger.info("Reconnect is handled by the trading engine; not reconnecting from client.")
             return
@@ -89,7 +91,7 @@ class TwsApiClient(EWrapper, EClient):
                     logger.info("Successfully reconnected to TWS")
                     self.connection_closed = False
                     threading.Thread(target=self.run, daemon=True).start()
-                    # Re-request essential data
+                    self.start_heartbeat()
                     self.reqPositions()
                     self.reqAllOpenOrders()
                     return True
@@ -123,13 +125,15 @@ class TwsApiClient(EWrapper, EClient):
         threading.Thread(target=mark_initialized, daemon=True).start()
     
     def nextOrderId(self):
-        oid = self.nextValidOrderId
-        self.nextValidOrderId += 1
-        return oid
+        with self._lock:
+            oid = self.nextValidOrderId
+            self.nextValidOrderId += 1
+            return oid
 
     def nextTickerId(self)-> TickerId:
-        self.ticker_id = self.ticker_id + 1
-        return self.ticker_id
+        with self._lock:
+            self.ticker_id = self.ticker_id + 1
+            return self.ticker_id
 
     def parseIBDatetime(self, s: str) -> Union[date, datetime]:
         """
@@ -387,7 +391,8 @@ class TwsApiClient(EWrapper, EClient):
         self.reqHistoricalData(ticker_id, contract, '', fetchValue, barSize, "TRADES", 0, 1, True, [])
 
     def get_all_positions(self):
-        return self.positions.values()
+        with self._positions_lock:
+            return list(self.positions.values())
 
     def get_all_open_orders(self):
         return self.allOpenOrders, self.openOrdersSymbol
@@ -506,31 +511,20 @@ class TwsApiClient(EWrapper, EClient):
         return df
 
     def get_open_position(self, symbol: str) -> Position:
-        """
-        Get the open position for a given symbol.
-
-        Args:
-            symbol: The symbol to search for.
-
-        Returns:
-            The open position for the given symbol, or None if no open position is found.
-        """
         logger.info(f"get_open_position: {symbol}")
-        return next(
-            (
-                pos
-                for pos in self.positions.values()
-                if pos.symbol == symbol and pos.position != 0
-            ),
-            None,
-        )
+        with self._positions_lock:
+            return next(
+                (
+                    pos
+                    for pos in self.positions.values()
+                    if pos.symbol == symbol and pos.position != 0
+                ),
+                None,
+            )
         
     def get_pnl(self, account: str) -> PNL:
-        """
-        Get P&L for the given account (daily, realized). Called frequently by pnl_watchdog
-        and at startup; avoid INFO logging to prevent log spam.
-        """
-        return self.pnl_cache.get("daily", 0.0), self.pnl_cache.get("realized", 0.0)
+        with self._lock:
+            return self.pnl_cache.get("daily", 0.0), self.pnl_cache.get("realized", 0.0)
         
 
     def get_options_position(self, symbol: str, expiry: str, right: str, strike: float) -> Position:
@@ -544,18 +538,19 @@ class TwsApiClient(EWrapper, EClient):
             The open position for the given symbol, or None if no open position is found.
         """
         logger.info(f"get_options_position: {symbol}{expiry}{right}{strike}")
-        return next(
-            (
-                pos
-                for pos in self.positions.values()
-                if pos.symbol == symbol
-                and pos.expiry == expiry
-                and pos.right == right
-                and pos.strike == strike
-                and pos.position != 0
-            ),
-            None,
-        )
+        with self._positions_lock:
+            return next(
+                (
+                    pos
+                    for pos in self.positions.values()
+                    if pos.symbol == symbol
+                    and pos.expiry == expiry
+                    and pos.right == right
+                    and pos.strike == strike
+                    and pos.position != 0
+                ),
+                None,
+            )
         
     @iswrapper
     # def error(self, reqId: TickerId, errorCode: int, errorString: str):
@@ -619,43 +614,29 @@ class TwsApiClient(EWrapper, EClient):
                 tick.close = price
 
     @iswrapper
-    def tickSize(self, reqId,  tickType, size):
-        # The function is triggered when there is a change in the size of a tick, which is the smallest possible change in price for a financial instrument
-        # reqId is a unique identifier for the request that triggered the event
-        # tickType specifies the type of tick that caused the event, such as volume, open interest of calls, or open interest of puts
-        # size is the new size of the tick
-        
-        # Get the tick data from the cache, using the reqId as a key
-        tick: Tick = self.tick_cache.get(reqId, None)
-
-        # If the tick data is not found in the cache, return
-        if tick is None:
-            return
-
-        # Update the volume of the tick data, if the tickType is 8
-        if tickType == 8:
-            tick.volume = size
-        # Update the open interest of calls of the tick data, if the tickType is 27
-        elif tickType == 27:
-            tick.open_interest_call = size
-        # Update the open interest of puts of the tick data, if the tickType is 28
-        elif tickType ==  28:
-            tick.open_interest_put = size
-
-            
-        # logger.info(quote)
+    def tickSize(self, reqId, tickType, size):
+        with self._lock:
+            tick: Tick = self.tick_cache.get(reqId, None)
+            if tick is None:
+                return
+            if tickType == 8:
+                tick.volume = size
+            elif tickType == 27:
+                tick.open_interest_call = size
+            elif tickType == 28:
+                tick.open_interest_put = size
 
     @iswrapper    
     def tickOptionComputation(self, reqId: TickerId, tickType: TickType, tickAttrib: int,
                                 impliedVol: float, delta: float, optPrice: float, pvDividend: float,
                                 gamma: float, vega: float, theta: float, undPrice: float):
-        tick: Tick = self.tick_cache.get(reqId, None)
-        if tick is None:
-            return
-
-        if tickType == 13:
-            tick.delta = delta
-            logger.info("Delta for contract = {}".format(tick.delta))
+        with self._lock:
+            tick: Tick = self.tick_cache.get(reqId, None)
+            if tick is None:
+                return
+            if tickType == 13:
+                tick.delta = delta
+                logger.debug(f"Delta for contract = {tick.delta}")
 
     @iswrapper
     def contractDetails(self, reqId: int, contractDetails: ContractDetails):
@@ -679,7 +660,7 @@ class TwsApiClient(EWrapper, EClient):
 
     @iswrapper
     def historicalDataEnd(self, reqId: int, start: str, end: str):
-        print(reqId, start, end)
+        logger.debug(f"historicalDataEnd reqId={reqId} start={start} end={end}")
         
     """@iswrapper
     def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):
@@ -692,15 +673,13 @@ class TwsApiClient(EWrapper, EClient):
         
     @iswrapper
     def pnl(self, reqId: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float):
-        self.pnl_cache.update({
-            "daily": dailyPnL,
-            "unrealized": unrealizedPnL,
-            "realized": realizedPnL
-        })
-        print(f"PNL Update for Req {reqId} - Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}")
-        """if not hasattr(self, "_pnl_cancelled"):
-            self.cancelPnL(reqId)
-            self._pnl_cancelled = True"""
+        with self._lock:
+            self.pnl_cache.update({
+                "daily": dailyPnL,
+                "unrealized": unrealizedPnL,
+                "realized": realizedPnL
+            })
+        logger.debug(f"PNL Update for Req {reqId} - Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}")
 
 
     """@iswrapper
@@ -749,7 +728,10 @@ class TwsApiClient(EWrapper, EClient):
         trade.order_status = status_lower
 
         if status_lower in ["filled", "cancelled", "expired", "rejected", "inactive"]:
-            self.openOrdersSymbol.remove(trade.contract.symbol)
+            try:
+                self.openOrdersSymbol.remove(trade.contract.symbol)
+            except ValueError:
+                pass
             # self.allOpenOrders.pop(orderId)
 
         self.process_trades_callback(trade)
@@ -780,18 +762,19 @@ class TwsApiClient(EWrapper, EClient):
             return
 
         ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
-        position_obj = self.positions.get(ticker, None)
-        if position_obj is None:
-            position_obj = Position(account=account, symbol=contract.symbol, position=position, strike=contract.strike, right=contract.right, expiry=contract.lastTradeDateOrContractMonth, avg_cost=avgCost)
-            self.positions[ticker] = position_obj
-            logger.info(position_obj)
-            return
+        with self._positions_lock:
+            position_obj = self.positions.get(ticker, None)
+            if position_obj is None:
+                position_obj = Position(account=account, symbol=contract.symbol, position=position, strike=contract.strike, right=contract.right, expiry=contract.lastTradeDateOrContractMonth, avg_cost=avgCost)
+                self.positions[ticker] = position_obj
+                logger.info(position_obj)
+                return
 
-        position_obj.position = position
-        position_obj.avg_cost = avgCost
-        if position == 0:
-            self.positions.pop(ticker, None)
-        logger.info(position_obj)
+            position_obj.position = position
+            position_obj.avg_cost = avgCost
+            if position == 0:
+                self.positions.pop(ticker, None)
+            logger.info(position_obj)
 
         # self.positions.append(
         #     {"Account": account, "Symbol": contract.symbol, "Position": position, "Strike": contract.strike,
@@ -854,7 +837,6 @@ class TwsApiClient(EWrapper, EClient):
     def accountSummaryEnd(self, reqId: int):
         pass
 
-    @iswrapper
-    def connectionClosed(self):
-        logger.error("TWS connection closed.")
-        self.connection_closed = True
+    # NOTE: connectionClosed is defined earlier (line ~69) with reconnect logic.
+    # Do NOT redefine it here — Python uses the last definition, which would
+    # shadow the reconnect handler and make it dead code.
