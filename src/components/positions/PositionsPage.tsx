@@ -1,15 +1,13 @@
 import { useEffect, useState, useMemo, memo, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PositionRow } from "./PositionRow";
 import { PositionHistory } from "./PositionHistory";
 import { TradeBlotter } from "./TradeBlotter";
+import { PositionActionToolbar } from "./PositionActionToolbar";
 import { usePositions } from "@/hooks/usePositions";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  RefreshCw,
-  XCircle,
   Briefcase,
   TrendingUp,
   TrendingDown,
@@ -34,8 +32,19 @@ type SortField = "time" | "symbol" | "pnl" | "strike" | "qty";
 type SortDir = "asc" | "desc";
 
 export const PositionsPage = memo(function PositionsPage() {
-  const { positions, closedPositions, loading, refreshPositions, forceRefreshPositions, closeAll } = usePositions();
+  const {
+    positions,
+    closedPositions,
+    loading,
+    refreshPositions,
+    forceRefreshPositions,
+    closeAll,
+    closeCalls,
+    closePuts,
+  } = usePositions();
   const [showCloseAll, setShowCloseAll] = useState(false);
+  const [showCloseCalls, setShowCloseCalls] = useState(false);
+  const [showClosePuts, setShowClosePuts] = useState(false);
   const [sortField, setSortField] = useState<SortField>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -101,16 +110,16 @@ export const PositionsPage = memo(function PositionsPage() {
           </h2>
           <p className="text-xs text-muted-foreground/60">Active and closed positions</p>
         </div>
-        <div className="flex gap-1.5">
-          <Button variant="outline" size="sm" onClick={forceRefreshPositions} disabled={loading} className="h-8 text-xs">
-            <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
-          </Button>
-          {positions.length > 0 && (
-            <Button variant="destructive" size="sm" onClick={() => setShowCloseAll(true)} className="h-8 text-xs">
-              <XCircle className="h-3 w-3 mr-1" /> Close All
-            </Button>
-          )}
-        </div>
+        <PositionActionToolbar
+          loading={loading}
+          hasPositions={positions.length > 0}
+          callCount={summary.callCount}
+          putCount={summary.putCount}
+          onRefresh={forceRefreshPositions}
+          onCloseCalls={() => setShowCloseCalls(true)}
+          onClosePuts={() => setShowClosePuts(true)}
+          onCloseAll={() => setShowCloseAll(true)}
+        />
       </div>
 
       {/* Position summary row */}
@@ -253,6 +262,24 @@ export const PositionsPage = memo(function PositionsPage() {
         variant="destructive"
         onConfirm={() => { setShowCloseAll(false); closeAll(); }}
         onCancel={() => setShowCloseAll(false)}
+      />
+      <ConfirmDialog
+        open={showCloseCalls}
+        title="Close All Calls"
+        message={`Market-close all ${summary.callCount} open CALL position(s)? Puts are unchanged.`}
+        confirmLabel="Close Calls"
+        variant="destructive"
+        onConfirm={() => { setShowCloseCalls(false); closeCalls(); }}
+        onCancel={() => setShowCloseCalls(false)}
+      />
+      <ConfirmDialog
+        open={showClosePuts}
+        title="Close All Puts"
+        message={`Market-close all ${summary.putCount} open PUT position(s)? Calls are unchanged.`}
+        confirmLabel="Close Puts"
+        variant="destructive"
+        onConfirm={() => { setShowClosePuts(false); closePuts(); }}
+        onCancel={() => setShowClosePuts(false)}
       />
     </div>
   );

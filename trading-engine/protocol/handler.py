@@ -7,18 +7,39 @@ import os
 import sys
 import json
 import threading
-from typing import Callable, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Dict, Any, Optional
 
 from protocol.emitter import send_response, emit_log, emit_error
 from protocol import messages
+
+# Bounded pool avoids thread exhaustion if Rust spams concurrent RPCs (e.g. rapid UI actions).
+_DEFAULT_RPC_WORKERS = 8
+_ENV_RPC_WORKERS = "QUANTDRIFT_RPC_MAX_WORKERS"
+
+
+def _rpc_max_workers() -> int:
+    raw = os.environ.get(_ENV_RPC_WORKERS, "").strip()
+    if not raw:
+        return _DEFAULT_RPC_WORKERS
+    try:
+        n = int(raw, 10)
+        return max(1, min(32, n))
+    except ValueError:
+        return _DEFAULT_RPC_WORKERS
 
 
 class MessageHandler:
     """Handle incoming JSON-RPC messages from the Rust host."""
 
-    def __init__(self):
+    def __init__(self, max_workers: Optional[int] = None):
         self._handlers: Dict[str, Callable] = {}
         self._running = False
+        workers = max_workers if max_workers is not None else _rpc_max_workers()
+        self._executor = ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="jsonrpc",
+        )
 
     def register(self, method: str, handler: Callable):
         """Register a handler for a specific method."""
@@ -31,8 +52,16 @@ class MessageHandler:
         self._thread.start()
 
     def stop(self):
-        """Stop the message loop."""
+        """Stop the message loop and release the RPC thread pool."""
         self._running = False
+        try:
+            # wait=False: do not block shutdown; cancel pending tasks not yet running (3.9+)
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                self._executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     def _message_loop(self):
         """Main loop: read JSON messages from stdin, dispatch to handlers."""
@@ -65,12 +94,8 @@ class MessageHandler:
                 send_response(request_id, error=f"Unknown method: {method}")
                 continue
 
-            # Execute handler in a separate thread to not block the message loop
-            threading.Thread(
-                target=self._execute_handler,
-                args=(request_id, method, handler, params),
-                daemon=True,
-            ).start()
+            # Bounded pool: same non-blocking stdin loop, without unbounded thread creation
+            self._executor.submit(self._execute_handler, request_id, method, handler, params)
 
     def _execute_handler(self, request_id: str, method: str, handler: Callable, params: dict):
         """Execute a handler and send the response."""

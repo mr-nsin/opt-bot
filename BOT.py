@@ -2110,7 +2110,7 @@ def synchronize_orders():
     # loops through each order
     for order in orders:
         # checks if the order has a matching trade in the client's trades cache and is still active
-        if order.id in client.trades_cache.keys() and order.order_side == 'BUY' and order.order_status not in ['inactive', 'cancelled', 'expired', 'filled']:
+        if client.has_order_in_trades_cache(order.id) and order.order_side == 'BUY' and order.order_status not in ['inactive', 'cancelled', 'expired', 'filled']:
             
             # gets the options contract for the order
             contract = client.get_options_contract(symbol=order.symbol, expiry=order.expiration, right=order.right, strike=order.strike)

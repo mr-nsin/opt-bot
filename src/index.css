@@ -3,43 +3,45 @@
 @tailwind utilities;
 
 @layer base {
+  /* Light theme: match ~#F4F5F2 — pale neutral paper, same surface app-wide */
   :root {
     font-size: 16px;
-    --background: 0 0% 97%;
-    --foreground: 0 0% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 12%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 12%;
+    --background: 80 10% 95%;
+    --foreground: 0 0% 8%;
+    --card: 80 10% 95%;
+    --card-foreground: 0 0% 8%;
+    --popover: 80 10% 95%;
+    --popover-foreground: 0 0% 8%;
     --primary: 217 91% 55%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 94%;
-    --secondary-foreground: 0 0% 35%;
-    --muted: 0 0% 94%;
-    --muted-foreground: 0 0% 45%;
-    --accent: 0 0% 94%;
-    --accent-foreground: 0 0% 12%;
+    --secondary: 80 8% 90%;
+    --secondary-foreground: 0 0% 16%;
+    --muted: 80 7% 90%;
+    --muted-foreground: 0 0% 30%;
+    --accent: 80 9% 91%;
+    --accent-foreground: 0 0% 8%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
     --success: 160 84% 39%;
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 12%;
-    --border: 0 0% 88%;
-    --input: 0 0% 91%;
+    --warning-foreground: 0 0% 10%;
+    --border: 80 8% 84%;
+    --input: 80 8% 88%;
     --ring: 217 91% 55%;
     --radius: 0.75rem;
     --radius-lg: 1rem;
     --radius-xl: 1.25rem;
     --content-padding: 1rem;
     --card-gap: 0.5rem;
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
-    --shadow-card-hover: 0 4px 12px -2px rgba(0, 0, 0, 0.06);
-    --sidebar: 0 0% 100%;
-    --sidebar-foreground: 0 0% 20%;
-    --sidebar-border: 0 0% 90%;
+    --shadow-card: 0 1px 2px rgba(35, 40, 30, 0.06);
+    --shadow-card-hover: 0 4px 12px -2px rgba(35, 40, 30, 0.08);
+    /* Same paper as main — unified shell */
+    --sidebar: 80 10% 95%;
+    --sidebar-foreground: 0 0% 9%;
+    --sidebar-border: 80 8% 84%;
     --sidebar-accent: 217 91% 55%;
-    --sidebar-muted: 0 0% 95%;
+    --sidebar-muted: 80 7% 90%;
     --profit: 160 84% 39%;
     --loss: 0 84% 60%;
     --bid: 160 84% 39%;
@@ -57,42 +59,42 @@
   }
 
   .dark {
-    /* Screenshot exact: #1A1A1A bg, #262626 cards, #E0E0E0 text, #A0A0A0 muted */
-    --background: 0 0% 10%;
-    --foreground: 0 0% 88%;
-    --card: 0 0% 15%;
-    --card-foreground: 0 0% 88%;
-    --popover: 0 0% 13%;
-    --popover-foreground: 0 0% 88%;
+    /* Warm charcoal ~#2c2c27 (Cursor-style) — not pure black; cards/surfaces stepped slightly lighter */
+    --background: 52 7% 17%;
+    --foreground: 48 6% 93%;
+    --card: 50 7% 21%;
+    --card-foreground: 48 6% 93%;
+    --popover: 50 7% 20%;
+    --popover-foreground: 48 6% 93%;
     --primary: 217 91% 60%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 18%;
-    --secondary-foreground: 0 0% 84%;
-    --muted: 0 0% 18%;
-    --muted-foreground: 0 0% 63%;
-    --accent: 0 0% 18%;
-    --accent-foreground: 0 0% 88%;
+    --secondary: 50 6% 24%;
+    --secondary-foreground: 48 5% 88%;
+    --muted: 50 6% 24%;
+    --muted-foreground: 48 5% 66%;
+    --accent: 50 6% 26%;
+    --accent-foreground: 48 6% 93%;
     --destructive: 0 63% 55%;
     --destructive-foreground: 0 0% 100%;
     --success: 160 84% 39%;
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 10%;
-    --border: 0 0% 20%;
-    --input: 0 0% 18%;
+    --border: 48 6% 30%;
+    --input: 50 6% 23%;
     --ring: 217 91% 60%;
     --radius: 0.75rem;
     --radius-lg: 1rem;
     --radius-xl: 1.25rem;
     --content-padding: 1rem;
     --card-gap: 0.5rem;
-    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.12);
-    --shadow-card-hover: 0 4px 12px -2px rgba(0, 0, 0, 0.08);
-    --sidebar: 0 0% 8%;
-    --sidebar-foreground: 0 0% 90%;
-    --sidebar-border: 0 0% 15%;
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.18);
+    --shadow-card-hover: 0 4px 14px -2px rgba(0, 0, 0, 0.14);
+    --sidebar: 52 7% 17%;
+    --sidebar-foreground: 48 6% 92%;
+    --sidebar-border: 48 6% 28%;
     --sidebar-accent: 217 91% 60%;
-    --sidebar-muted: 0 0% 40%;
+    --sidebar-muted: 50 6% 24%;
     --profit: 160 84% 39%;
     --loss: 0 63% 55%;
     --bid: 152 69% 41%;
@@ -119,6 +121,18 @@
     font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Light: crisp charcoal + subtle ink on chrome & titles (paper ~#F4F5F2) */
+  html:not(.dark) aside.sidebar-pro,
+  html:not(.dark) header {
+    text-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.16);
+  }
+  html:not(.dark) h1,
+  html:not(.dark) h2,
+  html:not(.dark) h3 {
+    color: hsl(0 0% 7%);
+    text-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.22), 0 1px 1px rgba(0, 0, 0, 0.04);
   }
 }
 
@@ -390,12 +404,9 @@ option {
 .sidebar-pro {
   background: hsl(var(--sidebar));
 }
+/* Flat warm panel — avoid fading to near-black (old gradient looked harsher than Cursor) */
 .dark .sidebar-pro {
-  background: linear-gradient(
-    180deg,
-    hsl(var(--sidebar)) 0%,
-    hsl(0 0% 6%) 100%
-  );
+  background: hsl(var(--sidebar));
 }
 .sidebar-active-glow {
   background: hsl(var(--primary) / 0.12);

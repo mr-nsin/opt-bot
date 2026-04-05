@@ -77,6 +77,7 @@ def main():
     def shutdown(signum, frame):
         emit_log("Shutdown signal received", "INFO", "system")
         engine.stop()
+        handler.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)

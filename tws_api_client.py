@@ -45,6 +45,7 @@ class TwsApiClient(EWrapper, EClient):
         self.openOrdersSymbol = []
         self.positions = {}
         self.trades_cache = {}
+        self._trades_lock = threading.Lock()
         self.process_trades_callback = callback
         self.initialization_done: bool = False
         self.connection_closed: bool= False
@@ -55,6 +56,11 @@ class TwsApiClient(EWrapper, EClient):
         self.ACCOUNT_SUMMARY_REQ_ID = 2
         # When True, reconnects are done by the trading engine only (avoids multiple TWS connections)
         self.reconnect_handled_externally: bool = False
+
+    def has_order_in_trades_cache(self, order_id: int) -> bool:
+        """Thread-safe check used by synchronize_orders (avoid reading trades_cache dict without lock)."""
+        with self._trades_lock:
+            return order_id in self.trades_cache
 
     @iswrapper
     def connectAck(self):
@@ -707,32 +713,33 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     def orderStatus(self, orderId: OrderId, status: str, filled: float, remaining: float, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
         self.allOrders.append({orderId: {"status": status, "filled": filled, "remaining": remaining, "avgFullPrice": avgFillPrice}})
-        trade: Trade = self.trades_cache.get(orderId, None)
+        with self._trades_lock:
+            trade: Trade = self.trades_cache.get(orderId, None)
 
-        if trade is None:
-            # Untracked order (e.g. from previous session, or TWS callback during reqGlobalCancel)
-            logger.warning(f'OrderId {orderId} not found in trades cache (untracked or already closed).')
-            return
+            if trade is None:
+                # Untracked order (e.g. from previous session, or TWS callback during reqGlobalCancel)
+                logger.warning(f'OrderId {orderId} not found in trades cache (untracked or already closed).')
+                return
 
-        #status = status.lower()
-        status_lower = status.lower()
+            #status = status.lower()
+            status_lower = status.lower()
 
-        # check for duplicate
-        if trade.order_status == status_lower and trade.executed_qty == filled and trade.remaining_qty == remaining:
-            return
+            # check for duplicate
+            if trade.order_status == status_lower and trade.executed_qty == filled and trade.remaining_qty == remaining:
+                return
 
-        trade.executed_qty = filled 
-        trade.remaining_qty = remaining
-        trade.average_price = avgFillPrice
-        trade.last_fill_price = lastFillPrice
-        trade.order_status = status_lower
+            trade.executed_qty = filled
+            trade.remaining_qty = remaining
+            trade.average_price = avgFillPrice
+            trade.last_fill_price = lastFillPrice
+            trade.order_status = status_lower
 
-        if status_lower in ["filled", "cancelled", "expired", "rejected", "inactive"]:
-            try:
-                self.openOrdersSymbol.remove(trade.contract.symbol)
-            except ValueError:
-                pass
-            # self.allOpenOrders.pop(orderId)
+            if status_lower in ["filled", "cancelled", "expired", "rejected", "inactive"]:
+                try:
+                    self.openOrdersSymbol.remove(trade.contract.symbol)
+                except ValueError:
+                    pass
+                # self.allOpenOrders.pop(orderId)
 
         self.process_trades_callback(trade)
 
@@ -743,12 +750,13 @@ class TwsApiClient(EWrapper, EClient):
         # self.allOpenOrders.append({orderId: orderState.status})
         if contract.symbol not in self.openOrdersSymbol:
             self.openOrdersSymbol.append(contract.symbol)
-        
-        trade: Trade = self.trades_cache.get(orderId, None)
-        if trade is None:
-            order.contract = contract
-            trade = Trade(contract=contract, order=order, orderStatus=orderState)
-            self.trades_cache[order.orderId] = trade
+
+        with self._trades_lock:
+            trade: Trade = self.trades_cache.get(orderId, None)
+            if trade is None:
+                order.contract = contract
+                trade = Trade(contract=contract, order=order, orderStatus=orderState)
+                self.trades_cache[order.orderId] = trade
 
     @iswrapper
     def openOrderEnd(self):

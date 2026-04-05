@@ -3,7 +3,7 @@ import { positions as positionsApi } from "@/lib/tauri-commands";
 import { usePositionStore } from "@/stores/positionStore";
 
 /**
- * Imperative position API (refresh, close, closeAll).
+ * Imperative position API (refresh, close, closeAll, closeCalls, closePuts).
  * Real-time position_update and trade_closed events are handled globally
  * in useTradingEvents.ts (called once at AppContent root) to avoid
  * duplicate listeners that race and overwrite each other's P&L data.
@@ -52,6 +52,14 @@ export function usePositions() {
     await positionsApi.closeAll();
   }, []);
 
+  const closeCalls = useCallback(async () => {
+    await positionsApi.closeCalls();
+  }, []);
+
+  const closePuts = useCallback(async () => {
+    await positionsApi.closePuts();
+  }, []);
+
   return {
     positions,
     closedPositions,
@@ -60,5 +68,7 @@ export function usePositions() {
     forceRefreshPositions,
     closePosition,
     closeAll,
+    closeCalls,
+    closePuts,
   };
 }

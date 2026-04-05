@@ -27,6 +27,9 @@ pub struct Position {
     pub exit_price_used: Option<f64>,
     #[serde(default)]
     pub exit_price_source: Option<String>,
+    /// ISO time when the position was opened (from entry fill / bot order).
+    #[serde(default)]
+    pub entry_time: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,11 +138,16 @@ mod tests {
             "profit_price": 5.0,
             "stoploss_price": 2.5,
             "exit_price_used": 3.88,
-            "exit_price_source": "bid"
+            "exit_price_source": "bid",
+            "entry_time": "2026-04-04T14:30:00"
         }"#;
         let p: Position = serde_json::from_str(json).expect("demo position_update");
         assert_eq!(p.symbol, "AAPL");
         assert_eq!(p.last, Some(3.90));
         assert_eq!(p.bid, Some(3.88));
+        assert_eq!(
+            p.entry_time.as_deref(),
+            Some("2026-04-04T14:30:00")
+        );
     }
 }

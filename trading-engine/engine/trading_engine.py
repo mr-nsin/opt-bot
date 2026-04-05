@@ -257,93 +257,102 @@ class TradingEngine:
 
         positions = []
         account_filter = (self.config.account_id or "").strip() if self.config else ""
-        if hasattr(self._client, 'positions'):
-            for key, pos in list((self._client.positions or {}).items()):
-                qty = getattr(pos, 'position', 0)
-                if qty == 0:
-                    continue
-                # When account_id is configured, only show positions for that account
-                pos_account = getattr(pos, 'account', None) or ""
-                if account_filter and pos_account and pos_account != account_filter:
-                    continue
+        # Snapshot under TWS lock via get_all_positions() — avoids iterating .positions while IBKR thread mutates dict
+        if hasattr(self._client, "get_all_positions"):
+            tws_positions = self._client.get_all_positions()
+        elif hasattr(self._client, "positions"):
+            tws_positions = list((self._client.positions or {}).values())
+        else:
+            tws_positions = []
 
-                # avg_cost from TWS is per-share cost (for options: price * multiplier)
-                avg_cost = getattr(pos, 'avg_cost', 0)
-                avg_price = avg_cost / 100.0 if avg_cost > 1 else avg_cost
+        for pos in tws_positions:
+            qty = getattr(pos, 'position', 0)
+            if qty == 0:
+                continue
+            # When account_id is configured, only show positions for that account
+            pos_account = getattr(pos, 'account', None) or ""
+            if account_filter and pos_account and pos_account != account_filter:
+                continue
 
-                # Try to get live price from order manager tick lookup, then client tick cache
-                current_price = 0.0
-                entry_order = None
-                tick = None
-                symbol = getattr(pos, 'symbol', str(key))
-                strike = getattr(pos, 'strike', 0)
-                right = getattr(pos, 'right', '')
-                expiry = getattr(pos, 'expiry', '')
+            # avg_cost from TWS is per-share cost (for options: price * multiplier)
+            avg_cost = getattr(pos, 'avg_cost', 0)
+            avg_price = avg_cost / 100.0 if avg_cost > 1 else avg_cost
 
-                if self._order_mgr:
-                    entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
-                    if entry_order:
-                        # Fallback: use entry_order.average_price when TWS avg_cost is 0
-                        if avg_price <= 0 and getattr(entry_order, 'average_price', 0) > 0:
-                            avg_price = float(entry_order.average_price)
-                        tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
-                        if tick and hasattr(tick, 'last') and tick.last > 0:
-                            current_price = tick.last
-                        elif tick and hasattr(tick, 'bid') and tick.bid > 0:
-                            current_price = tick.bid
+            # Try to get live price from order manager tick lookup, then client tick cache
+            current_price = 0.0
+            entry_order = None
+            tick = None
+            symbol = getattr(pos, 'symbol', '') or ''
+            strike = getattr(pos, 'strike', 0)
+            right = getattr(pos, 'right', '')
+            expiry = getattr(pos, 'expiry', '')
 
-                # Fallback: client tick_cache (get_options_data) when order lookup has no tick
-                if current_price <= 0 and hasattr(self._client, 'get_options_data'):
-                    try:
-                        r = str(right or "").upper()
-                        r = "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r[0] if r else "C")
-                        tick = self._client.get_options_data(symbol, str(expiry), r, float(strike))
-                        if tick and hasattr(tick, 'last') and tick.last > 0:
-                            current_price = tick.last
-                        elif tick and hasattr(tick, 'bid') and tick.bid > 0:
-                            current_price = tick.bid
-                    except Exception:
-                        pass
-
-                # Extract bid, ask, last for TP/SL logic display (matches order_manager check_take_profit/check_stop_loss)
-                bid_val = float(getattr(tick, 'bid', -1) or -1) if tick else -1
-                ask_val = float(getattr(tick, 'ask', -1) or -1) if tick else -1
-                last_val = float(getattr(tick, 'last', -1) or -1) if tick else -1
-                # Exit price used for TP/SL: bid when valid, else last (same as order_manager)
-                exit_price_used = bid_val if bid_val > 0 else last_val if last_val > 0 else 0.0
-                exit_price_source = "bid" if bid_val > 0 else "last" if last_val > 0 else ""
-
-                pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
-                pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
-
-                pos_data = {
-                    "symbol": symbol,
-                    "strike": strike,
-                    "right": right,
-                    "expiry": expiry,
-                    "quantity": qty,
-                    "avg_price": round(avg_price, 4),
-                    "current_price": round(current_price, 4),
-                    "pnl": round(pnl, 2),
-                    "pnl_percent": round(pnl_pct, 2),
-                }
-                # Include SL/TP from managed entry order so UI can display them
+            if self._order_mgr:
+                entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
                 if entry_order:
-                        pos_data["stoploss_price"] = round(float(entry_order.stoploss_price or 0), 2)
-                        pos_data["profit_price"] = round(float(entry_order.current_profit_price or entry_order.profit_price or 0), 2)
-                        if getattr(entry_order, "profit_trigger", False):
-                            pos_data["trailing_active"] = True
-                # Include bid/ask/last and exit logic for TP/SL transparency
-                if bid_val not in (-1, None):
-                    pos_data["bid"] = round(bid_val, 4)
-                if ask_val not in (-1, None):
-                    pos_data["ask"] = round(ask_val, 4)
-                if last_val not in (-1, None):
-                    pos_data["last"] = round(last_val, 4)
-                if exit_price_used > 0:
-                    pos_data["exit_price_used"] = round(exit_price_used, 4)
-                    pos_data["exit_price_source"] = exit_price_source
-                positions.append(pos_data)
+                    # Fallback: use entry_order.average_price when TWS avg_cost is 0
+                    if avg_price <= 0 and getattr(entry_order, 'average_price', 0) > 0:
+                        avg_price = float(entry_order.average_price)
+                    tick = self._order_mgr.order_id_tick_lookup.get(entry_order.id)
+                    if tick and hasattr(tick, 'last') and tick.last > 0:
+                        current_price = tick.last
+                    elif tick and hasattr(tick, 'bid') and tick.bid > 0:
+                        current_price = tick.bid
+
+            # Fallback: client tick_cache (get_options_data) when order lookup has no tick
+            if current_price <= 0 and hasattr(self._client, 'get_options_data'):
+                try:
+                    r = str(right or "").upper()
+                    r = "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r[0] if r else "C")
+                    tick = self._client.get_options_data(symbol, str(expiry), r, float(strike))
+                    if tick and hasattr(tick, 'last') and tick.last > 0:
+                        current_price = tick.last
+                    elif tick and hasattr(tick, 'bid') and tick.bid > 0:
+                        current_price = tick.bid
+                except Exception:
+                    pass
+
+            # Extract bid, ask, last for TP/SL logic display (matches order_manager check_take_profit/check_stop_loss)
+            bid_val = float(getattr(tick, 'bid', -1) or -1) if tick else -1
+            ask_val = float(getattr(tick, 'ask', -1) or -1) if tick else -1
+            last_val = float(getattr(tick, 'last', -1) or -1) if tick else -1
+            # Exit price used for TP/SL: bid when valid, else last (same as order_manager)
+            exit_price_used = bid_val if bid_val > 0 else last_val if last_val > 0 else 0.0
+            exit_price_source = "bid" if bid_val > 0 else "last" if last_val > 0 else ""
+
+            pnl = (current_price - avg_price) * qty * 100 if current_price > 0 and avg_price > 0 else 0
+            pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 and current_price > 0 else 0
+
+            pos_data = {
+                "symbol": symbol,
+                "strike": strike,
+                "right": right,
+                "expiry": expiry,
+                "quantity": qty,
+                "avg_price": round(avg_price, 4),
+                "current_price": round(current_price, 4),
+                "pnl": round(pnl, 2),
+                "pnl_percent": round(pnl_pct, 2),
+            }
+            # Include SL/TP from managed entry order so UI can display them
+            if entry_order:
+                pos_data["stoploss_price"] = round(float(entry_order.stoploss_price or 0), 2)
+                pos_data["profit_price"] = round(float(entry_order.current_profit_price or entry_order.profit_price or 0), 2)
+                if getattr(entry_order, "profit_trigger", False):
+                    pos_data["trailing_active"] = True
+            # Include bid/ask/last and exit logic for TP/SL transparency
+            if bid_val not in (-1, None):
+                pos_data["bid"] = round(bid_val, 4)
+            if ask_val not in (-1, None):
+                pos_data["ask"] = round(ask_val, 4)
+            if last_val not in (-1, None):
+                pos_data["last"] = round(last_val, 4)
+            if exit_price_used > 0:
+                pos_data["exit_price_used"] = round(exit_price_used, 4)
+                pos_data["exit_price_source"] = exit_price_source
+            if entry_order and getattr(entry_order, "placed_at", None):
+                pos_data["entry_time"] = entry_order.placed_at
+            positions.append(pos_data)
 
         # Deduplicate by (symbol, strike, right, expiry) — TWS can produce duplicates
         return self._deduplicate_positions(positions)
@@ -436,10 +445,12 @@ class TradingEngine:
             qty = random.choice([1, 2, 3])
             tp = round(entry * random.uniform(1.20, 1.40), 2)
             sl = round(entry * random.uniform(0.60, 0.75), 2)
+            fill_time = datetime.now().isoformat()
             entries[s["symbol"]] = {
                 "entry": entry, "qty": qty, "id": 10000 + i,
                 "last": entry, "tp": tp, "sl": sl, "vol": s["vol"],
                 "closed": False,
+                "entry_time": fill_time,
             }
 
             emit_trade_executed({
@@ -461,6 +472,7 @@ class TradingEngine:
                 "last": entry, "pnl": 0.0, "pnl_percent": 0.0,
                 "profit_price": tp, "stoploss_price": sl,
                 "exit_price_used": round(entry - 0.02, 2), "exit_price_source": "bid",
+                "entry_time": fill_time,
             })
 
             emit_log(
@@ -521,6 +533,7 @@ class TradingEngine:
                     "pnl": pnl, "pnl_percent": pnl_pct,
                     "profit_price": e["tp"], "stoploss_price": e["sl"],
                     "exit_price_used": exit_price_used, "exit_price_source": exit_source,
+                    "entry_time": e.get("entry_time"),
                 })
 
                 # Check for TP/SL exits
@@ -620,6 +633,20 @@ class TradingEngine:
         if self._order_mgr and hasattr(self._order_mgr, 'close_all_positions'):
             self._order_mgr.close_all_positions()
         return {"status": "close_all_requested"}
+
+    def close_calls(self) -> dict:
+        """Close all open CALL positions (managed entry orders)."""
+        emit_log("Close all CALL positions requested", "WARN", "orders")
+        if self._order_mgr and hasattr(self._order_mgr, "close_calls_positions"):
+            self._order_mgr.close_calls_positions()
+        return {"status": "close_calls_requested"}
+
+    def close_puts(self) -> dict:
+        """Close all open PUT positions (managed entry orders)."""
+        emit_log("Close all PUT positions requested", "WARN", "orders")
+        if self._order_mgr and hasattr(self._order_mgr, "close_puts_positions"):
+            self._order_mgr.close_puts_positions()
+        return {"status": "close_puts_requested"}
 
     def update_config(self, params: dict) -> dict:
         """Update configuration at runtime. Syncs BOT globals so cooldown and other params take effect immediately."""
@@ -1298,6 +1325,8 @@ class TradingEngine:
                 if pos.get("exit_price_used") is not None and pos.get("exit_price_used") > 0:
                     payload["exit_price_used"] = float(pos["exit_price_used"])
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
+                if pos.get("entry_time"):
+                    payload["entry_time"] = str(pos["entry_time"])
                 payloads.append(payload)
             if payloads:
                 emit_positions_snapshot(payloads)

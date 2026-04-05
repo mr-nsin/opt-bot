@@ -195,7 +195,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                 )}
               </div>
               {(position.exit_price_used != null && position.exit_price_used > 0) && (
-                <p className="mt-2 text-[10px] text-muted-foreground/60">
+                <p className="mt-2 text-[10px] font-medium text-foreground/65 dark:text-muted-foreground/80">
                   TP/SL logic: Exit price = <span className="font-mono">{position.exit_price_source}</span> when valid. Ask is not used for closing.
                 </p>
               )}
@@ -222,10 +222,13 @@ function DetailItem({
 }) {
   return (
     <div className="flex items-center gap-1.5" title={title}>
-      <Icon className={cn("h-2.5 w-2.5 shrink-0", color, "opacity-40")} />
+      {/* Icon neutral — semantic colors apply only to the value below */}
+      <Icon className="h-2.5 w-2.5 shrink-0 text-foreground/45 dark:text-muted-foreground/70" />
       <div>
-        <p className="text-muted-foreground/50 text-xs">{label}</p>
-        <p className={cn("font-mono font-semibold tabular-nums", color)}>{value}</p>
+        <p className="text-[11px] font-medium leading-tight text-foreground/82 dark:text-muted-foreground/95">
+          {label}
+        </p>
+        <p className={cn("font-mono tabular-nums", color)}>{value}</p>
       </div>
     </div>
   );

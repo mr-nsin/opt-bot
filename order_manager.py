@@ -151,14 +151,33 @@ class OrderManager:
         """
         Close all managed open positions (used by Tauri/sidecar when user clicks Close All).
         """
+        self._close_entry_orders_filtered(want_right=None)
+
+    def close_calls_positions(self) -> None:
+        """Close managed open CALL positions only (right C / CALL)."""
+        self._close_entry_orders_filtered(want_right="C")
+
+    def close_puts_positions(self) -> None:
+        """Close managed open PUT positions only (right P / PUT)."""
+        self._close_entry_orders_filtered(want_right="P")
+
+    def _close_entry_orders_filtered(self, want_right: Optional[str]) -> None:
+        """
+        Close entry orders; if want_right is 'C' or 'P', only matching option side.
+        None = all positions (same as legacy close_all behavior).
+        """
         if not self.api_client or not self.api_client.isConnected():
-            logger.warning("Cannot close all positions: TWS not connected")
+            logger.warning("Cannot close positions: TWS not connected")
             return
         with self.order_lock:
             orders = list(self.entry_orders_cache.values())
         for order in orders:
             if not order:
                 continue
+            if want_right is not None:
+                side = self._norm_right(order.right or "")
+                if side != want_right:
+                    continue
             try:
                 option_tick = self.order_id_tick_lookup.get(order.id)
                 if option_tick is None:
@@ -386,6 +405,9 @@ class OrderManager:
         order.order_status = status
         order.executed_qty = trade.executed_qty
         order.average_price = trade.average_price
+        # Entry fill time for UI "Time" column (first fill wins)
+        if not order.exit_order and not getattr(order, "placed_at", None):
+            order.placed_at = datetime.datetime.now().isoformat()
 
         # Update the order in the database
         self.db.update(order=order)
@@ -474,6 +496,8 @@ class OrderManager:
             pp = getattr(order, "current_profit_price", None) or order.profit_price
             if pp is not None and float(pp) > 0:
                 pos_payload["profit_price"] = round(float(pp), 2)
+            if getattr(order, "placed_at", None):
+                pos_payload["entry_time"] = order.placed_at
             _emit_position(pos_payload)
 
 

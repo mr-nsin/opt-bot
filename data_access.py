@@ -245,11 +245,35 @@ class DAL:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
-                # Update the option order in the database
-                query = f"UPDATE option_orders SET order_status = '{option_order.order_status}', executed_qty = {option_order.executed_qty}, average_price = {option_order.average_price},profit_price = {option_order.profit_price},profit_trigger = {option_order.profit_trigger}, current_profit_price = {option_order.current_profit_price},profit_increment = {option_order.profit_increment} WHERE id = {option_order.id}"
-                logger.info(f"update_option_order: {query}")
-                cursor.execute(query)
-                # Save the changes and close the connection
+                # Parameterized UPDATE — avoids SQL injection and quoting bugs on order_status / floats
+                pt = 1 if option_order.profit_trigger else 0
+                cursor.execute(
+                    """
+                    UPDATE option_orders SET
+                        order_status = ?,
+                        executed_qty = ?,
+                        average_price = ?,
+                        profit_price = ?,
+                        profit_trigger = ?,
+                        current_profit_price = ?,
+                        profit_increment = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        option_order.order_status,
+                        option_order.executed_qty,
+                        option_order.average_price,
+                        option_order.profit_price,
+                        pt,
+                        option_order.current_profit_price,
+                        option_order.profit_increment,
+                        option_order.id,
+                    ),
+                )
+                logger.info(
+                    f"update_option_order: id={option_order.id} status={option_order.order_status} "
+                    f"executed_qty={option_order.executed_qty} profit_trigger={pt}"
+                )
                 self.conn.commit()
                 # option_order is same ref as in self.orders (from insert) — already updated by caller
             return True
