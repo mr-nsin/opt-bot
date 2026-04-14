@@ -13,7 +13,16 @@ from ibapi.execution import Execution, ExecutionFilter
 from ibapi.order import Order
 from ibapi.wrapper import EWrapper, OrderState, Order, Contract, TickType, BarData, SetOfString, SetOfFloat
 
-from common import Tick, logger, Position, Trade, PNL
+from common import (
+    Tick,
+    logger,
+    Position,
+    Trade,
+    PNL,
+    normalize_option_expiry_for_ticker,
+    option_ticker_key,
+    option_ticker_key_from_contract,
+)
 import pandas as pd
 from queue import Queue
 
@@ -51,6 +60,9 @@ class TwsApiClient(EWrapper, EClient):
         self.connection_closed: bool= False
         self.pnl_cache = {}
         self.account_summary_cache = {}  # tag -> value (str from TWS; parse to float in engine)
+        self._pnl_single_req_by_con = {}
+        self._pnl_single_by_req = {}
+        self._pnl_single_cache = {}
         self._lock = threading.Lock()
         self._positions_lock = threading.Lock()
         self.ACCOUNT_SUMMARY_REQ_ID = 2
@@ -75,6 +87,10 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     def connectionClosed(self):
         logger.error("TWS connection closed.")
+        with self._lock:
+            self._pnl_single_req_by_con.clear()
+            self._pnl_single_by_req.clear()
+            self._pnl_single_cache.clear()
         self.connection_closed = True
         if getattr(self, "reconnect_handled_externally", False):
             logger.info("Reconnect is handled by the trading engine; not reconnecting from client.")
@@ -242,11 +258,11 @@ class TwsApiClient(EWrapper, EClient):
         contract.exchange = exchange
         contract.currency = currency
         contract.multiplier = multiplier
+        expiry = normalize_option_expiry_for_ticker(expiry)
         contract.lastTradeDateOrContractMonth = expiry
 
         # result = self.get_contract_detail(contract=contract)
-        right_char = (right[0] if right and len(right) >= 1 else "C").upper()
-        ticker = f"{symbol}{expiry}{right_char}{strike}"
+        ticker = option_ticker_key(symbol, expiry, right, strike)
         self.ticker_contract_cache[ticker] = contract
 
         return contract
@@ -325,7 +341,7 @@ class TwsApiClient(EWrapper, EClient):
         ticker_id: TickerId = None
         ticker = contract.symbol
         if contract.secType == "OPT":
-            ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+            ticker = option_ticker_key_from_contract(contract)
         elif contract.secType == "FUT":
             ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
         
@@ -406,7 +422,7 @@ class TwsApiClient(EWrapper, EClient):
     def get_last(self, contract: Contract)-> None:
         ticker = contract.symbol
         if contract.secType == "OPT":
-            ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+            ticker = option_ticker_key_from_contract(contract)
         elif contract.secType == "FUT":
             ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
 
@@ -429,7 +445,7 @@ class TwsApiClient(EWrapper, EClient):
         
         # If the security type is an option, create a unique ticker symbol by combining the symbol, last trade date, right and strike
         if contract.secType == "OPT":
-            ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+            ticker = option_ticker_key_from_contract(contract)
         elif contract.secType == "FUT":
             ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
             
@@ -449,7 +465,8 @@ class TwsApiClient(EWrapper, EClient):
         return self.get_data(contract=contract)
 
     def get_options_data(self, symbol: str, expiry: str, right: str, strike: float)-> Tick:
-        ticker = f"{symbol}{expiry}{str(right[0])}{strike}"
+        expiry = normalize_option_expiry_for_ticker(expiry)
+        ticker = option_ticker_key(symbol, expiry, right, strike)
         contract = self.ticker_contract_cache.get(ticker, None)
         if contract:
             return self.get_data(contract=contract)
@@ -465,8 +482,41 @@ class TwsApiClient(EWrapper, EClient):
             tries += 1
 
         return data
-        
-    
+
+    def ensure_pnl_single_subscription(self, con_id: int) -> None:
+        if not con_id or con_id <= 0:
+            return
+        if not self.isConnected():
+            return
+        account = (self._configured_account_id or "").strip() or getattr(
+            self, "managed_account", ""
+        ) or ""
+        if not account:
+            return
+        with self._lock:
+            if con_id in self._pnl_single_req_by_con:
+                return
+        req_id = self.nextTickerId()
+        with self._lock:
+            if con_id in self._pnl_single_req_by_con:
+                return
+            self._pnl_single_req_by_con[con_id] = req_id
+            self._pnl_single_by_req[req_id] = con_id
+        try:
+            self.reqPnLSingle(req_id, account, "", con_id)
+        except Exception as e:
+            logger.warning(f"reqPnLSingle failed conId={con_id}: {e}")
+            with self._lock:
+                self._pnl_single_req_by_con.pop(con_id, None)
+                self._pnl_single_by_req.pop(req_id, None)
+
+    def get_pnl_single_snapshot(self, con_id: int) -> dict:
+        if not con_id:
+            return {}
+        with self._lock:
+            cached = self._pnl_single_cache.get(con_id)
+            return dict(cached) if cached else {}
+
     def get_bars(self, stock: str, barSize: str, limit: int = 8):
         """
         Retrieve bars for a given stock.
@@ -609,6 +659,8 @@ class TwsApiClient(EWrapper, EClient):
             # Update the ask price of the tick data, if the tickType is 2
             elif tickType == 2:
                 tick.ask = price
+                if self.initialization_done and tick.contract.secType == "OPT":
+                    self.event_queue.put({"tick": tick})
             # Update the last price of the tick data, if the tickType is 4
             # Also, put an event in the event queue, which contains the tick data and the last price
             elif tickType == 4:
@@ -687,13 +739,24 @@ class TwsApiClient(EWrapper, EClient):
             })
         logger.debug(f"PNL Update for Req {reqId} - Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}")
 
-
-    """@iswrapper
+    @iswrapper
     def pnlSingle(self, reqId: int, pos: int, dailyPnL: float, unrealizedPnL: float, realizedPnL: float, value: float):
-        print(f"PNL Single Req {reqId} - Pos: {pos}, Daily: {dailyPnL}, Unrealized: {unrealizedPnL}, Realized: {realizedPnL}, Value: {value}")"""
+        with self._lock:
+            con_id = self._pnl_single_by_req.get(reqId)
+            if con_id is None:
+                return
+            self._pnl_single_cache[con_id] = {
+                "pos": pos,
+                "daily": dailyPnL,
+                "unrealized": unrealizedPnL,
+                "realized": realizedPnL,
+                "value": value,
+            }
+        logger.debug(
+            f"pnlSingle reqId={reqId} conId={con_id} unrealized={unrealizedPnL} value={value}"
+        )
 
-
-    @iswrapper 
+    @iswrapper
     def historicalDataUpdate(self, reqId: int, bar: BarData):
         bar.date = self.parseIBDatetime(bar.date)
         # print(f"historicalDataUpdate: {bar}")
@@ -769,17 +832,29 @@ class TwsApiClient(EWrapper, EClient):
         if contract.secType != "OPT":
             return
 
-        ticker = f"{contract.symbol}{contract.lastTradeDateOrContractMonth}{contract.right}{contract.strike}"
+        ticker = option_ticker_key_from_contract(contract)
+        cid = int(getattr(contract, "conId", 0) or 0)
         with self._positions_lock:
             position_obj = self.positions.get(ticker, None)
             if position_obj is None:
-                position_obj = Position(account=account, symbol=contract.symbol, position=position, strike=contract.strike, right=contract.right, expiry=contract.lastTradeDateOrContractMonth, avg_cost=avgCost)
+                position_obj = Position(
+                    account=account,
+                    symbol=contract.symbol,
+                    position=position,
+                    strike=contract.strike,
+                    right=contract.right,
+                    expiry=contract.lastTradeDateOrContractMonth,
+                    avg_cost=avgCost,
+                    con_id=cid if cid else None,
+                )
                 self.positions[ticker] = position_obj
                 logger.info(position_obj)
                 return
 
             position_obj.position = position
             position_obj.avg_cost = avgCost
+            if cid:
+                position_obj.con_id = cid
             if position == 0:
                 self.positions.pop(ticker, None)
             logger.info(position_obj)

@@ -19,10 +19,14 @@ import { positions as positionsApi } from "@/lib/tauri-commands";
 export const PositionRow = memo(function PositionRow({ position }: { position: Position }) {
   const [expanded, setExpanded] = useState(false);
 
-  const pnl = position.pnl ?? 0;
-  const pnlPct = position.pnl_percent ?? 0;
-  const isProfit = pnl > 0;
-  const gaugePct = Math.min(100, Math.abs(pnlPct));
+  const hasIbPnl = position.has_ib_pnl === true;
+  const hasLiveMark =
+    position.current_price != null && Number(position.current_price) > 0;
+  const showPnl = hasIbPnl || hasLiveMark;
+  const pnl = showPnl ? (position.pnl ?? 0) : null;
+  const pnlPct = showPnl ? (position.pnl_percent ?? 0) : null;
+  const isProfit = pnl != null && pnl > 0;
+  const gaugePct = Math.min(100, Math.abs(pnlPct ?? 0));
 
   const entryTime = position.entry_time;
   const timeHeld = entryTime
@@ -53,9 +57,9 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
         <td>
           <div className="flex items-center gap-1">
             <span className="font-mono font-bold text-xs">{position.symbol}</span>
-            {isProfit ? (
+            {pnl != null && isProfit ? (
               <TrendingUp className="h-2.5 w-2.5 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity" />
-            ) : pnl < 0 ? (
+            ) : pnl != null && pnl < 0 ? (
               <TrendingDown className="h-2.5 w-2.5 text-red-500 opacity-0 group-hover:opacity-100 transition-opacity" />
             ) : null}
           </div>
@@ -78,7 +82,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
             </span>
             <span className="font-medium text-foreground/90" title="Live mark (last, bid, or mid)">
               <span className="text-[10px] uppercase text-muted-foreground/50 mr-0.5">Now</span>
-              ${position.current_price?.toFixed(2) ?? "—"}
+              {hasLiveMark ? `$${Number(position.current_price).toFixed(2)}` : "—"}
             </span>
           </div>
         </td>
@@ -116,20 +120,26 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
 
         <td className="text-right">
           <div className="space-y-0.5 flex flex-col items-end">
-            <div className="flex items-center gap-1">
-              <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
-                {formatCurrency(pnl)}
-              </span>
-              <span className={cn("text-xs font-mono tabular-nums opacity-50", pnlColor(pnl))}>
-                ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
-              </span>
-            </div>
-            <div className="pnl-gauge w-14">
-              <div
-                className={cn("pnl-gauge-fill", isProfit ? "bg-emerald-500" : "bg-red-500")}
-                style={{ width: `${gaugePct}%` }}
-              />
-            </div>
+            {pnl != null && pnlPct != null ? (
+              <>
+                <div className="flex items-center gap-1">
+                  <span className={cn("font-mono font-bold tabular-nums text-xs", pnlColor(pnl))}>
+                    {formatCurrency(pnl)}
+                  </span>
+                  <span className={cn("text-xs font-mono tabular-nums opacity-50", pnlColor(pnl))}>
+                    ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="pnl-gauge w-14">
+                  <div
+                    className={cn("pnl-gauge-fill", isProfit ? "bg-emerald-500" : "bg-red-500")}
+                    style={{ width: `${gaugePct}%` }}
+                  />
+                </div>
+              </>
+            ) : (
+              <span className="text-muted-foreground/40 font-mono text-xs">—</span>
+            )}
           </div>
         </td>
 
@@ -154,7 +164,7 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
             <div className="px-3 py-2 bg-muted/10 border-t border-border/10">
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 text-xs animate-fade-up">
                 <DetailItem icon={Target} label="Entry Price" value={`$${position.avg_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
-                <DetailItem icon={BarChart3} label="Current" value={`$${position.current_price?.toFixed(2) ?? "—"}`} color="text-foreground" />
+                <DetailItem icon={BarChart3} label="Current" value={hasLiveMark ? `$${Number(position.current_price).toFixed(2)}` : "—"} color="text-foreground" />
                 {(position.bid != null && position.bid > 0) && (
                   <DetailItem icon={BarChart3} label="Bid" value={`$${Number(position.bid).toFixed(2)}`} color="text-foreground" title="Used for TP/SL when available" />
                 )}
@@ -187,8 +197,8 @@ export const PositionRow = memo(function PositionRow({ position }: { position: P
                 {timeHeld && (
                   <DetailItem icon={Clock} label="Time Held" value={timeHeld} color="text-muted-foreground" />
                 )}
-                {position.quantity && position.current_price && (
-                  <DetailItem icon={BarChart3} label="Market Value" value={formatCurrency(position.quantity * position.current_price * 100)} color="text-foreground" />
+                {position.quantity && hasLiveMark && (
+                  <DetailItem icon={BarChart3} label="Market Value" value={formatCurrency(position.quantity * Number(position.current_price) * 100)} color="text-foreground" />
                 )}
                 {position.delta !== undefined && (
                   <DetailItem icon={BarChart3} label="Delta" value={Number(position.delta).toFixed(3)} color="text-blue-400" />

@@ -21,6 +21,8 @@ PARENT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
+from common import normalize_option_expiry_for_ticker
+
 from protocol.emitter import (
     emit_log, emit_engine_status, emit_connection_status,
     emit_pnl, emit_position, emit_positions_snapshot, emit_signal,
@@ -285,7 +287,7 @@ class TradingEngine:
             symbol = getattr(pos, 'symbol', '') or ''
             strike = getattr(pos, 'strike', 0)
             right = getattr(pos, 'right', '')
-            expiry = getattr(pos, 'expiry', '')
+            expiry = getattr(pos, 'expiry', '') or getattr(pos, 'lastTradeDateOrContractMonth', '') or ''
 
             if self._order_mgr:
                 entry_order = self._order_mgr._find_entry_order(symbol, strike=strike, right=right, expiry=expiry)
@@ -304,7 +306,8 @@ class TradingEngine:
                 try:
                     r = str(right or "").upper()
                     r = "C" if r in ("C", "CALL") else "P" if r in ("P", "PUT") else (r[0] if r else "C")
-                    tick = self._client.get_options_data(symbol, str(expiry), r, float(strike))
+                    exp_key = normalize_option_expiry_for_ticker(str(expiry))
+                    tick = self._client.get_options_data(symbol, exp_key, r, float(strike))
                     if tick and hasattr(tick, 'last') and tick.last > 0:
                         current_price = tick.last
                     elif tick and hasattr(tick, 'bid') and tick.bid > 0:
@@ -352,6 +355,28 @@ class TradingEngine:
                 pos_data["exit_price_source"] = exit_price_source
             if entry_order and getattr(entry_order, "placed_at", None):
                 pos_data["entry_time"] = entry_order.placed_at
+
+            con_id = int(getattr(pos, "con_id", 0) or 0)
+            if con_id and hasattr(self._client, "get_pnl_single_snapshot"):
+                try:
+                    ib_snap = self._client.get_pnl_single_snapshot(con_id)
+                    ur = ib_snap.get("unrealized")
+                    if ur is not None:
+                        pos_data["pnl"] = round(float(ur), 2)
+                        pos_data["has_ib_pnl"] = True
+                        cost_basis = abs(float(qty)) * 100.0 * float(avg_price) if avg_price > 0 else 0.0
+                        if cost_basis > 0:
+                            pos_data["pnl_percent"] = round(float(ur) / cost_basis * 100.0, 2)
+                    v = ib_snap.get("value")
+                    if v is not None and float(pos_data.get("current_price", 0) or 0) <= 0 and qty:
+                        absq = abs(float(qty))
+                        if absq > 0:
+                            mark = float(v) / (absq * 100.0)
+                            if mark > 0:
+                                pos_data["current_price"] = round(mark, 4)
+                except Exception:
+                    pass
+
             positions.append(pos_data)
 
         # Deduplicate by (symbol, strike, right, expiry) — TWS can produce duplicates
@@ -1258,7 +1283,7 @@ class TradingEngine:
             symbol = (getattr(pos, "symbol", None) or "").strip()
             if not symbol:
                 continue
-            exp = str(getattr(pos, "expiry", "") or "").replace("-", "").strip()
+            exp = normalize_option_expiry_for_ticker(str(getattr(pos, "expiry", "") or ""))
             if not exp:
                 continue
             try:
@@ -1273,10 +1298,36 @@ class TradingEngine:
             except Exception:
                 pass
 
+    def _ensure_pnl_single_for_open_positions(self) -> None:
+        if not self._client or not hasattr(self._client, "ensure_pnl_single_subscription"):
+            return
+        try:
+            if hasattr(self._client, "get_all_positions"):
+                plist = self._client.get_all_positions()
+            else:
+                plist = list((getattr(self._client, "positions", None) or {}).values())
+        except Exception:
+            return
+        for p in plist or []:
+            try:
+                q = float(getattr(p, "position", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(q) < 1e-9:
+                continue
+            cid = getattr(p, "con_id", None)
+            if not cid:
+                continue
+            try:
+                self._client.ensure_pnl_single_subscription(int(cid))
+            except Exception:
+                pass
+
     def _emit_positions(self):
         """Emit current positions to the UI so the Positions page shows active positions."""
         try:
             self._ensure_open_position_options_subscribed()
+            self._ensure_pnl_single_for_open_positions()
             positions = self.get_positions()
 
             # Periodic diagnostic: log position count and live price health every ~10s
@@ -1327,6 +1378,8 @@ class TradingEngine:
                     payload["exit_price_source"] = str(pos.get("exit_price_source", ""))
                 if pos.get("entry_time"):
                     payload["entry_time"] = str(pos["entry_time"])
+                if pos.get("has_ib_pnl"):
+                    payload["has_ib_pnl"] = True
                 payloads.append(payload)
             if payloads:
                 emit_positions_snapshot(payloads)

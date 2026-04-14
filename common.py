@@ -42,6 +42,59 @@ def getExpiry(EXPIRY):
 
     return tradingExpiry
 
+
+def normalize_option_expiry_for_ticker(exp: str) -> str:
+    """Normalize option expiry to YYYYMMDD for tick cache keys and IB contract month (no separators)."""
+    if not exp:
+        return ""
+    raw = str(exp).strip()
+    if len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
+        return raw.replace("-", "").replace("/", "")[:8]
+    s = raw.replace("-", "").replace("/", "").strip()
+    if len(s) == 8 and s.isdigit():
+        return s
+    return s[:8] if len(s) >= 8 else s
+
+
+def normalize_option_strike_for_ticker_key(strike) -> str:
+    if strike is None:
+        return ""
+    try:
+        return str(float(strike))
+    except (TypeError, ValueError):
+        return str(strike)
+
+
+def normalize_option_right_for_ticker_key(right: str) -> str:
+    if not right:
+        return "C"
+    u = str(right).strip().upper()
+    if u in ("CALL", "C"):
+        return "C"
+    if u in ("PUT", "P"):
+        return "P"
+    return u[0] if u else "C"
+
+
+def option_ticker_key(symbol: str, expiry: str, right: str, strike) -> str:
+    sym = (symbol or "").strip()
+    exp = normalize_option_expiry_for_ticker(expiry or "")
+    rk = normalize_option_right_for_ticker_key(right or "")
+    sk = normalize_option_strike_for_ticker_key(strike)
+    return f"{sym}{exp}{rk}{sk}"
+
+
+def option_ticker_key_from_contract(contract: Contract) -> str:
+    if getattr(contract, "secType", "") != "OPT":
+        return (getattr(contract, "symbol", None) or "").strip()
+    return option_ticker_key(
+        getattr(contract, "symbol", None) or "",
+        getattr(contract, "lastTradeDateOrContractMonth", None) or "",
+        getattr(contract, "right", None) or "",
+        getattr(contract, "strike", None),
+    )
+
+
 def MarketOrder(action: str, totalQuantity: int)-> Order:
     """
     Creates a market order with the specified action and total quantity.
@@ -125,7 +178,8 @@ class Position:
     right: str = None
     expiry: str = None
     avg_cost: float = 0.0
-    
+    con_id: int = None
+
 @dataclass
 class PNL:
     account: str = None

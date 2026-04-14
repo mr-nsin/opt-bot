@@ -122,6 +122,8 @@ export interface Position {
   delta?: number;
   entry_time?: string;
   timestamp?: string;
+  /** True when unrealized P&L came from IB reqPnLSingle (show P&L even without a live mark). */
+  has_ib_pnl?: boolean;
   [key: string]: unknown;
 }
 

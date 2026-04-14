@@ -10,6 +10,24 @@ const PNL_THROTTLE_MS = 100;  // Flush P&L every 100ms to match position emissio
 const LOG_BATCH_MS = 150;
 const POSITION_BATCH_MS = 250;  // Batch position updates per animation frame (~4/sec max)
 
+/** Clear invalid live marks so we do not show entry fill as "current". Keep IB P&L when mark is missing. */
+function sanitizeLivePositionFields(p: Record<string, unknown>) {
+  const out = { ...p };
+  const hasIbPnl = out.has_ib_pnl === true;
+  const cp = out.current_price != null ? Number(out.current_price) : NaN;
+  if (out.current_price == null || Number.isNaN(cp) || cp <= 0) {
+    out.current_price = undefined;
+    if (!hasIbPnl) {
+      out.pnl = undefined;
+      out.pnl_percent = undefined;
+    }
+  }
+  if (out.bid != null && Number(out.bid) <= 0) out.bid = undefined;
+  if (out.ask != null && Number(out.ask) <= 0) out.ask = undefined;
+  if (out.last != null && Number(out.last) <= 0) out.last = undefined;
+  return out;
+}
+
 /**
  * Global trading event listeners.
  * Call ONCE at the app root (AppContent) to ensure sidecar events
@@ -256,8 +274,6 @@ export function useTradingEvents() {
         expiry: data.expiry || "",
         quantity: data.quantity || 0,
         avg_price: data.entry_price || data.price || 0,
-        current_price: data.entry_price || data.price || 0,
-        pnl: 0,
       } as any]);
     }
 
@@ -371,11 +387,13 @@ export function useTradingEvents() {
     if (!data || !Array.isArray(data.positions)) return;
     const store = usePositionStore.getState();
     // Filter out recently-closed positions and zero-price entries
-    const filtered = data.positions.filter((p: any) => {
-      if (!p.symbol || p.quantity <= 0) return false;
-      const key = positionKey(p.symbol, p.strike, p.right, p.expiry);
-      return !store.isRecentlyClosed(key);
-    });
+    const filtered = data.positions
+      .filter((p: any) => {
+        if (!p.symbol || p.quantity <= 0) return false;
+        const key = positionKey(p.symbol, p.strike, p.right, p.expiry);
+        return !store.isRecentlyClosed(key);
+      })
+      .map((p: any) => sanitizeLivePositionFields(p as Record<string, unknown>));
     store.setPositions(filtered);
   });
 
@@ -386,16 +404,7 @@ export function useTradingEvents() {
     const key = positionKey(data.symbol, data.strike, data.right, data.expiry);
     if (store.isRecentlyClosed(key)) return;
 
-    // Strip zero-price fields to preserve last known good values
-    const updates = { ...data };
-    if (!updates.current_price || updates.current_price <= 0) {
-      delete updates.current_price;
-      delete updates.pnl;
-      delete updates.pnl_percent;
-    }
-    if (updates.bid != null && updates.bid <= 0) delete updates.bid;
-    if (updates.ask != null && updates.ask <= 0) delete updates.ask;
-    if (updates.last != null && updates.last <= 0) delete updates.last;
+    const updates = sanitizeLivePositionFields({ ...data } as Record<string, unknown>);
 
     // Merge into pending batch (latest values win per key)
     const existing = positionPending.current.get(key);

@@ -1,6 +1,15 @@
 import datetime
 from typing import List, Optional
-from common import MarketOrder, OptionOrder, Tick, Trade, create_order_obj, logger, Contract
+from common import (
+    MarketOrder,
+    OptionOrder,
+    Tick,
+    Trade,
+    create_order_obj,
+    logger,
+    Contract,
+    normalize_option_expiry_for_ticker,
+)
 from data_access import DAL
 from tws_api_client import TwsApiClient
 
@@ -188,14 +197,7 @@ class OrderManager:
 
     def _norm_expiry(self, exp: str) -> str:
         """Normalize expiry to YYYYMMDD for matching (e.g. 2026-03-06 -> 20260306)."""
-        if not exp:
-            return ""
-        s = str(exp).replace("-", "").replace("/", "").strip()
-        if len(s) == 8 and s.isdigit():
-            return s
-        if len(s) == 10 and s[4] == "0" and s[7] == "0":
-            return s.replace("-", "")[:8]
-        return s[:8] if len(s) >= 8 else s
+        return normalize_option_expiry_for_ticker(exp or "")
 
     def _norm_right(self, r: str) -> str:
         """Normalize right to C or P."""
