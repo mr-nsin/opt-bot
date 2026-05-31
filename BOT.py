@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 from threading import Thread
 from queue import Queue, Empty
 from common import OptionOrder, logger, Tick, getExpiry
+from sl_tp_helpers import compute_fixed_percent_sl_tp, parse_sl_tp_settings
 from tws_api_client import TwsApiClient
 from order_manager import OrderManager
 from data_access import DAL
@@ -91,6 +92,10 @@ with open("config.json", "r",  encoding="utf-8") as fopen:
     fileDataGet = fopen.read()
     ####### GET DATA FROM CONFIG FILE #######
     fileData = json.loads(fileDataGet)
+
+SL_TP_MODE, FIXED_TAKE_PROFIT_PERCENT, FIXED_STOP_LOSS_PERCENT, TRAILING_TP = parse_sl_tp_settings(
+    fileData
+)
 
 # Connection Details - IP, PORT, ClientID
 global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK, VOLUME_CHECK, ATR_CHECKS
@@ -155,6 +160,23 @@ def is_license_valid(file_path: str = LICENSE_FILE) -> bool:
     except Exception as e:
         logger.error(f"License validation error: {e}")
         return False
+
+
+def apply_engine_config_update(config: dict) -> None:
+    """Update SL/TP globals when trading-engine receives config from UI (runtime)."""
+    global SL_TP_MODE, FIXED_TAKE_PROFIT_PERCENT, FIXED_STOP_LOSS_PERCENT, TRAILING_TP
+    if not isinstance(config, dict):
+        return
+    with _globals_lock:
+        m, tp, sl, tr = parse_sl_tp_settings(config)
+        SL_TP_MODE = m
+        FIXED_TAKE_PROFIT_PERCENT = tp
+        FIXED_STOP_LOSS_PERCENT = sl
+        TRAILING_TP = tr
+    logger.info(
+        f"apply_engine_config_update SL/TP: mode={SL_TP_MODE} TP%={FIXED_TAKE_PROFIT_PERCENT} "
+        f"SL%={FIXED_STOP_LOSS_PERCENT} trailing={TRAILING_TP}"
+    )
 
 
 def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
@@ -348,6 +370,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
     order.firmQuoteOnly = False
 
     if not closing_order:
+        trail_tp = bool(TRAILING_TP) and str(SL_TP_MODE).lower() != "fixed_percent"
         option_order = OptionOrder(
             id= order.orderId, 
             symbol=symbol, 
@@ -364,6 +387,7 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
             stoploss_price=auxPrice,
             current_profit_price=profitPrice,
             profit_increment=PROFIT_INCREMENT,
+            trailing_take_profit=trail_tp,
             profit_trigger=False,
             active=True)
 
@@ -1600,18 +1624,34 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
 
     is_long_entry = True  # takeTrade only BUYs options; short premium would set False
 
-    atr_sl_tp, atr_source = resolve_atr_for_sl_tp(stock_symbol, expiry, right, strike, atrVale)
-    logger.info(
-        f"PL_CALC {stock_symbol}: Entry=${tradePrice:.2f} ATR_for_SLTP={atr_sl_tp:.4f} ({atr_source}) "
-        f"stock_ATR_ref={float(atrVale) if atrVale is not None else 0:.4f} Time={market_time_str} DTE={time_decay_dte}"
-    )
+    mode_norm = str(SL_TP_MODE).strip().lower()
+    if mode_norm in ("fixed", "fixed_premium", "percent"):
+        mode_norm = "fixed_percent"
 
-    if atr_sl_tp <= 0.01:
-        profitPrice = round(tradePrice + 0.02, 2)
-        auxPrice = round(tradePrice - 0.01, 2)
-        logger.info(f"Low ATR case: Profit=${profitPrice:.2f}, StopLoss=${auxPrice:.2f}")
+    if mode_norm == "fixed_percent":
+        profitPrice, auxPrice = compute_fixed_percent_sl_tp(
+            tradePrice,
+            FIXED_TAKE_PROFIT_PERCENT,
+            FIXED_STOP_LOSS_PERCENT,
+            is_long_entry,
+        )
+        logger.info(
+            f"FIXED_PCT_SLTP {stock_symbol}: entry=${tradePrice:.2f} TP%={FIXED_TAKE_PROFIT_PERCENT} "
+            f"SL%={FIXED_STOP_LOSS_PERCENT} → TP=${profitPrice:.2f} SL=${auxPrice:.2f}"
+        )
     else:
-        profitPrice, auxPrice = compute_sl_tp_from_price_and_atr(tradePrice, atr_sl_tp, is_long_entry)
+        atr_sl_tp, atr_source = resolve_atr_for_sl_tp(stock_symbol, expiry, right, strike, atrVale)
+        logger.info(
+            f"PL_CALC {stock_symbol}: Entry=${tradePrice:.2f} ATR_for_SLTP={atr_sl_tp:.4f} ({atr_source}) "
+            f"stock_ATR_ref={float(atrVale) if atrVale is not None else 0:.4f} Time={market_time_str} DTE={time_decay_dte}"
+        )
+
+        if atr_sl_tp <= 0.01:
+            profitPrice = round(tradePrice + 0.02, 2)
+            auxPrice = round(tradePrice - 0.01, 2)
+            logger.info(f"Low ATR case: Profit=${profitPrice:.2f}, StopLoss=${auxPrice:.2f}")
+        else:
+            profitPrice, auxPrice = compute_sl_tp_from_price_and_atr(tradePrice, atr_sl_tp, is_long_entry)
 
     if auxPrice < 0.01:
         auxPrice = 0.01
@@ -2198,6 +2238,7 @@ def main_call(data):
     global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
     global VOLUME_CHECK, ATR_CHECKS, ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDayTrades, USE_DIFF_EXPIRY_INDEX, spy_qqq_tradeExpiry, PROFIT_INCREMENT, TRADE_COOLDOWN_SECONDS, EXPIRY, tradeExpiry_val
     global trade_time_dict, signal_dict, profit_amount_day, loss_amount_day
+    global SL_TP_MODE, FIXED_TAKE_PROFIT_PERCENT, FIXED_STOP_LOSS_PERCENT, TRAILING_TP
     global starting_profit, starting_loss
     starting_profit = 0
     starting_loss = 0
@@ -2245,6 +2286,14 @@ def main_call(data):
     SPY_QQQ_EXPIRY = fileData["SPY_QQQ_EXPIRY"]
     PROFIT_INCREMENT = fileData["profit_increment"]
     TRADE_COOLDOWN_SECONDS = fileData["distance_between_trade"]
+
+    try:
+        merged_sl = {**(file_data or {}), **(data or {})}
+    except TypeError:
+        merged_sl = dict(data or file_data or {})
+    SL_TP_MODE, FIXED_TAKE_PROFIT_PERCENT, FIXED_STOP_LOSS_PERCENT, TRAILING_TP = parse_sl_tp_settings(
+        merged_sl
+    )
 
     tradeExpiry_val = getExpiry(EXPIRY)
     spy_qqq_tradeExpiry = getExpiry(SPY_QQQ_EXPIRY)

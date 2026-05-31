@@ -90,6 +90,9 @@ pub struct TradingState {
     pub account_metrics: Option<serde_json::Value>,
     /// Signal DataFrame: list of {symbol, date, open, high, low, close, volume, signal} per candle.
     pub signal_data: Option<serde_json::Value>,
+    /// Whether the first pnl_update has been forwarded to the UI (ensures initial value always reaches frontend).
+    #[serde(skip, default)]
+    pub pnl_initialized: bool,
 }
 
 impl Default for TradingState {
@@ -110,6 +113,7 @@ impl Default for TradingState {
             last_signal_time: None,
             account_metrics: None,
             signal_data: None,
+            pnl_initialized: false,
         }
     }
 }

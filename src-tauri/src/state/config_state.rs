@@ -94,6 +94,28 @@ pub struct TradingConfig {
     pub liquidity_min_volume: i32,
     #[serde(alias = "LIQUIDITY_MAX_SPREAD_PCT", default)]
     pub liquidity_max_spread_pct: f64,
+    /// "dynamic_atr" | "fixed_percent" — how TP/SL prices are set at entry
+    #[serde(alias = "SL_TP_MODE", default = "default_sl_tp_mode")]
+    pub sl_tp_mode: String,
+    #[serde(alias = "FIXED_TP_PERCENT", default = "default_fixed_tp_pct")]
+    pub fixed_take_profit_percent: f64,
+    #[serde(alias = "FIXED_SL_PERCENT", default = "default_fixed_sl_pct")]
+    pub fixed_stop_loss_percent: f64,
+    #[serde(alias = "TRAILING_TP", default = "default_trailing_take_profit")]
+    pub trailing_take_profit: bool,
+}
+
+fn default_sl_tp_mode() -> String {
+    "dynamic_atr".into()
+}
+fn default_fixed_tp_pct() -> f64 {
+    30.0
+}
+fn default_fixed_sl_pct() -> f64 {
+    30.0
+}
+fn default_trailing_take_profit() -> bool {
+    true
 }
 
 /// Default symbols aligned with config.json — all symbols from stockData/stockListToTrade.
@@ -163,6 +185,10 @@ impl Default for TradingConfig {
             liquidity_check_on_off: "ON".into(),
             liquidity_min_volume: 20,
             liquidity_max_spread_pct: 15.0,
+            sl_tp_mode: "dynamic_atr".into(),
+            fixed_take_profit_percent: 30.0,
+            fixed_stop_loss_percent: 30.0,
+            trailing_take_profit: true,
         }
     }
 }
@@ -208,6 +234,13 @@ impl Default for ConfigState {
             settings: AppSettings::default(),
         }
     }
+}
+
+/// Load result: state plus the file we read (if any) so saves can write back to the same path.
+#[derive(Debug)]
+pub struct ConfigLoadResult {
+    pub state: ConfigState,
+    pub loaded_from: Option<std::path::PathBuf>,
 }
 
 // ==========================================
@@ -339,7 +372,7 @@ impl ConfigState {
     /// so the bundled config.json is found (otherwise exe falls back to defaults MNQU5/NQU5).
     pub fn load_config_with_resource_path(
         resource_config_path: Option<std::path::PathBuf>,
-    ) -> Option<ConfigState> {
+    ) -> Option<ConfigLoadResult> {
         let try_load = |contents: &str| -> Option<ConfigState> {
             let file: ConfigFile = serde_json::from_str(contents).ok()?;
             let settings = Self::settings_from_config_file(&file);
@@ -353,8 +386,12 @@ impl ConfigState {
             if path.exists() {
                 if let Ok(contents) = std::fs::read_to_string(path) {
                     if let Some(state) = try_load(&contents) {
+                        let path = path.clone();
                         log::info!("Loaded config from bundled resource {:?} ({} symbols)", path, state.trading.stock_list_to_trade.len());
-                        return Some(state);
+                        return Some(ConfigLoadResult {
+                            state,
+                            loaded_from: Some(path),
+                        });
                     }
                 }
             }
@@ -365,11 +402,14 @@ impl ConfigState {
             if !path.exists() {
                 continue;
             }
-            let path = path.canonicalize().unwrap_or(path);
+            let path = path.canonicalize().unwrap_or(path.clone());
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 if let Some(state) = try_load(&contents) {
                     log::info!("Loaded config from {:?} ({} symbols)", path, state.trading.stock_list_to_trade.len());
-                    return Some(state);
+                    return Some(ConfigLoadResult {
+                        state,
+                        loaded_from: Some(path),
+                    });
                 }
             }
         }
@@ -380,8 +420,12 @@ impl ConfigState {
         if primary.exists() {
             if let Ok(contents) = std::fs::read_to_string(&primary) {
                 if let Some(state) = try_load(&contents) {
+                    let path = primary.clone();
                     log::info!("Loaded config from app data {:?} ({} symbols)", primary, state.trading.stock_list_to_trade.len());
-                    return Some(state);
+                    return Some(ConfigLoadResult {
+                        state,
+                        loaded_from: Some(path),
+                    });
                 }
             }
         }
@@ -389,15 +433,23 @@ impl ConfigState {
         // 3) Legacy ./config.json
         if let Ok(contents) = std::fs::read_to_string("config.json") {
             if let Some(state) = try_load(&contents) {
+                let path = std::path::PathBuf::from("config.json");
+                let path = path.canonicalize().unwrap_or(path);
                 log::info!("Loaded config from legacy ./config.json ({} symbols)", state.trading.stock_list_to_trade.len());
-                return Some(state);
+                return Some(ConfigLoadResult {
+                    state,
+                    loaded_from: Some(path),
+                });
             }
         }
 
         // 4) Embedded config (standalone exe — no resources folder needed)
         if let Some(state) = try_load(EMBEDDED_CONFIG) {
             log::info!("Loaded config from embedded binary ({} symbols) — standalone exe, no resources folder", state.trading.stock_list_to_trade.len());
-            return Some(state);
+            return Some(ConfigLoadResult {
+                state,
+                loaded_from: None,
+            });
         }
 
         None
@@ -405,7 +457,7 @@ impl ConfigState {
 
     /// Load config (convenience; no resource path - use load_config_with_resource_path for exe).
     pub fn load_config() -> Option<ConfigState> {
-        Self::load_config_with_resource_path(None)
+        Self::load_config_with_resource_path(None).map(|r| r.state)
     }
 
     /// Legacy: Load only TradingConfig (for compatibility). Prefer load_config().
@@ -414,7 +466,11 @@ impl ConfigState {
     }
 
     /// Save full ConfigState (trading + settings) to config.json. Single source.
-    pub fn save_full_config(config: &ConfigState) -> Result<(), String> {
+    /// `mirror_to_loaded_path`: if set, also write the same JSON there (the file we loaded at startup).
+    pub fn save_full_config(
+        config: &ConfigState,
+        mirror_to_loaded_path: Option<&std::path::Path>,
+    ) -> Result<(), String> {
         let app_data = crate::utils::paths::app_data_dir();
         if !app_data.exists() {
             std::fs::create_dir_all(&app_data).map_err(|e| format!("Create dir: {}", e))?;
@@ -423,6 +479,16 @@ impl ConfigState {
         let json = Self::config_to_json(config)?;
         std::fs::write(&path, &json).map_err(|e| format!("Write config: {}", e))?;
         log::info!("Config saved to {:?}", path);
+
+        if let Some(dest) = mirror_to_loaded_path {
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(dest, &json) {
+                Ok(()) => log::info!("Config mirrored to {:?}", dest),
+                Err(e) => log::warn!("Could not mirror config to {:?}: {}", dest, e),
+            }
+        }
 
         Self::save_config_to_project(config);
         Ok(())
@@ -457,6 +523,10 @@ impl ConfigState {
         let mut m = Map::new();
         m.insert("ui".into(), Value::Object(ui_map));
         m.insert("profit_increment".into(), Value::Number(serde_json::Number::from_f64(t.profit_increment).unwrap_or(0.into())));
+        m.insert("sl_tp_mode".into(), Value::String(t.sl_tp_mode.clone()));
+        m.insert("fixed_take_profit_percent".into(), Value::Number(serde_json::Number::from_f64(t.fixed_take_profit_percent).unwrap_or(30.into())));
+        m.insert("fixed_stop_loss_percent".into(), Value::Number(serde_json::Number::from_f64(t.fixed_stop_loss_percent).unwrap_or(30.into())));
+        m.insert("trailing_take_profit".into(), Value::Bool(t.trailing_take_profit));
         m.insert("expiryToTrade".into(), Value::String(t.expiry_to_trade.clone()));
         m.insert("SPY_QQQ_EXPIRY".into(), Value::String(t.spy_qqq_expiry.clone()));
         m.insert("USE_DIFF_EXPIRY_INDEX".into(), Value::String(t.use_diff_expiry_index.clone()));
@@ -513,7 +583,7 @@ impl ConfigState {
             trading: config.clone(),
             settings: AppSettings::default(),
         };
-        Self::save_full_config(&state)
+        Self::save_full_config(&state, None)
     }
 
     /// Write config to project config.json (trading + settings)

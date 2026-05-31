@@ -139,6 +139,7 @@ class OptionOrder:
     active: bool = False # active untill position is closed or order rejected/cancelled.
     ref_order_id: int = None
     placed_at: str = None  # ISO timestamp when order was placed
+    trailing_take_profit: bool = True
 
     @property
     def option_symbol(self)-> str:

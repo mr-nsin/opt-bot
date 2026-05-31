@@ -371,6 +371,7 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
                         app.sidecar_running = false;
                         app.trading.status = TradingStatus::Idle;
                         app.connected_to_tws = false;
+                        app.trading.pnl_initialized = false;
                     }
                     crate::IS_TRADING.store(false, std::sync::atomic::Ordering::Relaxed);
 
@@ -538,15 +539,17 @@ async fn handle_sidecar_message(
                         .unwrap_or(0.0);
 
                     let mut app = state.lock().await;
+                    let is_first = !app.trading.pnl_initialized;
                     let unchanged = (app.trading.daily_pnl.total - daily).abs() < 1e-9
                         && (app.trading.daily_pnl.unrealized - unrealized).abs() < 1e-9
                         && (app.trading.daily_pnl.realized - realized).abs() < 1e-9;
-                    if unchanged {
+                    if unchanged && !is_first {
                         should_forward = false;
                     } else {
                         app.trading.daily_pnl.total = daily;
                         app.trading.daily_pnl.unrealized = unrealized;
                         app.trading.daily_pnl.realized = realized;
+                        app.trading.pnl_initialized = true;
                     }
                 }
 

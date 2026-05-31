@@ -53,6 +53,12 @@ export interface TradingConfig {
   per_day_trades?: number;
   loss_amount_day?: number;
   profit_amount_day?: number;
+  /** "dynamic_atr" = ATR-based TP/SL; "fixed_percent" = TP/SL as % of option premium */
+  sl_tp_mode?: string;
+  fixed_take_profit_percent?: number;
+  fixed_stop_loss_percent?: number;
+  /** When true (dynamic mode only), take-profit trails with profit_increment */
+  trailing_take_profit?: boolean;
 }
 
 export type TradingStatus = "Idle" | "Starting" | "Running" | "Stopping" | { Error: string };

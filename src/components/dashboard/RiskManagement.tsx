@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { useConfigStore } from "@/stores/configStore";
 import { useTradingStore } from "@/stores/tradingStore";
@@ -45,8 +46,79 @@ export function RiskManagement({ disabled }: { disabled?: boolean }) {
           </div>
         </div>
         <div className="space-y-0.5">
-            <label className="text-sm font-semibold text-muted-foreground">Trailing Increment</label>
+          <label className="text-sm font-semibold text-muted-foreground">Trailing Increment</label>
           <Input type="number" step="0.01" value={tradingConfig.profit_increment} onChange={(e) => !disabled && updateTradingConfig({ profit_increment: parseFloat(e.target.value) })} disabled={disabled} />
+        </div>
+
+        <div className="pt-2 mt-1 border-t border-border/30 space-y-2">
+          <p className="text-xs font-semibold text-foreground/90">Entry stop / take profit</p>
+          <p className="text-2xs text-muted-foreground leading-snug">
+            Dynamic uses ATR vs premium rules. Fixed sets TP/SL as % of option entry. Saved with Save Configuration.
+          </p>
+          <div className="space-y-0.5">
+            <label className="text-sm font-semibold text-muted-foreground">SL/TP mode</label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+              value={tradingConfig.sl_tp_mode === "fixed_percent" ? "fixed_percent" : "dynamic_atr"}
+              onChange={(e) => {
+                if (disabled) return;
+                const v = e.target.value;
+                updateTradingConfig({
+                  sl_tp_mode: v,
+                  ...(v === "fixed_percent" ? { trailing_take_profit: false } : {}),
+                });
+              }}
+              disabled={disabled}
+            >
+              <option value="dynamic_atr">Dynamic (ATR-based)</option>
+              <option value="fixed_percent">Fixed (% of premium)</option>
+            </select>
+          </div>
+          {tradingConfig.sl_tp_mode === "fixed_percent" && (
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-0.5">
+                <label className="text-sm font-semibold text-muted-foreground">TP %</label>
+                <Input
+                  type="number"
+                  min={0.01}
+                  step={0.5}
+                  value={tradingConfig.fixed_take_profit_percent ?? 30}
+                  onChange={(e) =>
+                    !disabled &&
+                    updateTradingConfig({ fixed_take_profit_percent: parseFloat(e.target.value) || 30 })
+                  }
+                  disabled={disabled}
+                />
+              </div>
+              <div className="space-y-0.5">
+                <label className="text-sm font-semibold text-muted-foreground">SL %</label>
+                <Input
+                  type="number"
+                  min={0.01}
+                  step={0.5}
+                  value={tradingConfig.fixed_stop_loss_percent ?? 30}
+                  onChange={(e) =>
+                    !disabled &&
+                    updateTradingConfig({ fixed_stop_loss_percent: parseFloat(e.target.value) || 30 })
+                  }
+                  disabled={disabled}
+                />
+              </div>
+            </div>
+          )}
+          {tradingConfig.sl_tp_mode !== "fixed_percent" && (
+            <div className="flex items-center justify-between gap-2 py-1">
+              <div>
+                <p className="text-sm font-semibold text-muted-foreground">Trailing take-profit</p>
+                <p className="text-2xs text-muted-foreground">Trail target with pullback exit (uses increment above)</p>
+              </div>
+              <Switch
+                checked={tradingConfig.trailing_take_profit !== false}
+                onCheckedChange={(c) => !disabled && updateTradingConfig({ trailing_take_profit: c })}
+                disabled={disabled}
+              />
+            </div>
+          )}
         </div>
 
         <div className="pt-2 mt-0.5 border-t border-border/20 space-y-2">

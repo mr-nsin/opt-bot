@@ -680,6 +680,8 @@ class TradingEngine:
         try:
             import BOT
             BOT.TRADE_COOLDOWN_SECONDS = int(getattr(self.config, "distance_between_trade", 610))
+            if hasattr(BOT, "apply_engine_config_update"):
+                BOT.apply_engine_config_update(self.config.to_bot_config_dict())
         except Exception:
             pass
         emit_log("Configuration updated", "INFO", "system")
@@ -1262,8 +1264,8 @@ class TradingEngine:
                     break
             emit_pnl(daily_pnl=daily, unrealized=unrealized, realized=realized)
             self._last_pnl_emit_time = now
-        except Exception:
-            pass  # Silently skip P&L errors
+        except Exception as e:
+            emit_log(f"P&L emit error: {e}", "WARN", "system")
 
     def _ensure_open_position_options_subscribed(self) -> None:
         """

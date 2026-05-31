@@ -1,6 +1,6 @@
 {
   "profit_increment": 0.03,
-  "expiryToTrade": "current",
+  "expiryToTrade": "next",
   "SPY_QQQ_EXPIRY": "1DTE",
   "USE_DIFF_EXPIRY_INDEX": "yes",
   "IP": "127.0.0.1",
@@ -31,7 +31,7 @@
   "QUANTITY": 2,
   "fetchValue": "1 D",
   "candleTime": "5 mins",
-  "distance_between_trade": 120,
+  "distance_between_trade": 0,
   "AVG_VOLUMNS_CANDLES": 30,
   "stockData": {
     "AAPL": {

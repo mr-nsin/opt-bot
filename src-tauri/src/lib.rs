@@ -104,8 +104,9 @@ pub fn run() {
                 // Use bundled resource path when running as exe (config.json in resources/)
                 let resource_path = app.path().resource_dir().ok().map(|d| d.join("config.json"));
                 match ConfigState::load_config_with_resource_path(resource_path) {
-                    Some(full_config) => {
-                        app_state.config = full_config;
+                    Some(loaded) => {
+                        app_state.config = loaded.state;
+                        app_state.config_loaded_from = loaded.loaded_from;
                         log::info!(
                             "Loaded config from config.json ({} symbols)",
                             app_state.config.trading.stock_list_to_trade.len()

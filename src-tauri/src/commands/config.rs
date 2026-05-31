@@ -22,7 +22,7 @@ pub async fn save_config(
     app.config.trading = config;
 
     // Persist full config (trading + settings) to config.json
-    ConfigState::save_full_config(&app.config)?;
+    ConfigState::save_full_config(&app.config, app.config_loaded_from.as_deref())?;
 
     // If the trading engine is running, push config so it picks up changes at runtime
     if manager::is_running().await {
@@ -56,7 +56,7 @@ pub async fn save_settings(
     app.config.settings = settings;
 
     // Persist full config (trading + settings) to config.json
-    ConfigState::save_full_config(&app.config)?;
+    ConfigState::save_full_config(&app.config, app.config_loaded_from.as_deref())?;
 
     Ok("Settings saved".into())
 }
