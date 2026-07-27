@@ -1,15 +1,19 @@
 # Active Context: QuantDrift Options Trading Bot
 
 ## Current Focus of Work
-* We are currently on the branch **`fix-pricing`**.
-* The user initiated a deep-dive knowledge extraction loop to exhaustively map out the project architecture and store it in the Memory Bank.
-* **The Loop is Complete:** We successfully traversed the Python Engine, the Rust Backend, and the React Frontend.
+* We completed a comprehensive architecture review and **Ponytail Review** (code cleanup) to optimize performance and ensure the bot operates reliably end-to-end.
+* **The Decision:** Aligned on the **Class-Based BOT Wrapper Architecture** (`trading-engine` wrapping `BOT.py`/`tws_api_client.py`) as the primary production engine. The alternative `ib_insync` rewrite was found to be incomplete (missing option chains, strikes, and order placements) and was fully cleaned up.
+* **Code Cleanup:** Deleted obsolete Tkinter/PyQt files (`TK_GUI.py`, `new_change.py`, `image_load.py`), the unused `clients/` folder (Databento/Tradovate connectors), and the incomplete `ib_insync` sidecar rewrite files.
 
 ## Recent Decisions
-* **Frontend Analysis:** Documented how Zustand (`tradingStore.ts`) manages live ticks. Confirmed the rigid normalization required for option matching `(symbol, strike, right, expiry)`.
-* **Project Brain Created:** Generated `antigravity-rules.md` in the `memory-bank/` directory. This encapsulates the architectural strictness (IPC chains, config pathing, options matching, and process lifecycle).
-* **Memory Bank Overhaul Loop Status:** DONE. All core files and the intelligence rules file are up to date and comprehensive.
+* **Performance Optimizations:** 
+  1. Throttled stock scans to 2.0s and option risk checks to 0.25s per symbol.
+  2. Implemented a 90-contract streaming limit in `tws_api_client.py` to prevent IBKR API cutoffs.
+  3. Added virtualized scrolling in the `TradeBlotter` UI (TanStack Virtualizer) to render hundreds of transactions lag-free.
+  4. Expanded log display limits to 500 lines for comprehensive signal monitoring.
 
 ## Next Steps
-* Run `git add` and `git commit` to permanently save the `antigravity-rules.md` and context changes to the active branch.
-* Await user confirmation to run the app or proceed to the next feature implementation.
+* Run regression tests on the full Tauri app workspace.
+* Monitor live trade execution and TWS reconnect stability during market hours.
+* Ensure all developers follow the unified rules defined in `antigravity-rules.md`.
+

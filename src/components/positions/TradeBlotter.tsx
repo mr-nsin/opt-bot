@@ -10,6 +10,8 @@ import type { Position } from "@/lib/types";
 type SortField = "time" | "symbol" | "pnl" | "side";
 type SortDir = "asc" | "desc";
 
+import { useVirtualizer } from "@tanstack/react-virtual";
+
 /** Normalize option right for matching: "CALL" → "C", "PUT" → "P" */
 const nrFn = (r?: string) => (r === "CALL" ? "C" : r === "PUT" ? "P" : r);
 const normExp = (e?: string) => (e || "").replace(/-/g, "").replace(/\s/g, "").trim();
@@ -111,6 +113,14 @@ export const TradeBlotter = memo(function TradeBlotter() {
 
   const winRate = closedTrades > 0 ? ((winningTrades / closedTrades) * 100).toFixed(1) : "0.0";
 
+  const parentRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: sorted.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 40,
+    overscan: 10,
+  });
+
   return (
     <Card>
       <CardHeader className="py-2 px-3 flex flex-row items-center justify-between">
@@ -130,7 +140,7 @@ export const TradeBlotter = memo(function TradeBlotter() {
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="overflow-x-auto min-w-0">
+        <div ref={parentRef} className="overflow-x-auto overflow-y-auto min-w-0 max-h-[500px]">
           <table className="w-full table-pro min-w-max">
             <thead>
               <tr>
@@ -196,7 +206,15 @@ export const TradeBlotter = memo(function TradeBlotter() {
                   </td>
                 </tr>
               ) : (
-                sorted.map((t, i) => {
+                <>
+                {rowVirtualizer.getVirtualItems().length > 0 && (
+                  <tr>
+                    <td colSpan={11} style={{ height: `${rowVirtualizer.getVirtualItems()[0]?.start || 0}px` }} />
+                  </tr>
+                )}
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const t = sorted[virtualRow.index];
+                  const i = virtualRow.index;
                   const status = (t.status as string) ?? "open";
                   const isClosed = status === "closed";
                   const isOpen = !isClosed;
@@ -220,7 +238,12 @@ export const TradeBlotter = memo(function TradeBlotter() {
                     : liveCurrentPrice;
 
                   return (
-                    <tr key={`${t.id}-${i}`} className="transition-colors">
+                    <tr 
+                      key={`${t.id}-${i}`} 
+                      className="transition-colors" 
+                      ref={rowVirtualizer.measureElement}
+                      data-index={virtualRow.index}
+                    >
                       <td className="text-muted-foreground/70 font-mono tabular-nums text-xs">
                         {t.timestamp ? formatTime(t.timestamp as string) : "—"}
                       </td>
@@ -344,7 +367,13 @@ export const TradeBlotter = memo(function TradeBlotter() {
                       </td>
                     </tr>
                   );
-                })
+                })}
+                {rowVirtualizer.getVirtualItems().length > 0 && (
+                  <tr>
+                    <td colSpan={11} style={{ height: `${rowVirtualizer.getTotalSize() - (rowVirtualizer.getVirtualItems()[rowVirtualizer.getVirtualItems().length - 1]?.end || 0)}px` }} />
+                  </tr>
+                )}
+                </>
               )}
             </tbody>
           </table>

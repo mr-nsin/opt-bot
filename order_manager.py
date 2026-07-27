@@ -443,6 +443,12 @@ class OrderManager:
                 option_tick.active_order = None
                 entry_order.active = False
 
+                if self.api_client and getattr(entry_order, 'contract', None):
+                    try:
+                        self.api_client.unsubscribe(entry_order.contract)
+                    except Exception as e:
+                        logger.error(f"Failed to unsubscribe closed position: {e}")
+
                 # Notify UI that position was closed (trade_closed). Use underlying symbol to match UI positions.
                 _emit_trade_closed({
                     "symbol": entry_order.symbol or entry_order.option_symbol or "",
@@ -706,15 +712,25 @@ class OrderManager:
                 exit_price = -1
 
         if exit_price <= 0:
-            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={bid_val}, ask={ask_val}, last={last_val}")
-            return
+            if hasattr(self, "client") and self.client:
+                con_id = 0
+                if hasattr(self.client, "get_all_positions"):
+                    for p in self.client.get_all_positions():
+                        if getattr(p, "symbol", "") == order.stock_symbol and getattr(p, "strike", 0) == order.strike and getattr(p, "right", "") == order.right and getattr(p, "expiry", "") == order.expiry:
+                            con_id = getattr(p, "conId", 0)
+                            break
+                if con_id > 0 and hasattr(self.client, "get_pnl_single_snapshot"):
+                    snap = self.client.get_pnl_single_snapshot(con_id)
+                    ib_value = snap.get("value", 0)
+                    ib_unrealized = snap.get("unrealized", 0)
+                    if ib_value > 0 and ib_value < 1e100 and ib_unrealized < 1e100:
+                        multiplier = 100.0 if order.right in ("C", "CALL", "P", "PUT") else 1.0
+                        qty = abs(order.quantity) if order.quantity else 0
+                        if qty > 0:
+                            exit_price = ib_value / (qty * multiplier)
 
-        # Validate prices (Long: bid/last; Short: ask/last)
-        if is_long and (option_tick.last == -1 or option_tick.bid == -1):
-            logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
-            return
-        if not is_long and (option_tick.last == -1 or option_tick.ask == -1):
-            logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
+        if exit_price <= 0:
+            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={bid_val}, ask={ask_val}, last={last_val}")
             return
 
         # Log current state with condition values for debugging
@@ -840,15 +856,25 @@ class OrderManager:
             exit_price = option_tick.ask if option_tick.ask > 0 else option_tick.last
 
         if exit_price <= 0:
-            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, ask={option_tick.ask}, last={option_tick.last}")
-            return
+            if hasattr(self, "client") and self.client:
+                con_id = 0
+                if hasattr(self.client, "get_all_positions"):
+                    for p in self.client.get_all_positions():
+                        if getattr(p, "symbol", "") == order.stock_symbol and getattr(p, "strike", 0) == order.strike and getattr(p, "right", "") == order.right and getattr(p, "expiry", "") == order.expiry:
+                            con_id = getattr(p, "conId", 0)
+                            break
+                if con_id > 0 and hasattr(self.client, "get_pnl_single_snapshot"):
+                    snap = self.client.get_pnl_single_snapshot(con_id)
+                    ib_value = snap.get("value", 0)
+                    ib_unrealized = snap.get("unrealized", 0)
+                    if ib_value > 0 and ib_value < 1e100 and ib_unrealized < 1e100:
+                        multiplier = 100.0 if order.right in ("C", "CALL", "P", "PUT") else 1.0
+                        qty = abs(order.quantity) if order.quantity else 0
+                        if qty > 0:
+                            exit_price = ib_value / (qty * multiplier)
 
-        # Validate prices
-        if is_long and (option_tick.last == -1 or option_tick.bid == -1):
-            logger.warning(f"Invalid price data for {order.option_symbol} (long): last={option_tick.last}, bid={option_tick.bid}")
-            return
-        if not is_long and (option_tick.last == -1 or option_tick.ask == -1):
-            logger.warning(f"Invalid price data for {order.option_symbol} (short): last={option_tick.last}, ask={option_tick.ask}")
+        if exit_price <= 0:
+            logger.warning(f"Invalid exit price for {order.option_symbol}: bid={option_tick.bid}, ask={option_tick.ask}, last={option_tick.last}")
             return
 
         # Long: close when exit <= SL. Short: close when exit >= SL

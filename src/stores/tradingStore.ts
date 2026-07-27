@@ -28,6 +28,9 @@ interface TradingState {
   /** Signal DataFrame: candle signals per stock (from initial scan after data feed starts) */
   signalData: { signals: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number; signal: string }>; system_started_at: string; timestamp: string } | null;
 
+  /** Live market data keyed by symbol (bid/ask/last) */
+  marketData: Record<string, { symbol: string; last: number; bid: number; ask: number }>;
+
   // Actions
   setStatus: (status: TradingStatus) => void;
   setSidecarRunning: (running: boolean) => void;
@@ -51,6 +54,8 @@ interface TradingState {
   markOpenTradesClosedOnEmergency: () => void;
   /** Hydrate todayTrades from backend (e.g. on page load when engine already running) */
   setTodayTrades: (trades: TradeRecord[]) => void;
+  /** Update live tick data for a symbol (from tick_batch events) */
+  updateTickData: (tick: { symbol: string; last: number; bid: number; ask: number }) => void;
 }
 
 const initialState = {
@@ -71,6 +76,7 @@ const initialState = {
   isSignalScanning: false,
   lastSignalScanTime: null as string | null,
   signalData: null as { signals: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number; signal: string }>; system_started_at: string; timestamp: string } | null,
+  marketData: {} as Record<string, { symbol: string; last: number; bid: number; ask: number }>,
 };
 
 export const useTradingStore = create<TradingState>((set) => ({
@@ -139,4 +145,8 @@ export const useTradingStore = create<TradingState>((set) => ({
     })),
   setTodayTrades: (trades) =>
     set({ todayTrades: Array.isArray(trades) ? trades.slice(0, 100) : [] }),
+  updateTickData: (tick) =>
+    set((state) => ({
+      marketData: { ...state.marketData, [tick.symbol]: tick },
+    })),
 }));

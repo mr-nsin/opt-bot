@@ -59,10 +59,10 @@ const categoryConfig: Record<string, { icon: typeof Info; color: string; label: 
   sidecar: { icon: Terminal, color: "text-slate-400", label: "Sidecar" },
 };
 
-const LOG_DISPLAY_LIMIT = 60;
+const LOG_DISPLAY_LIMIT = 500;
 
 export const LogsPage = memo(function LogsPage() {
-  const { logs, filterLevel, filterCategory, autoScroll, setLogs, clearLogs, setAutoScroll } =
+  const { logs, filterLevel, filterCategory, autoScroll, mergeWithRustLogs, clearLogs, setAutoScroll } =
     useLogStore();
   const parentRef = useRef<HTMLDivElement>(null);
   const infoPopoverRef = useRef<HTMLDivElement>(null);
@@ -73,12 +73,13 @@ export const LogsPage = memo(function LogsPage() {
 
   useEffect(() => {
     logsApi
-      .get(undefined, undefined, LOG_DISPLAY_LIMIT)
+      .get(undefined, undefined, 500)
       .then((entries) => {
-        requestAnimationFrame(() => setLogs(entries));
+        // Merge Rust-persisted history without wiping live events already in the store
+        requestAnimationFrame(() => mergeWithRustLogs(entries as any));
       })
       .catch(console.error);
-  }, [setLogs]);
+  }, [mergeWithRustLogs]);
 
   useEffect(() => {
     logsApi.getLogsDir().then(setLogDirPath).catch(() => setLogDirPath(null));

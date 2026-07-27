@@ -26,6 +26,14 @@ from common import (
 import pandas as pd
 from queue import Queue
 
+# ---- Frontend log emitter (sends logs to Tauri UI via JSON-RPC stdout) ----
+try:
+    from protocol.emitter import emit_log as _emit_log
+except ImportError:
+    def _emit_log(message, level="INFO", category="trading"):
+        pass
+
+
 class TwsApiClient(EWrapper, EClient):
     def __init__(self, host: str, port: int, clientId: int, event_queue: Queue, callback, account_id: str = ""): 
         EWrapper.__init__(self)
@@ -87,6 +95,7 @@ class TwsApiClient(EWrapper, EClient):
     @iswrapper
     def connectionClosed(self):
         logger.error("TWS connection closed.")
+        _emit_log("TWS connection closed. Checking reconnect policy...", "ERROR", "system")
         with self._lock:
             self._pnl_single_req_by_con.clear()
             self._pnl_single_by_req.clear()
@@ -94,8 +103,10 @@ class TwsApiClient(EWrapper, EClient):
         self.connection_closed = True
         if getattr(self, "reconnect_handled_externally", False):
             logger.info("Reconnect is handled by the trading engine; not reconnecting from client.")
+            _emit_log("Reconnection handled by active watchdog agent.", "INFO", "system")
             return
         logger.info("Attempting to reconnect...")
+        _emit_log("Attempting to reconnect to TWS...", "WARN", "system")
         self.try_reconnect()
         
     def try_reconnect(self, max_attempts=5, delay=5):
@@ -104,13 +115,16 @@ class TwsApiClient(EWrapper, EClient):
     
         while attempts < max_attempts and not self.isConnected():
             try:
-                logger.info(f"Reconnection attempt {attempts + 1}...")
+                msg = f"Reconnection attempt {attempts + 1} of {max_attempts}..."
+                logger.info(msg)
+                _emit_log(msg, "WARN", "system")
                 self.disconnect()
                 time.sleep(delay)
                 self.connect(self._host, self._port, self._clientId)
             
                 if self.isConnected():
                     logger.info("Successfully reconnected to TWS")
+                    _emit_log("Successfully reconnected to TWS API gateway.", "INFO", "system")
                     self.connection_closed = False
                     threading.Thread(target=self.run, daemon=True).start()
                     self.start_heartbeat()
@@ -120,10 +134,13 @@ class TwsApiClient(EWrapper, EClient):
                 
             except Exception as e:
                 logger.error(f"Reconnect attempt {attempts + 1} failed: {e}")
+                _emit_log(f"Reconnect attempt {attempts + 1} failed: {e}", "ERROR", "system")
                 attempts += 1
             
         logger.error("Max reconnect attempts reached")
+        _emit_log("Max reconnect attempts reached. Gateway connection failed.", "ERROR", "system")
         return False
+
 
     @iswrapper
     def nextValidId(self, orderId: int):
@@ -133,6 +150,7 @@ class TwsApiClient(EWrapper, EClient):
         logger.info(f"NextValidId: {orderId}")
         
         # Request essential data
+        self.reqMarketDataType(3)  # Request delayed data if live data is not subscribed
         self.reqPositions()
         self.reqAllOpenOrders()
         
@@ -345,15 +363,17 @@ class TwsApiClient(EWrapper, EClient):
         elif contract.secType == "FUT":
             ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
         
-        # check if contract is already subscribed.
-        # ticker_id = self.ticker_id_contract_cache.get(contract.conId, None)
-        
+        if not hasattr(self, "_active_streaming_tickers"):
+            self._active_streaming_tickers = set()
+
         ticker_id = self.ticker_id_contract_cache.get(ticker, None)
-        # if ticker_id != None:
-        #     logger.info(f'Contract :{ticker} already subscribed.')
-        #     return
 
         if ticker_id is None:
+            # Enforce 90 concurrent streaming limit for options to avoid IBKR cutoff
+            if not snapshot and contract.secType == "OPT" and len(self._active_streaming_tickers) >= 90:
+                logger.warning(f"Market data limit reached (90 active). Forcing snapshot for {ticker}")
+                snapshot = True
+
             ticker_id = self.nextTickerId()
             self.ticker_id_contract_cache[ticker] = ticker_id
             if contract.secType == "OPT":
@@ -362,17 +382,40 @@ class TwsApiClient(EWrapper, EClient):
                 self.tick_cache[ticker_id] = Tick(symbol=ticker, contract=contract)
             if snapshot:
                 self._snapshot_only_tickers.add(ticker)
+            elif contract.secType == "OPT":
+                self._active_streaming_tickers.add(ticker)
         else:
             if not snapshot:
                 if ticker in self._snapshot_only_tickers:
                     # Upgrade from snapshot to streaming: cancel snapshot, re-subscribe for live updates
+                    # Only upgrade if under limit
+                    if contract.secType == "OPT" and len(self._active_streaming_tickers) >= 90:
+                        # Limit reached. We cannot stream. Periodically re-request a snapshot.
+                        if not hasattr(self, "_last_snapshot_time"):
+                            self._last_snapshot_time = {}
+                        now = time.time()
+                        last = self._last_snapshot_time.get(ticker, 0)
+                        if now - last > 10.0:  # Request a snapshot at most once every 10 seconds
+                            # Stagger requests to avoid IBKR "Message rate exceeded" (max 50/sec)
+                            if not hasattr(self, "_snapshots_this_sec"): self._snapshots_this_sec = (0, 0)
+                            current_sec = int(now)
+                            if self._snapshots_this_sec[0] != current_sec:
+                                self._snapshots_this_sec = (current_sec, 0)
+                            if self._snapshots_this_sec[1] < 40:
+                                self._snapshots_this_sec = (current_sec, self._snapshots_this_sec[1] + 1)
+                                self._last_snapshot_time[ticker] = now
+                                logger.debug(f"Renewing snapshot for {ticker} (limit reached)")
+                                self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=True, regulatorySnapshot=False, mktDataOptions=[])
+                        return
+
                     logger.info(f"Upgrading {ticker} from snapshot to streaming (ticker_id={ticker_id})")
                     self.cancelMktData(ticker_id)
                     self._snapshot_only_tickers.discard(ticker)
+                    if contract.secType == "OPT":
+                        self._active_streaming_tickers.add(ticker)
                     self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=False, regulatorySnapshot=False, mktDataOptions=[])
                     return
                 else:
-                    logger.info(f"Contract {ticker} already subscribed (ticker_id={ticker_id}), skipping re-subscribe")
                     return
             else:
                 temp_ticker_id = ticker_id
@@ -381,21 +424,26 @@ class TwsApiClient(EWrapper, EClient):
                 self.tick_cache[ticker_id] = self.tick_cache[temp_ticker_id]
                 self._snapshot_only_tickers.add(ticker)
 
-        logger.info(f"Subscribing contract {contract} ticker_id {ticker_id} snapshot={snapshot}")
+        logger.info(f"Subscribing contract {contract.localSymbol or ticker} ticker_id {ticker_id} snapshot={snapshot}")
         self.reqMktData(reqId=ticker_id, contract=contract, genericTickList='', snapshot=snapshot, regulatorySnapshot=False, mktDataOptions=[])
-        
-        # logger.info(f'subscribe: {contract.localSymbol}, TickerId: {ticker_id}')
-        # self.ticker_id_contract_cache[contract.conId] = ticker_id
-        
 
     def unsubscribe(self, contract: Contract)-> None:
-        reqId = self.reqid_contract_cache.get(contract.conId, None)
+        ticker = contract.symbol
+        if contract.secType == "OPT":
+            ticker = option_ticker_key_from_contract(contract)
+        elif contract.secType == "FUT":
+            ticker = f"{contract.symbol}{getattr(contract, 'lastTradeDateOrContractMonth', '')}"
+
+        reqId = self.ticker_id_contract_cache.get(ticker, None)
         if reqId is None:
-            logger.info(f'Contract: {contract.localSymbol} not found.')
+            logger.info(f'Contract: {contract.localSymbol or ticker} not found for unsubscribe.')
             return
             
-        logger.info(f'Unsubscribe {contract.localSymbol}')
+        logger.info(f'Unsubscribe {contract.localSymbol or ticker}')
         self.cancelMktData(reqId=reqId)
+        self._snapshot_only_tickers.discard(ticker)
+        if hasattr(self, "_active_streaming_tickers"):
+            self._active_streaming_tickers.discard(ticker)
 
     def subscribe_historical_data(self, contract: Contract, fetchValue: str, barSize: str)-> None:
         # Generate a unique ticker id for the request
@@ -618,12 +666,25 @@ class TwsApiClient(EWrapper, EClient):
             logger.info(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
         elif errorCode in warning_codes:
             logger.warning(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
+            try:
+                _emit_log(f"TWS Warning {errorCode}: {errorString}", "WARN", "system")
+            except Exception:
+                pass
         else:
             logger.error(f'Id: {reqId}, Code: {errorCode}, Msg: {errorString}')
+            try:
+                _emit_log(f"TWS Error {errorCode}: {errorString}", "ERROR", "system")
+            except Exception:
+                pass
         if errorCode == 200:
             symbol = self.ticker_id_contract_cache.get(reqId, None)
             if symbol is not None:
                 logger.error(f"Code: {errorCode}, Symbol: {symbol}")
+                try:
+                    _emit_log(f"TWS contract error {errorCode} for symbol {symbol}", "ERROR", "system")
+                except Exception:
+                    pass
+
 
     @iswrapper
     def winError(self, text: str, lastError: int):

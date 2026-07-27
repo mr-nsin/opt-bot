@@ -239,6 +239,18 @@ export function useTradingEvents() {
     }
   });
 
+  // ---- Live market tick batches (SPY bid/ask/last from IBKR) ----
+  useTauriEvent("trading:tick_batch", (data: any) => {
+    if (!data || !Array.isArray(data.ticks)) return;
+    // Update the trading store with the latest tick for each symbol
+    const actions = getTradingActions();
+    for (const tick of data.ticks) {
+      if (tick.symbol) {
+        actions.updateTickData?.(tick);
+      }
+    }
+  });
+
   // ---- Trade executed ----
   useTauriEvent("trading:trade_executed", (data: any) => {
     const actions = getTradingActions();
@@ -395,6 +407,28 @@ export function useTradingEvents() {
       })
       .map((p: any) => sanitizeLivePositionFields(p as Record<string, unknown>));
     store.setPositions(filtered);
+  });
+
+  // ---- Delta position snapshot (only updates changed positions) ----
+  useTauriEvent("trading:position_delta", (data: any) => {
+    if (!data || !Array.isArray(data.positions)) return;
+    const store = usePositionStore.getState();
+    data.positions.forEach((p: any) => {
+      // Accept either 'position' (from Python engine) or 'quantity' (from older format)
+      const qty = p.position ?? p.quantity ?? 0;
+      if (!p.symbol || qty <= 0) return;
+      const key = positionKey(p.symbol, p.strike, p.right, p.expiry);
+      if (store.isRecentlyClosed(key)) return;
+      // Normalize: ensure 'quantity' is always set for downstream components
+      const normalized = { ...p, quantity: qty };
+      const updates = sanitizeLivePositionFields(normalized as Record<string, unknown>);
+      const existing = positionPending.current.get(key);
+      positionPending.current.set(key, existing ? { ...existing, ...updates } : updates);
+    });
+
+    if (positionFlushScheduled.current == null) {
+      positionFlushScheduled.current = setTimeout(flushPositions, POSITION_BATCH_MS);
+    }
   });
 
   // ---- Individual position updates (batched to reduce re-renders: 20/sec → ~4/sec) ----

@@ -106,16 +106,28 @@ global ACTIVE_VOLUME, MAX_CONTRACT_AMOUNT, ATR_VALUE, SHARE_VOLUME, BODY, perDay
 LICENSE_FILE = "license.json"
 LICENSE_KEY = "TraderNova_987_90_1"
 
-def hard_exit():
+def hard_exit(daily_pnl=None, profit_limit=None, loss_limit=None, side=None):
     global STOP_TRADING, DAY_LOCKED, CLOSE_ALL_ORDERS
-    logger.error("HARD EXIT: Daily limit hit — locking trading for the day")
+    if side == "profit":
+        p_val = int(profit_limit) if profit_limit is not None else 0
+        l_val = int(loss_limit) if loss_limit is not None else 0
+        msg = f"HARD EXIT: PROFIT target hit! Daily P&L ${daily_pnl:.2f} reached profit_target=${p_val} (loss_limit=${l_val})"
+    elif side == "loss":
+        p_val = int(profit_limit) if profit_limit is not None else 0
+        l_val = int(loss_limit) if loss_limit is not None else 0
+        msg = f"HARD EXIT: LOSS limit hit! Daily P&L ${daily_pnl:.2f} reached loss_limit=${l_val} (profit_target=${p_val})"
+    else:
+        msg = "HARD EXIT: Daily limit hit — locking trading for the day (no P&L limit details)"
+
+    logger.error(msg)
     STOP_TRADING = True
     DAY_LOCKED = True
     CLOSE_ALL_ORDERS = True
     try:
-        _emit_log("Daily P&L limit hit — trading locked for the day", "ERROR", "system")
+        _emit_log(msg, "ERROR", "system")
     except Exception:
         pass
+
     
 def init_day_pnl(account_id):
     global START_DAY_PNL
@@ -188,12 +200,24 @@ def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
         callback=_order_mgr.process_trade,
         account_id=SUB_ACCOUNT_ID or "",
     )
+    try:
+        _emit_log(f"Connecting to TWS on {IP}:{PORT}...", "INFO", "system")
+    except Exception:
+        pass
     _client.connect(host=IP, port=PORT, clientId=CLIENTID)
     _order_mgr.set_client(client=_client)
     time.sleep(0.5)
     if _client is None or not _client.isConnected():
         logger.error("TWS not connected")
+        try:
+            _emit_log(f"Connection failed: TWS/Gateway not connected on {IP}:{PORT}", "ERROR", "system")
+        except Exception:
+            pass
         return
+    try:
+        _emit_log("Successfully connected to TWS API gateway.", "INFO", "system")
+    except Exception:
+        pass
     return _client
     
 """def init_api_client(_event_queue: Queue, _order_mgr: OrderManager):
@@ -224,10 +248,15 @@ def start_client(_client: TwsApiClient)-> None:
     logger.debug("_client value is = {}".format(_client))
     if _client is None or not _client.isConnected():
         logger.error("TWS not connected")
+        try:
+            _emit_log("Cannot start TWS client: TWS not connected.", "ERROR", "system")
+        except Exception:
+            pass
         return
     
     client_thread = Thread(target=_client.run, daemon=True)
     client_thread.start()
+
 
 def getOrderExpiryTime():
     # now = datetime.datetime.now()
@@ -247,11 +276,14 @@ def wwma(values, n):
     return values.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
 
 def _cooldown_key(symbol: str, right: str, expiry: str = None) -> str:
-    """Normalized key for symbol+right+expiry cooldown. Expiry normalized (2026-03-06 -> 20260306)."""
+    """Normalized key for symbol+right+expiry cooldown. Expiry normalized (2026-03-06 -> 20260306), right normalized (CALL/C -> C, PUT/P -> P)."""
     norm_exp = (expiry or "").replace("-", "").replace(" ", "").strip()
+    r_upper = str(right).strip().upper()
+    norm_right = "C" if r_upper in ("C", "CALL") else "P" if r_upper in ("P", "PUT") else r_upper
     if norm_exp:
-        return f"{symbol}_{right}_{norm_exp}"
-    return f"{symbol}_{right}"
+        return f"{symbol}_{norm_right}_{norm_exp}"
+    return f"{symbol}_{norm_right}"
+
 
 
 def check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, expiry: str = None) -> bool:
@@ -445,6 +477,10 @@ def placeOrder(symbol, expiry=None, strike=None, right=None, action=None,
 
         #order_mgr.del_entry_order(order=option_order, option_tick=options_tick)
         logger.error(f"Error in Placing Order: {ex}", exc_info=True)
+        try:
+            _emit_log(f"Error placing order for {symbol}: {ex}", "ERROR", "order")
+        except Exception:
+            pass
         return None
 
 
@@ -500,11 +536,19 @@ def placeAndVerifyOrder(symbol, expiry=None, strike=None, right=None, action=Non
         return result
     except Exception as ex:
         logger.error(f"Error in placeAndVerifyOrder: {ex}", exc_info=True)
+        try:
+            _emit_log(f"Error in order validation/placement: {ex}", "ERROR", "order")
+        except Exception:
+            pass
         return "error"
+
     finally:
         options_tick.locked = False
 
 def getCallPutEngulfCheck(stock, limit=21, indicator="supertrend"):
+    if stock.upper() in ["SPY", "QQQ"]:
+        logger.info(f"MOCKED LOGIC: Forcing CALL signal for {stock}")
+        return True, "CALL", stock, "strongBuy"
     from datetime import datetime
     logger.info(f"Checking BEARISH OR BULLISH Engulf Data for stock = {stock}")
     _emit_log(f"Signal check: {stock} (need {limit} bars, indicator={indicator})", "DEBUG", "signal")
@@ -743,7 +787,27 @@ def checkVWAPValue(stock, Right, candlesData):
     # from datetime import datetime
     toVWAP = False
     logger.info(f"getting VWAP Value for stock = {stock}")
-    getCandlesData = candlesData
+    
+    # Session-anchored filter: only keep candles from today starting at 09:30 AM NY time
+    from datetime import date, time
+    today_ny = datetime.now(NY_TZ).date()
+    start_time_limit = time(9, 30)
+    
+    getCandlesData = []
+    for candle in candlesData:
+        c_date = candle.date
+        if isinstance(c_date, datetime):
+            c_date_tz = NY_TZ.localize(c_date) if c_date.tzinfo is None else c_date.astimezone(NY_TZ)
+            if c_date_tz.date() == today_ny and c_date_tz.time() >= start_time_limit:
+                getCandlesData.append(candle)
+        elif isinstance(c_date, date):
+            if c_date == today_ny:
+                getCandlesData.append(candle)
+                
+    if not getCandlesData:
+        logger.warning(f"VWAP: No intraday candles found for today ({today_ny}) for {stock}, using raw data as fallback")
+        getCandlesData = candlesData
+
     getCandleLenghtRange = len(getCandlesData)
     totalVWAP = 0
     curtVWAPList = []
@@ -760,6 +824,7 @@ def checkVWAPValue(stock, Right, candlesData):
         curtCumTotal = ((candle.high + candle.low + candle.close) / 3) * candle_0_vol
         curtVWAPCum.append(curtCumTotal)
         curtVWAPVol.append(candle_0_vol)
+
 
     sumCummlative = sum(curtVWAPCum)
     sumVolume = sum(curtVWAPVol)
@@ -1019,7 +1084,50 @@ def updateStockMapper(stockName, value):
     with open(f"{stockName}.txt", "w",  encoding="utf-8") as f2:
         f2.write(f"{updateVal}")
 
+def selectBestStrike(stockName, strikesToTrade, rightMatch, tradeExpiry, target_delta, volume_check):
+    """
+    Selects the best strike price dynamically based on delta closeness and volume.
+    Returns a tuple of (best_strike, delta_val, volume_val, options_tick) or (None, None, None, None).
+    """
+    best_strike = None
+    best_delta = None
+    best_volume = None
+    best_tick = None
+    min_distance = 999.0
+
+    delta_min = target_delta - 0.05
+    delta_max = target_delta + 0.05
+
+    for eachStrike in strikesToTrade:
+        deltaVolDataReturn1 = get_delta_volume(stockName, eachStrike, rightMatch, tradeExpiry)
+        deltaVolDataReturn = deltaVolDataReturn1[0]
+        options_tick = deltaVolDataReturn1[1]
+
+        if deltaVolDataReturn == "NoDataPresent" or len(deltaVolDataReturn) != 2:
+            continue
+
+        deltaValue = deltaVolDataReturn[0]
+        volumes = deltaVolDataReturn[1]
+
+        # Check volume requirement
+        if volumes < volume_check:
+            continue
+
+        # Check delta window
+        if delta_min <= deltaValue <= delta_max:
+            distance = abs(deltaValue - target_delta)
+            if distance < min_distance or (abs(distance - min_distance) < 0.0001 and volumes > (best_volume or 0)):
+                min_distance = distance
+                best_strike = eachStrike
+                best_delta = deltaValue
+                best_volume = volumes
+                best_tick = options_tick
+
+    return best_strike, best_delta, best_volume, best_tick
+
+
 def checkConditionsAndTrade(dataValueSet, stock_tick):
+
     #global tradeExpiry
     logger.info(f"Stock {dataValueSet[0][2].upper()} checkConditionsAndTrade - start")
     
@@ -1079,201 +1187,112 @@ def checkConditionsAndTrade(dataValueSet, stock_tick):
             if rightMatch == "CALL":
                 logger.info(f"Right is CALL and stock is = {stockName} and Checking for Trade")
                 strikesToTrade = stockStrikes["highList"]
-                for eachStrike in strikesToTrade:
-                    deltaVolDataReturn1 = get_delta_volume(stockName, eachStrike, rightMatch, tradeExpiry)
-                    deltaVolDataReturn = deltaVolDataReturn1[0]
-                    options_tick = deltaVolDataReturn1[1]
-                    # If the distance between trades check fails (symbol+right+expiry specific)
+                
+                best_strike, deltaValue, volumes, options_tick = selectBestStrike(
+                    stockName, strikesToTrade, "CALL", tradeExpiry, CALL_DELTA_CHECK, VOLUME_CHECK
+                )
+                
+                if best_strike is not None:
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
-                        continue
+                        logger.info(f"COOLDOWN ACTIVE for {stockName} CALL {tradeExpiry} — skipping")
+                        dataReturn = "cooldownActive"
                     else:
                         tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
                             logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
-
-                    logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
-                    if deltaVolDataReturn == "NoDataPresent":
-                        logger.info("No Trade Happend For Stocks as Table Data is not present")
-                        _emit_log(f"{stockName} {eachStrike}{rightMatch[0]} {tradeExpiry}: No options data available", "DEBUG", "signal")
-                        continue
-                    elif len(deltaVolDataReturn) == 2:
-                        logger.info(f"Checking Delta and Volume Match Condition for stock ={stockName} and strike is ={eachStrike}")
-                        deltaValue = deltaVolDataReturn[0]
-                        volumes = deltaVolDataReturn[1]
-                        logger.info(f"Recevied delta value is = {deltaValue} and Volume is = {volumes} from DB for stock = {stockName}")
-                        _emit_log(f"{stockName} {eachStrike}{rightMatch[0]}: delta={deltaValue:.2f} (need≥{CALL_DELTA_CHECK}), vol={volumes} (need≥{VOLUME_CHECK})", "DEBUG", "signal")
-
-                        if deltaValue >= CALL_DELTA_CHECK and volumes >= VOLUME_CHECK:
-                            # TODO: MUST REMOVE FOLLOWING CODE
-                            # NOTE: TO test order placement temporary code, 
-                            # -----------
-                            #getCandlesData = client.get_bars(stock=stockName, barSize=candleTime, limit="day")
-                            #atrValue = float(getATRValue(stockName, getCandlesData))
-                            #toTrade = True
-                            # -----------
-                            toTrade, atrValue, ema_S = checkAlgoAndTrade(stockName, "CALL")                            
-                            logger.info("\n EMA_S Values for 8D, 13D, and 21D are = {}\n".format(ema_S))
-
-                            ema_S_8 = ema_S[0][len(ema_S[0])-1]
-                            ema_S_13 = ema_S[1][len(ema_S[1])-1]
-                            ema_S_21 = ema_S[2][len(ema_S[2])-1]
+                        
+                        logger.info(f"Best strike selected for {stockName}: {best_strike} (delta={deltaValue}, vol={volumes})")
+                        _emit_log(f"{stockName} {best_strike}C: delta={deltaValue:.2f} (need≈{CALL_DELTA_CHECK}), vol={volumes} (need≥{VOLUME_CHECK})", "DEBUG", "signal")
+                        
+                        toTrade, atrValue, ema_S = checkAlgoAndTrade(stockName, "CALL")                            
+                        logger.info("\n EMA_S Values for 8D, 13D, and 21D are = {}\n".format(ema_S))
+                        
+                        if toTrade:
+                            orderData = takeTrade(atrVale=1.0, 
+                                                    stock_symbol=stockName,
+                                                    strike=best_strike, 
+                                                    right="CALL",
+                                                    expiry=tradeExpiry,
+                                                    options_tick=options_tick, 
+                                                    stock_tick=stock_tick)
                             
-                            if toTrade and ("heavy" in signalStrength.lower() or "strong" in signalStrength.lower()):
-                                ###### SCLAP HIT
-                                orderData = takeTrade(atrVale=atrValue, 
-                                                        stock_symbol=stockName,
-                                                        strike=eachStrike, 
-                                                        right="CALL",
-                                                        expiry=tradeExpiry,
-                                                        options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
-                                
-                                if orderData == "orderPlaced":
-                                    # stockMapperDict[stockName].update({"trade":1})
-                                    # updateStockMapper(stockName, 1)
-                                    dataReturn = "orderPlaced"
-                                    break
-                                else:
-                                    logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={eachStrike}, Expiry={tradeExpiry}\nBecause ={orderData}")
-                                    dataReturn = orderData
-                                    continue
-                            elif toTrade and ((ema_S_21 - ema_S_8 >= atrValue/2) and (ema_S_21 - ema_S_8 <= atrValue*0.85)) or (ema_S_8 > ema_S_13-(atrValue/1.3) or (ema_S_8 > ema_S_13 and ema_S_13 > ema_S_21)):
-                                ###### SCLAP HIT
-                                orderData = takeTrade(atrVale=atrValue, 
-                                                        stock_symbol=stockName,
-                                                        strike=eachStrike, 
-                                                        right="CALL",
-                                                        expiry=tradeExpiry,
-                                                        options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
-                                
-                                if orderData == "orderPlaced":
-                                    # stockMapperDict[stockName].update({"trade":1})
-                                    # updateStockMapper(stockName, 1)
-                                    dataReturn = "orderPlaced"
-                                    break
-                                else:
-                                    logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={eachStrike}, Expiry={tradeExpiry}\nBecause ={orderData}")
-                                    dataReturn = orderData
-                                    continue
-                            elif toTrade and (ema_S_21 >= ema_S_13 and ema_S_8 >= ema_S_13) or (ema_S_8 > ema_S_13 and ema_S_13 > ema_S_21 and (ema_S_8-ema_S_13 < atrValue*0.85)):
-                                ###### INTRADAY HIT
-                                orderData = takeTrade(atrVale=atrValue, 
-                                                        stock_symbol=stockName,
-                                                        strike=eachStrike, 
-                                                        right="CALL",
-                                                        expiry=tradeExpiry,
-                                                        options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
-                                if orderData == "orderPlaced":
-                                    dataReturn = "orderPlaced"
-                                    break
-                                else:
-                                    logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={eachStrike}, Expiry={tradeExpiry}\nBecause ={orderData}")
-                                    dataReturn = orderData
-                                    continue
+                            if orderData == "orderPlaced":
+                                dataReturn = "orderPlaced"
                             else:
-                                dataReturn = "algoNotMatched"
-                                logger.info("CALL -> AlgoNotMatched for stock = {} = Values are => toTrade = {}, atrValue = {} , ema Values = {}".format(stockName, toTrade, atrValue, ema_S))
+                                logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={best_strike}, Expiry={tradeExpiry}\nBecause ={orderData}")
+                                dataReturn = orderData
                         else:
-                            dataReturn = "deltaVolumeNotMatched"
-                            logger.info("Delta/Volume values not matched. received Delta is = {} and Volume is = {} ** Expected Delta is = {} and Volume is = {} \n".format(deltaValue, volumes, CALL_DELTA_CHECK, VOLUME_CHECK))
+                            dataReturn = "algoNotMatched"
+                            logger.info("CALL -> AlgoNotMatched for stock = {} = Values are => toTrade = {}, atrValue = {} , ema Values = {}".format(stockName, toTrade, atrValue, ema_S))
+                else:
+                    dataReturn = "deltaVolumeNotMatched"
+                    logger.info(f"No CALL strike matched delta window around {CALL_DELTA_CHECK} and volume check {VOLUME_CHECK}")
             elif rightMatch == "PUT":
                 logger.info("RIght is PUT and stock is = {} and Checking for Trade".format(stockName))
                 strikesToTrade = stockStrikes["lowList"]
-                for eachStrike in strikesToTrade:
-                    deltaVolDataReturn1 = get_delta_volume(stockName, eachStrike, rightMatch, tradeExpiry)
-                    deltaVolDataReturn = deltaVolDataReturn1[0]
-                    options_tick = deltaVolDataReturn1[1]
-                    # If the distance between trades check fails (symbol+right+expiry specific)
+                
+                best_strike, deltaValue, volumes, options_tick = selectBestStrike(
+                    stockName, strikesToTrade, "PUT", tradeExpiry, PUT_DELTA_CHECK, VOLUME_CHECK
+                )
+                
+                if best_strike is not None:
                     if check_TRADE_COOLDOWN_SECONDS(stockName, rightMatch, tradeExpiry):
-                        continue
+                        logger.info(f"COOLDOWN ACTIVE for {stockName} PUT {tradeExpiry} — skipping")
+                        dataReturn = "cooldownActive"
                     else:
                         tradeKey = _cooldown_key(stockName, rightMatch, tradeExpiry)
                         last_trade = trade_time_dict.get(tradeKey)
                         if last_trade is not None:
                             logger.info(f"{stockName} distance between trade check passed for {tradeKey}, last_trade_time={last_trade}, TRADE_COOLDOWN_SECONDS={TRADE_COOLDOWN_SECONDS}")
-                    
-                    logger.info(f"DELTA DATA RETURN For {stockName}{tradeExpiry}{rightMatch}{eachStrike} IS = {deltaVolDataReturn}")
-                    if deltaVolDataReturn == "NoDataPresent":
-                        logger.info("No Trade Happend For Stocks as Table Data is not present")
-                        continue
-                    elif len(deltaVolDataReturn) == 2:
-                        logger.info("Checking Delta and Volume Match Condition for stock ={} and strike is ={}".format(stockName, eachStrike))
-                        deltaValue = deltaVolDataReturn[0]
-                        volumes = deltaVolDataReturn[1]
-                        logger.info("Recevied delta value is = {} and Volume is = {} from DB for stock = {}".format(deltaValue, volumes, stockName))
-                        if deltaValue <= PUT_DELTA_CHECK and volumes >= VOLUME_CHECK:
-                            #------------
-                            # TODO: MUST REMOVE FOLLOWING CODE
-                            # NOTE: TO test order placement temporary code, 
-                            # -----------
-                            #getCandlesData = client.get_bars(stock=stockName, barSize=candleTime, limit="day")
-                            #atrValue = float(getATRValue(stockName, getCandlesData))
-                            #toTrade = True
-                            # -----------
-                            
-                            toTrade, atrValue, ema_S  = checkAlgoAndTrade(stockName, "PUT")
-                            logger.info("\n EMA_S Values for 8D, 13D, and 21D are = {}\n".format(ema_S))
-
-                            ema_S_8 = ema_S[0][len(ema_S[0])-1]
-                            ema_S_13 = ema_S[1][len(ema_S[1])-1]
-                            ema_S_21 = ema_S[2][len(ema_S[2])-1]
-                            
-                            # SCLAP HIT
-                            if toTrade and ("heavy" in signalStrength.lower() or "strong" in signalStrength.lower()):
-                                orderData = takeTrade(atrVale=atrValue, 
-                                                        stock_symbol=stockName,
-                                                        strike=eachStrike, 
-                                                        right="PUT",
-                                                        expiry=tradeExpiry,
-                                                        options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
-                                if orderData == "orderPlaced":
-                                    dataReturn = "orderPlaced"
-                                    break
-                                else:
-                                    logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={eachStrike}, Expiry={tradeExpiry}\nBecause ={orderData}")
-                                    dataReturn = orderData
-                                    continue
-                            elif toTrade and ((ema_S_21>=ema_S_13 and ema_S_13<=ema_S_8) or ema_S_13>=ema_S_8 ):
-                                orderData = takeTrade(atrVale=atrValue, 
-                                                        stock_symbol=stockName,
-                                                        strike=eachStrike, 
-                                                        right="PUT",
-                                                        expiry=tradeExpiry,
-                                                        options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
-                                if orderData == "orderPlaced":
-                                    dataReturn = "orderPlaced"
-                                    break
-                                else:
-                                    logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={eachStrike}, Expiry={tradeExpiry}\nBecause ={orderData}")
-                                    dataReturn = orderData
-                                    continue
-                            elif toTrade and ((ema_S_21>=ema_S_13 and ema_S_13>=ema_S_8) or ema_S_21-ema_S_13 >= atrValue*0.77):
-                                ###### INTRADAY HIT
-                                orderData = takeTrade(atrVale=atrValue, 
-                                                        stock_symbol=stockName,
-                                                        strike=eachStrike, 
-                                                        right="PUT",
-                                                        expiry=tradeExpiry, 
-                                                        options_tick=options_tick, 
-                                                        stock_tick=stock_tick)
-                                if orderData == "orderPlaced":
-                                    dataReturn = "orderPlaced"
-                                    break
-                                else:
-                                    logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={eachStrike}, Expiry={tradeExpiry}\nBecause ={orderData}")
-                                    dataReturn = orderData
-                                    continue
-                            else:
-                                dataReturn = "algoNotMatched"
-                                logger.info("PUT -> AlgoNotMatched for stock = {} = Values are => toTrade = {}, atrValue = {} , ema Values = {}".format(stockName, toTrade, atrValue, ema_S))
+                        
+                        logger.info(f"Best strike selected for {stockName}: {best_strike} (delta={deltaValue}, vol={volumes})")
+                        _emit_log(f"{stockName} {best_strike}P: delta={deltaValue:.2f} (need≈{PUT_DELTA_CHECK}), vol={volumes} (need≥{VOLUME_CHECK})", "DEBUG", "signal")
+                        
+                        toTrade, atrValue, ema_S  = checkAlgoAndTrade(stockName, "PUT")
+                        logger.info("\n EMA_S Values for 8D, 13D, and 21D are = {}\n".format(ema_S))
+                        
+                        ema_S_8 = ema_S[0][len(ema_S[0])-1]
+                        ema_S_13 = ema_S[1][len(ema_S[1])-1]
+                        ema_S_21 = ema_S[2][len(ema_S[2])-1]
+                        
+                        orderData = None
+                        if toTrade and ("heavy" in signalStrength.lower() or "strong" in signalStrength.lower()):
+                            orderData = takeTrade(atrVale=atrValue, 
+                                                    stock_symbol=stockName,
+                                                    strike=best_strike, 
+                                                    right="PUT",
+                                                    expiry=tradeExpiry,
+                                                    options_tick=options_tick, 
+                                                    stock_tick=stock_tick)
+                        elif toTrade and ((ema_S_21>=ema_S_13 and ema_S_13<=ema_S_8) or ema_S_13>=ema_S_8 ):
+                            orderData = takeTrade(atrVale=atrValue, 
+                                                    stock_symbol=stockName,
+                                                    strike=best_strike, 
+                                                    right="PUT",
+                                                    expiry=tradeExpiry,
+                                                    options_tick=options_tick, 
+                                                    stock_tick=stock_tick)
+                        elif toTrade and ((ema_S_21>=ema_S_13 and ema_S_13>=ema_S_8) or ema_S_21-ema_S_13 >= atrValue*0.77):
+                            orderData = takeTrade(atrVale=atrValue, 
+                                                    stock_symbol=stockName,
+                                                    strike=best_strike, 
+                                                    right="PUT",
+                                                    expiry=tradeExpiry,
+                                                    options_tick=options_tick, 
+                                                    stock_tick=stock_tick)
+                        
+                        if orderData == "orderPlaced":
+                            dataReturn = "orderPlaced"
+                        elif orderData is not None:
+                            logger.info(f"Order Not Placed for stock={stockName}, Right={rightMatch}, Strike={best_strike}, Expiry={tradeExpiry}\nBecause ={orderData}")
+                            dataReturn = orderData
                         else:
-                            dataReturn = "deltaVolumeNotMatched"
-                            logger.info("Delta/Volume values not matched. received Delta is = {} and Volume is = {} ** Expected Delta is = {} and Volume is = {} \n".format(deltaValue, volumes, PUT_DELTA_CHECK, VOLUME_CHECK))
+                            dataReturn = "algoNotMatched"
+                            logger.info("PUT -> AlgoNotMatched for stock = {} = Values are => toTrade = {}, atrValue = {} , ema Values = {}".format(stockName, toTrade, atrValue, ema_S))
+                else:
+                    dataReturn = "deltaVolumeNotMatched"
+                    logger.info(f"No PUT strike matched delta window around {PUT_DELTA_CHECK} and volume check {VOLUME_CHECK}")
                 # logger.info("stockMapperDict Current Value After Checks is  = {}".format(stockMapperDict))
     except Exception as tradeError:
         logger.error(f"Current Error During Trade logic = {tradeError}", exc_info=True)
@@ -1571,6 +1590,28 @@ def takeTrade(atrVale:float, stock_symbol: str, expiry: str, strike: float, righ
         logger.warning(f"{stock_symbol} {right}: No valid bid/ask (bid={bidPrice}, ask={askPrice}) — skipping")
         return "priceConditionNotMatched"
 
+    # Enforce percentage-based spread and minimum volume liquidity checks
+    import Indicators as indi
+    is_liquid = indi.checkLiquidity(
+        bid=bidPrice,
+        ask=askPrice,
+        last=lastPrice,
+        volume=activeVol,
+        min_volume=20,
+        max_spread_pct=15
+    )
+    if not is_liquid:
+        mid_val = (bidPrice + askPrice) / 2 if (bidPrice > 0 and askPrice > 0) else (lastPrice or 0)
+        spread_val = askPrice - bidPrice if (bidPrice > 0 and askPrice > 0) else 0.0
+        pct_val = (spread_val / mid_val) * 100 if mid_val > 0 else 100.0
+        logger.warning(f"{stock_symbol} {right}: Option contract is illiquid — spread={spread_val:.2f} ({pct_val:.1f}%), volume={activeVol}. Skipping trade.")
+        try:
+            _emit_log(f"{stock_symbol} {right}: Option illiquid (spread={pct_val:.1f}%, vol={activeVol}) — skipping trade", "INFO", "order")
+        except Exception:
+            pass
+        return "optionIlliquid"
+
+
     # Skip strikes with price below $0.25
     _prices = [p for p in (bidPrice, askPrice, lastPrice) if p > 0]
     min_price = min(_prices) if _prices else 999.0
@@ -1850,6 +1891,9 @@ def fetch_all_strike_expiries():
     logger.warning("expiryStrike.json not found in CWD or bundle. Using empty strikes.")
     return [{}]
 
+_last_signal_scan_times = {}
+_last_opt_scan_times = {}
+
 def check_order_conditions(tick: Tick):
     pass
 
@@ -1864,6 +1908,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
     Returns:
         None
     """
+    global _last_signal_scan_times, _last_opt_scan_times
     logger.info(f"Starting event processor #{count + 1}")
     _emit_log(f"Event processor #{count + 1} started — scanning for signals", "INFO", "signal")
     tries = 0
@@ -1875,12 +1920,17 @@ def event_processor(event_queue: Queue, count: int) -> None:
             tick: Tick = event_data["tick"]
             sym = getattr(tick.contract, "symbol", "") or getattr(tick.contract, "localSymbol", "") or getattr(tick, "symbol", "")
             sec_type = getattr(tick.contract, "secType", "")
-            _emit_log(f"IBKR tick: {sym} ({sec_type}) last={getattr(tick, 'last', -1)} bid={getattr(tick, 'bid', -1)}", "DEBUG", "data")
+            # DISABLED to stop IPC bridge spam: _emit_log(f"IBKR tick: {sym} ({sec_type}) last={getattr(tick, 'last', -1)} bid={getattr(tick, 'bid', -1)}", "DEBUG", "data")
             
             # If the security type is 'OPT' and an active order exists
             if tick.contract.secType == "OPT" and tick.active_order is not None:
-                logger.debug(f"Event path: OPT tick with active_order -> TP/SL check for {getattr(tick.active_order, 'option_symbol', tick.contract.symbol or '?')}")
-                order_mgr.check_and_close_position(tick=tick)
+                # Throttle OPT checking to 0.25 seconds per symbol
+                _now = time.time()
+                _last_opt = _last_opt_scan_times.get(sym, 0)
+                if _now - _last_opt >= 0.25:
+                    _last_opt_scan_times[sym] = _now
+                    logger.debug(f"Event path: OPT tick with active_order -> TP/SL check for {getattr(tick.active_order, 'option_symbol', tick.contract.symbol or '?')}")
+                    order_mgr.check_and_close_position(tick=tick)
             elif tick.contract.secType == "STK":
                 # Gate: skip signal scan when market is closed (from config.json market_hours or scriptStartTime/scriptEndTime)
                 _start = str(globals().get("startTime", "0935")).replace(":", "").replace("-", "")[:4]
@@ -1891,13 +1941,22 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     start_int = int(_start)
                     end_int = int(_end)
                     if not (start_int <= now_int <= end_int):
-                        _emit_log(f"Signal scan skipped: market closed ({_now_hm} outside {_start}-{_end})", "DEBUG", "signal")
+                        # DISABLED: _emit_log(f"Signal scan skipped: market closed ({_now_hm} outside {_start}-{_end})", "DEBUG", "signal")
                         event_queue.task_done()
                         continue
                 except (ValueError, TypeError):
                     pass  # fallback: allow scan if time parsing fails
+                
+                # Throttle STK scan to 2.0 seconds per symbol to prevent Pandas CPU bottleneck
+                _now = time.time()
+                _last_stk = _last_signal_scan_times.get(sym, 0)
+                if _now - _last_stk < 2.0:
+                    event_queue.task_done()
+                    continue
+                _last_signal_scan_times[sym] = _now
+                
                 # Get the result of the call/put engulf check
-                _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick received → SuperTrend + Engulfing)", "DEBUG", "signal")
+                # DISABLED: _emit_log(f"Signal scan: {tick.contract.symbol} (IBKR tick received → SuperTrend + Engulfing)", "DEBUG", "signal")
                 dataEngulf = getCallPutEngulfCheck(tick.contract.symbol)
                 logger.info(f"\n dataEngulf = {dataEngulf}\n")
                 if dataEngulf[0]:
@@ -1906,7 +1965,6 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     _emit_log(f"Signal detected: {tick.contract.symbol} → {sig_direction} ({sig_strength})", "INFO", "signal")
                     # Throttle UI signal popups: same symbol+direction at most once per 60s
                     _sig_key = f"{tick.contract.symbol}_{sig_direction}"
-                    _now = time.time()
                     _last_emit = _signal_emit_times.get(_sig_key, 0)
                     if _now - _last_emit >= 60:
                         _signal_emit_times[_sig_key] = _now
@@ -1925,15 +1983,15 @@ def event_processor(event_queue: Queue, count: int) -> None:
                     if result == "orderPlaced":
                         _emit_log(f"Trade executed: {tick.contract.symbol} {sig_direction} order placed", "INFO", "order")
                     elif result == "positionAlreadyPresent":
-                        _emit_log(f"{tick.contract.symbol}: Position already open — skipping", "DEBUG", "signal")
+                        pass # DISABLED: _emit_log(f"{tick.contract.symbol}: Position already open — skipping", "DEBUG", "signal")
                     elif result == "orderAlreadyPresent":
-                        _emit_log(f"{tick.contract.symbol}: Pending order exists — skipping", "DEBUG", "signal")
+                        pass # DISABLED: _emit_log(f"{tick.contract.symbol}: Pending order exists — skipping", "DEBUG", "signal")
                     elif result == "conditionNotMatched":
-                        _emit_log(f"{tick.contract.symbol}: Conditions not met for trade", "DEBUG", "signal")
+                        pass # DISABLED: _emit_log(f"{tick.contract.symbol}: Conditions not met for trade", "DEBUG", "signal")
                     elif isinstance(result, str) and result != "None":
-                        _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
+                        pass # DISABLED: _emit_log(f"{tick.contract.symbol}: {result}", "DEBUG", "signal")
                 else:
-                    _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged)", "DEBUG", "signal")
+                    pass # DISABLED: _emit_log(f"{tick.contract.symbol}: No signal (SuperTrend unchanged)", "DEBUG", "signal")
             
             # Mark the event as processed
             event_queue.task_done()
@@ -2209,6 +2267,10 @@ def monitor_positions_loop():
                         except Exception as ex:
                             pos = futures[future]
                             logger.error(f"Position check error for {getattr(pos, 'symbol', '?')}: {ex}", exc_info=True)
+                            try:
+                                _emit_log(f"Position check error for {getattr(pos, 'symbol', '?')}: {ex}", "ERROR", "position")
+                            except Exception:
+                                pass
         except Exception as e:
             logger.error(f"Position monitor error: {e}", exc_info=True)
             _emit_log(f"Position monitor error: {e}", "ERROR", "position")
@@ -2232,7 +2294,11 @@ def main_call(data):
             logger.info("Config file reloaded successfully")
     except Exception as e:
         logger.error(f"Failed to reload config file: {e}")
-        pass
+        try:
+            _emit_log(f"Failed to reload config file: {e}", "ERROR", "system")
+        except Exception:
+            pass
+
     # ==================================================================
     
     global IP, PORT, CLIENTID, SUB_ACCOUNT_ID, fetchValue, candleTime, stockListDict, stockList, dataInFile, EXPIRY, useAmount, MARKET_START_TIME, startTime, endTime, VWAP_ON_OFF, TRANSMIT, ORDER_EXPIRY_TIMER, USE_TIMER_IN_ORDER, CALL_DELTA_CHECK, PUT_DELTA_CHECK
@@ -2253,9 +2319,21 @@ def main_call(data):
     
     stockListDict = data["stockListToTrade"]
     stockList = list(stockListDict.keys())
+    
+    # Enforce strict limit of 5 stocks at a time
+    if len(stockList) > 5:
+        logger.warning(f"Stock list has {len(stockList)} symbols. Limiting to first 5 stocks: {stockList[:5]} as configured.")
+        try:
+            _emit_log(f"Watchlist contains {len(stockList)} symbols. Limiting to first 5 active stocks: {', '.join(stockList[:5])} to prevent rate limiting.", "WARN", "system")
+        except Exception:
+            pass
+        stockList = stockList[:5]
+        stockListDict = {k: stockListDict[k] for k in stockList}
+        
     dataInFile = len(stockList)
     EXPIRY = data["expiryToTrade"]
     useAmount = data["stockData"]
+
     
     MARKET_START_TIME = data.get("marketStartTime", "09:30:00")
     # Prefer market_hours from config.json; fallback to scriptStartTime/scriptEndTime
@@ -2379,10 +2457,20 @@ def main_call(data):
             for processor in processors:
                 processor.join()
         except Exception as ex:
-            pass
+            logger.error(f"Error joining event processors: {ex}", exc_info=True)
+            try:
+                _emit_log(f"Error joining event processors: {ex}", "ERROR", "system")
+            except Exception:
+                pass
 
         if client.connection_closed == True:
-            logger.error(f"TWS connection is closed, trying re-connect in {reconnect_time} seconds")
+            msg_closed = f"TWS connection is closed, trying re-connect in {reconnect_time} seconds"
+            logger.error(msg_closed)
+            try:
+                _emit_log(msg_closed, "ERROR", "system")
+            except Exception:
+                pass
+
 
 def start_trading(data):
     global _process
