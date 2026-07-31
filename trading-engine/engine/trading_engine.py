@@ -63,6 +63,8 @@ class TradingEngine:
         self._signal_heartbeat_interval_sec: float = 30.0  # Every 30s log that engine is scanning
         self._last_pnl_emit_time: float = 0
         self._pnl_throttle_sec: float = 1.0  # Emit PnL at most once per second (~95% less IPC)
+        self._mmap_writer = None
+        self._last_positions_payloads = []
 
     def start(self, config_data: dict) -> dict:
         """Start the trading engine with the given configuration."""
@@ -80,6 +82,14 @@ class TradingEngine:
             self._init_database()
             self._init_order_manager()
             self._init_tws_client()
+
+            # Initialize Shared Memory (mmap) Writer for IPC optimization
+            try:
+                from protocol.mmap_ipc import MmapIpcWriter
+                self._mmap_writer = MmapIpcWriter()
+            except Exception as e:
+                emit_log(f"Failed to initialize Shared Memory Writer: {e}", "WARN", "system")
+                self._mmap_writer = None
 
             # Start engine in background thread
             self.running = True
@@ -196,6 +206,13 @@ class TradingEngine:
         self._order_mgr = None
         self._db = None
         self._event_queue = None
+
+        if hasattr(self, "_mmap_writer") and self._mmap_writer:
+            try:
+                self._mmap_writer.close()
+            except Exception:
+                pass
+            self._mmap_writer = None
 
         emit_engine_status("Idle", connected=False)
         emit_log("Trading engine stopped", "INFO", "system")
@@ -1263,6 +1280,12 @@ class TradingEngine:
                         realized = getattr(pnl_data, "realizedPnL", 0) or 0
                     break
             emit_pnl(daily_pnl=daily, unrealized=unrealized, realized=realized)
+            if hasattr(self, "_mmap_writer") and self._mmap_writer:
+                payloads = getattr(self, "_last_positions_payloads", [])
+                try:
+                    self._mmap_writer.write_snapshot(payloads, daily, unrealized, realized)
+                except Exception as e:
+                    pass
             self._last_pnl_emit_time = now
         except Exception as e:
             emit_log(f"P&L emit error: {e}", "WARN", "system")
@@ -1383,6 +1406,29 @@ class TradingEngine:
                 if pos.get("has_ib_pnl"):
                     payload["has_ib_pnl"] = True
                 payloads.append(payload)
+            self._last_positions_payloads = payloads
+            
+            # Write to shared memory (mmap)
+            if hasattr(self, "_mmap_writer") and self._mmap_writer:
+                daily = unrealized = realized = 0.0
+                if self._client and hasattr(self._client, "pnl_cache") and self._client.pnl_cache:
+                    cache = self._client.pnl_cache
+                    if isinstance(cache.get("daily"), (int, float)) or "daily" in cache:
+                        daily = float(cache.get("daily") or 0)
+                        unrealized = float(cache.get("unrealized") or 0)
+                        realized = float(cache.get("realized") or 0)
+                    else:
+                        for _account, pnl_data in cache.items():
+                            if hasattr(pnl_data, "dailyPnL"):
+                                daily = getattr(pnl_data, "dailyPnL", 0) or 0
+                                unrealized = getattr(pnl_data, "unrealizedPnL", 0) or 0
+                                realized = getattr(pnl_data, "realizedPnL", 0) or 0
+                            break
+                try:
+                    self._mmap_writer.write_snapshot(payloads, daily, unrealized, realized)
+                except Exception as e:
+                    emit_log(f"Shared memory positions write failed: {e}", "WARN", "system")
+                    
             emit_positions_snapshot(payloads)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")

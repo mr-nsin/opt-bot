@@ -10,6 +10,7 @@ use super::protocol::{SidecarMessage, SidecarRequest};
 use crate::commands::logs::{push_log, LogEntry};
 use crate::state::app_state::AppState;
 use crate::state::trading_state::{Position, TradeRecord, TradingStatus};
+static MMAP_ACTIVE_BOOL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Embedded trading-engine binary (built by prebuild before Tauri compile).
 /// Enables single-exe distribution: extract and run when sidecar not found.
@@ -327,6 +328,43 @@ pub async fn spawn_sidecar(handle: &AppHandle) -> Result<(), String> {
     // Store PID for force-kill fallback
     *SIDECAR_PID.lock().await = Some(pid);
 
+    // Spawn shared memory (mmap) reader task
+    let mmap_handle = handle.clone();
+    let mmap_state = handle.state::<Arc<Mutex<AppState>>>().inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let mmap_file_path = std::env::temp_dir().join("quantdrift").join("quantdrift_positions.mmap");
+        let mut last_read_time = 0.0;
+        
+        log::info!("Shared memory mmap task started on path: {}", mmap_file_path.display());
+        
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+            
+            // Check if sidecar is running
+            let sidecar_running = SIDECAR_PID.lock().await.is_some();
+            if !sidecar_running {
+                MMAP_ACTIVE_BOOL.store(false, std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            
+            if let Ok(file) = std::fs::File::open(&mmap_file_path) {
+                if let Ok(mmap) = unsafe { memmap2::MmapOptions::new().map(&file) } {
+                    if mmap.len() >= 64 {
+                        let magic = &mmap[0..4];
+                        if magic == b"QDPB" {
+                            let timestamp = f64::from_le_bytes(mmap[8..16].try_into().unwrap_or([0; 8]));
+                            if timestamp > last_read_time {
+                                last_read_time = timestamp;
+                                MMAP_ACTIVE_BOOL.store(true, std::sync::atomic::Ordering::Relaxed);
+                                parse_and_emit_mmap_snapshot(&mmap_handle, &mmap_state, &mmap).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Spawn event listener task
     let app_handle = handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -522,6 +560,9 @@ async fn handle_sidecar_message(
             // ---- Update Rust-side AppState based on event type ----
             match event.event.as_str() {
                 "pnl_update" => {
+                    if MMAP_ACTIVE_BOOL.load(std::sync::atomic::Ordering::Relaxed) {
+                        return; // Handled via zero-copy shared memory
+                    }
                     let daily = event
                         .data
                         .get("daily_pnl")
@@ -579,6 +620,9 @@ async fn handle_sidecar_message(
                 }
 
                 "positions_snapshot" => {
+                    if MMAP_ACTIVE_BOOL.load(std::sync::atomic::Ordering::Relaxed) {
+                        return; // Handled via zero-copy shared memory
+                    }
                     if let Some(arr) = event.data.get("positions").and_then(|v| v.as_array()) {
                         let positions: Vec<Position> = arr.iter()
                             .filter_map(|v| serde_json::from_value(v.clone()).ok())
@@ -805,5 +849,131 @@ async fn handle_sidecar_message(
                 }
             }
         }
+    }
+}
+
+async fn parse_and_emit_mmap_snapshot(
+    handle: &AppHandle,
+    state: &Arc<Mutex<AppState>>,
+    mmap: &memmap2::Mmap,
+) {
+    let pos_count = i32::from_le_bytes(mmap[16..20].try_into().unwrap_or([0; 4])) as usize;
+    let daily = f64::from_le_bytes(mmap[20..28].try_into().unwrap_or([0; 8]));
+    let unrealized = f64::from_le_bytes(mmap[28..36].try_into().unwrap_or([0; 8]));
+    let realized = f64::from_le_bytes(mmap[36..44].try_into().unwrap_or([0; 8]));
+    
+    let mut positions = Vec::new();
+    let mut offset = 64; // HEADER_SIZE
+    
+    for _ in 0..pos_count {
+        if offset + 256 > mmap.len() {
+            break;
+        }
+        
+        let pos_slice = &mmap[offset..offset + 256];
+        
+        let symbol = read_null_terminated_string(&pos_slice[0..32]);
+        let strike = f64::from_le_bytes(pos_slice[32..40].try_into().unwrap_or([0; 8]));
+        let right = read_null_terminated_string(&pos_slice[40..48]);
+        let expiry = read_null_terminated_string(&pos_slice[48..64]);
+        let quantity = i32::from_le_bytes(pos_slice[64..68].try_into().unwrap_or([0; 4]));
+        let avg_price = f64::from_le_bytes(pos_slice[68..76].try_into().unwrap_or([0; 8]));
+        let current_price = f64::from_le_bytes(pos_slice[76..84].try_into().unwrap_or([0; 8]));
+        let pnl = f64::from_le_bytes(pos_slice[84..92].try_into().unwrap_or([0; 8]));
+        let pnl_percent = f64::from_le_bytes(pos_slice[92..100].try_into().unwrap_or([0; 8]));
+        
+        let bid_raw = f64::from_le_bytes(pos_slice[100..108].try_into().unwrap_or([0; 8]));
+        let ask_raw = f64::from_le_bytes(pos_slice[108..116].try_into().unwrap_or([0; 8]));
+        let last_raw = f64::from_le_bytes(pos_slice[116..124].try_into().unwrap_or([0; 8]));
+        let stoploss_raw = f64::from_le_bytes(pos_slice[124..132].try_into().unwrap_or([0; 8]));
+        let profit_raw = f64::from_le_bytes(pos_slice[132..140].try_into().unwrap_or([0; 8]));
+        
+        let entry_time = read_null_terminated_string(&pos_slice[140..172]);
+        let flags = pos_slice[172];
+        
+        let trailing_active = (flags & 1) != 0;
+        let has_ib_pnl = (flags & 2) != 0;
+        
+        let mut pos_val = serde_json::json!({
+            "symbol": symbol,
+            "strike": strike,
+            "right": right,
+            "expiry": expiry,
+            "quantity": quantity,
+            "qty": quantity,
+            "avg_price": avg_price,
+            "current_price": current_price,
+            "pnl": pnl,
+            "pnl_percent": pnl_percent,
+            "entry_time": entry_time,
+            "has_ib_pnl": has_ib_pnl,
+        });
+        
+        if trailing_active {
+            pos_val["trailing_active"] = serde_json::Value::Bool(true);
+        }
+        if bid_raw >= 0.0 {
+            pos_val["bid"] = serde_json::json!(bid_raw);
+        }
+        if ask_raw >= 0.0 {
+            pos_val["ask"] = serde_json::json!(ask_raw);
+        }
+        if last_raw >= 0.0 {
+            pos_val["last"] = serde_json::json!(last_raw);
+        }
+        if stoploss_raw > 0.0 {
+            pos_val["stoploss_price"] = serde_json::json!(stoploss_raw);
+        }
+        if profit_raw > 0.0 {
+            pos_val["profit_price"] = serde_json::json!(profit_raw);
+        }
+        
+        if let Ok(pos) = serde_json::from_value::<super::super::state::trading_state::Position>(pos_val.clone()) {
+            positions.push(pos);
+        }
+        
+        offset += 256;
+    }
+    
+    let mut app = state.lock().await;
+    
+    let pnl_changed = (app.trading.daily_pnl.total - daily).abs() > 1e-9
+        || (app.trading.daily_pnl.unrealized - unrealized).abs() > 1e-9
+        || (app.trading.daily_pnl.realized - realized).abs() > 1e-9
+        || !app.trading.pnl_initialized;
+        
+    if pnl_changed {
+        app.trading.daily_pnl.total = daily;
+        app.trading.daily_pnl.unrealized = unrealized;
+        app.trading.daily_pnl.realized = realized;
+        app.trading.pnl_initialized = true;
+        
+        let pnl_payload = serde_json::json!({
+            "daily_pnl": daily,
+            "unrealized_pnl": unrealized,
+            "realized_pnl": realized
+        });
+        let _ = handle.emit("trading:pnl_update", &pnl_payload);
+    }
+    
+    app.trading.positions = positions.clone();
+    
+    let positions_json: Vec<serde_json::Value> = positions.iter()
+        .map(|p| serde_json::to_value(p).unwrap_or(serde_json::Value::Null))
+        .filter(|v| !v.is_null())
+        .collect();
+        
+    let snapshot_payload = serde_json::json!({
+        "positions": positions_json
+    });
+    
+    let _ = handle.emit("trading:positions_snapshot", &snapshot_payload);
+}
+
+fn read_null_terminated_string(bytes: &[u8]) -> String {
+    if let Some(pos) = bytes.iter().position(|&b| b == 0) {
+        String::from_utf8_lossy(&bytes[..pos]).into_owned()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
     }
 }
