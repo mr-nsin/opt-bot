@@ -809,28 +809,23 @@ def checkVWAPValue(stock, Right, candlesData):
         getCandlesData = candlesData
 
     getCandleLenghtRange = len(getCandlesData)
-    totalVWAP = 0
-    curtVWAPList = []
-    curtVWAPCum = []
-    curtVWAPVol = []
-
     runningCandle = getCandlesData[0]
     logger.info(f"###Running Candle Value is = {runningCandle}")
     runningLast = float(runningCandle.close)
     runningOpen = float(runningCandle.open)
 
-    for candle in getCandlesData:
-        candle_0_vol = int(candle.volume) * 100
-        curtCumTotal = ((candle.high + candle.low + candle.close) / 3) * candle_0_vol
-        curtVWAPCum.append(curtCumTotal)
-        curtVWAPVol.append(candle_0_vol)
+    # Vectorized VWAP Calculation
+    highs = np.array([c.high for c in getCandlesData])
+    lows = np.array([c.low for c in getCandlesData])
+    closes = np.array([c.close for c in getCandlesData])
+    vols = np.array([int(c.volume) * 100 for c in getCandlesData])
 
-
-    sumCummlative = sum(curtVWAPCum)
-    sumVolume = sum(curtVWAPVol)
+    sumVolume = np.sum(vols)
     if sumVolume == 0:
         logger.warning(f"VWAP: total volume is 0 for {stock}, returning False")
         return False
+
+    sumCummlative = np.sum(((highs + lows + closes) / 3.0) * vols)
     intradayVWAP = sumCummlative / sumVolume
 
     logger.info(
