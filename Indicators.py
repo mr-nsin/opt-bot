@@ -42,18 +42,13 @@ def RSI(ticker, n=20, period="2y", interval="1d"):
 
 def OBV(stock, start='2020-12-01', end='2021-12-01', days=14):
     df = yf.download(stock, start, end)
-    obv = []
-    obv.append(0)
-    for i in range(1, len(df["Close"])):
-        if df["Close"][i] > df["Close"][i - 1]:
-            obv.append(obv[-1] + df["Volume"][i])
-        elif df["Close"][i] < df["Close"][i - 1]:
-            obv.append(obv[-1] - df["Volume"][i])
-        else:
-            obv.append(obv[-1])
-
-    #print(obv[::-1][0])
-    return int(obv[::-1][0])
+    if len(df) == 0:
+        return 0
+    close_diff = df["Close"].diff()
+    direction = np.sign(close_diff).fillna(0)
+    signed_vol = direction * df["Volume"]
+    obv_series = signed_vol.cumsum()
+    return int(obv_series.iloc[-1])
 
 
 def MACD(stock, start='2020-01-01', end='2021-01-01', PRICE_NAME="Close", period1=26, period2=12, period3=9):
