@@ -3,6 +3,15 @@ import pandas as pd
 import numpy as np
 
 try:
+    from numba import njit
+except ImportError:
+    # Fallback to no-op decorator if numba is not available
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
+try:
     import pandas_ta as ta
 except ImportError:
     ta = None
@@ -106,37 +115,18 @@ def ATR(stock, start='2020-01-01', end='2021-01-01', numDays=10):
 
 
 
-def BOTSingal(data, multiplier=1.0):
-    data = data.copy()
-    data['tr0'] = abs(data["High"] - data["Low"])
-    data['tr1'] = abs(data["High"] - data["Close"].shift(1))
-    data['tr2'] = abs(data["Low"] - data["Close"].shift(1))
-    data["TR"] = round(data[['tr0', 'tr1', 'tr2']].max(axis=1), 2)
-    
-    # Calculate ATR vectorized (Wilder's Smoothing)
-    data['ATR'] = data['TR'].ewm(alpha=1/14, min_periods=1, adjust=False).mean()
-    data['ATR'] = data['ATR'].round(2)
-    data.loc[0, 'ATR'] = 0.00 if len(data) > 0 else 0.0
-
-    data['BUB'] = round(((data["High"] + data["Low"]) / 2) + (multiplier * data["ATR"]), 2)
-    data['BLB'] = round(((data["High"] + data["Low"]) / 2) - (multiplier * data["ATR"]), 2)
-
-    # Convert to numpy arrays for fast iteration
-    bub = data['BUB'].values
-    blb = data['BLB'].values
-    close = data['Close'].values
-    
-    n = len(data)
+@njit(cache=True)
+def _numba_supertrend_loop(bub, blb, close, n):
     fub = np.zeros(n)
     flb = np.zeros(n)
     st = np.zeros(n)
-    st_buy_sell = np.empty(n, dtype=object)
+    st_buy_sell_codes = np.zeros(n)  # 0=NA, 1=BUY, 2=SELL
     
     if n > 0:
         fub[0] = 0.0
         flb[0] = 0.0
         st[0] = 0.0
-        st_buy_sell[0] = "NA"
+        st_buy_sell_codes[0] = 0
         
         for i in range(1, n):
             # FUB
@@ -165,9 +155,41 @@ def BOTSingal(data, multiplier=1.0):
                 
             # Buy Sell
             if st[i] < close[i]:
-                st_buy_sell[i] = "BUY"
+                st_buy_sell_codes[i] = 1
             else:
-                st_buy_sell[i] = "SELL"
+                st_buy_sell_codes[i] = 2
+                
+    return fub, flb, st, st_buy_sell_codes
+
+
+def BOTSingal(data, multiplier=1.0):
+    data = data.copy()
+    data['tr0'] = abs(data["High"] - data["Low"])
+    data['tr1'] = abs(data["High"] - data["Close"].shift(1))
+    data['tr2'] = abs(data["Low"] - data["Close"].shift(1))
+    data["TR"] = round(data[['tr0', 'tr1', 'tr2']].max(axis=1), 2)
+    
+    # Calculate ATR vectorized (Wilder's Smoothing)
+    data['ATR'] = data['TR'].ewm(alpha=1/14, min_periods=1, adjust=False).mean()
+    data['ATR'] = data['ATR'].round(2)
+    data.loc[0, 'ATR'] = 0.00 if len(data) > 0 else 0.0
+
+    data['BUB'] = round(((data["High"] + data["Low"]) / 2) + (multiplier * data["ATR"]), 2)
+    data['BLB'] = round(((data["High"] + data["Low"]) / 2) - (multiplier * data["ATR"]), 2)
+
+    # Convert to numpy arrays for fast iteration
+    bub = data['BUB'].values
+    blb = data['BLB'].values
+    close = data['Close'].values
+    
+    n = len(data)
+    fub, flb, st, st_buy_sell_codes = _numba_supertrend_loop(bub, blb, close, n)
+    
+    # Map codes back to "BUY"/"SELL"/"NA"
+    st_buy_sell = np.empty(n, dtype=object)
+    st_buy_sell[st_buy_sell_codes == 1] = "BUY"
+    st_buy_sell[st_buy_sell_codes == 2] = "SELL"
+    st_buy_sell[st_buy_sell_codes == 0] = "NA"
                 
     data['FUB'] = fub
     data['FLB'] = flb

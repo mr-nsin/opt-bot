@@ -1383,8 +1383,7 @@ class TradingEngine:
                 if pos.get("has_ib_pnl"):
                     payload["has_ib_pnl"] = True
                 payloads.append(payload)
-            if payloads:
-                emit_positions_snapshot(payloads)
+            emit_positions_snapshot(payloads)
         except Exception as e:
             emit_log(f"Emit positions failed: {e}", "WARN", "system")
 

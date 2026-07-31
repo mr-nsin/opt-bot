@@ -583,10 +583,8 @@ async fn handle_sidecar_message(
                         let positions: Vec<Position> = arr.iter()
                             .filter_map(|v| serde_json::from_value(v.clone()).ok())
                             .collect();
-                        if !positions.is_empty() {
-                            let mut app = state.lock().await;
-                            app.trading.positions = positions;
-                        }
+                        let mut app = state.lock().await;
+                        app.trading.positions = positions;
                     }
                 }
 
