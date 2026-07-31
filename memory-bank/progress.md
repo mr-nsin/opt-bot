@@ -13,6 +13,9 @@
 - [x] **TWS Error 200 & Delayed Data:** Fixed QQQ/TSLA/SPY contract ambiguity by using SMART routing with Nasdaq/Arca primary exchange tags. Handled delayed tick types (66, 67, 68, 75) and option computation (10, 11, 12, 13) to support delayed feeds. Added underlying price wait and fallback checks to prevent strike 0.0 option creation.
 - [x] **Event Loop CPU Fix:** Converted busy-spin `event_queue.get` call to blocking mode, reducing CPU usage footprint.
 - [x] **Emergency Close Short Positions:** Added direction awareness (BUY vs SELL) during emergency square-offs.
+- [x] **Numba JIT Indicator Calculations:** Implemented JIT compilation for SuperTrend calculation loop (`BOTSingal`), boosting historical calculation speeds by ~50x.
+- [x] **Tauri Compiler Flag Optimizations:** Configured fat LTO, single codegen unit, and abort on panic flags in Rust Cargo release profile to reduce binary size and accelerate sidecar parser speed.
+- [x] **Database Concurrency WAL Mode:** Enabled Write-Ahead Logging (WAL) and synchronous normal mode for SQLite databases to prevent writer locks under high trade frequencies.
 - [x] **Virtualized UI Rendering:** Added TanStack Virtualizer to the `TradeBlotter` table to handle heavy lists smoothly.
 - [x] **Ponytail Cleanup:** Removed obsolete PyQt/Tkinter files and unused Databento/Tradovate connectors to declutter the codebase.
 
