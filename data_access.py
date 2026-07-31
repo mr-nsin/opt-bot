@@ -86,6 +86,11 @@ class DAL:
     def init(self) -> None:
         try:
             cursor = self.conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+            except Exception as e:
+                logger.warning(f"Failed to enable WAL mode in option_orders DB: {e}")
             # Create the table if it does not already exist
             cursor.execute('''CREATE TABLE IF NOT EXISTS option_orders
                         (id INTEGER PRIMARY KEY,

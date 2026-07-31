@@ -15,6 +15,11 @@ class DatabaseManager:
         """Initialize the database with required tables"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL;")
+                cursor.execute("PRAGMA synchronous=NORMAL;")
+            except Exception as e:
+                logging.warning(f"Failed to enable WAL mode: {e}")
             
             # Trades table
             cursor.execute('''
