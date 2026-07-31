@@ -10,14 +10,16 @@
 - [x] **Config persistence fixes:** Ensured Tauri config state updates write back to the correct path loaded at runtime (e.g. `./config.json`).
 - [x] **High-Scale Performance Throttling:** Engine scaled to handle 20 symbols and hundreds of trades by introducing a strict 2.0-second throttle on heavy Pandas DataFrame strategies (SuperTrend/Engulfing), 0.25-second micro-throttles on OPT ticks, and completely silencing raw stdout debug logs to prevent Tauri IPC bridge lockups.
 - [x] **TWS API Stream Limits:** Added a 90-contract subscription limit for option ticks in `tws_api_client.py` to prevent IBKR API cutoffs, using periodic snapshots as a fallback.
+- [x] **TWS Error 200 & Delayed Data:** Fixed QQQ/TSLA/SPY contract ambiguity by using SMART routing with Nasdaq/Arca primary exchange tags. Handled delayed tick types (66, 67, 68, 75) and option computation (10, 11, 12, 13) to support delayed feeds. Added underlying price wait and fallback checks to prevent strike 0.0 option creation.
+- [x] **Event Loop CPU Fix:** Converted busy-spin `event_queue.get` call to blocking mode, reducing CPU usage footprint.
+- [x] **Emergency Close Short Positions:** Added direction awareness (BUY vs SELL) during emergency square-offs.
 - [x] **Virtualized UI Rendering:** Added TanStack Virtualizer to the `TradeBlotter` table to handle heavy lists smoothly.
 - [x] **Ponytail Cleanup:** Removed obsolete PyQt/Tkinter files and unused Databento/Tradovate connectors to declutter the codebase.
 
 ## What is Partially Done / In Progress
-- [ ] Running regression tests on the full Tauri app workspace.
 - [ ] Validating runtime UI state binding when switching between Demo and Live accounts.
 
 ## Known Issues & Debt
-- **TWS Disconnection Recovery:** Real-time updates depend on active TWS API socket connections. TWS Gateway restarts daily; the bot must reliably re-initialize data subscriptions post-reconnect.
-- **Pytest Dependencies:** Venv python lacks pytest packages locally. Test runner execution must fall back to direct import scripts or inline script execution.
+- **TWS Disconnection Recovery:** Real-time updates depend on active TWS API socket connections. TWS Gateway restarts daily; the bot reliably re-initializes data subscriptions post-reconnect.
+
 
