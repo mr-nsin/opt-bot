@@ -1417,7 +1417,7 @@ def getAndBuyAfterMarketEnd(buffer_seconds=None):
                     continue
                 key = f"{ePos.symbol}{ePos.expiry}{ePos.right}{ePos.strike}"
                 try:
-                    action = "SELL"
+                    action = "SELL" if ePos.position > 0 else "BUY"
                     orderId = placeOrder(symbol=ePos.symbol,
                                          expiry=ePos.expiry,
                                          strike=ePos.strike,
@@ -1842,11 +1842,23 @@ def init_data_feed():
             if getattr(stock_contract, "secType", "") != "STK":
                 continue
             market_data = client.get_data(contract=stock_contract)
+            waited = 0
+            while (not market_data or (market_data.last <= 0 and market_data.close <= 0)) and waited < 10.0:
+                time.sleep(0.5)
+                waited += 0.5
+                market_data = client.get_data(contract=stock_contract)
+
             if not market_data or stock_contract.symbol not in strikes_map:
                 continue
+
+            und_price = market_data.last if market_data.last > 0 else market_data.close
+            if und_price <= 0:
+                logger.error(f"Cannot get valid underlying price for {stock_contract.symbol} (last={market_data.last}, close={market_data.close}). Skipping option subscriptions.")
+                continue
+
             strikes = strikes_map[stock_contract.symbol]["Strike"]
-            logger.info(f"{stock_contract.symbol} UNDERLYING PRICE IS = {market_data.last}")
-            ls, hs = get10StrikesNearUnderlying(strikeList=list(strikes), undPrc=market_data.last, range_limit=4)
+            logger.info(f"{stock_contract.symbol} UNDERLYING PRICE IS = {und_price}")
+            ls, hs = get10StrikesNearUnderlying(strikeList=list(strikes), undPrc=und_price, range_limit=4)
             selected_strikes = ls + hs
 
             for strike in selected_strikes:
@@ -1916,7 +1928,7 @@ def event_processor(event_queue: Queue, count: int) -> None:
     while keep_running:
         try:
             # Get the event data from the queue
-            event_data = event_queue.get(block=False, timeout=0.20)
+            event_data = event_queue.get(block=True, timeout=0.20)
             tick: Tick = event_data["tick"]
             sym = getattr(tick.contract, "symbol", "") or getattr(tick.contract, "localSymbol", "") or getattr(tick, "symbol", "")
             sec_type = getattr(tick.contract, "secType", "")

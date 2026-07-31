@@ -203,15 +203,24 @@ class TwsApiClient(EWrapper, EClient):
         contract = Contract()
         contract.symbol = symbol
         contract.secType = "STK"
-        contract.exchange = "SMART"
+        
+        sym_upper = symbol.upper()
         if "spx" in symbol.lower():
             contract.secType = "IND"
             contract.exchange = "CBOE"
+        else:
+            contract.exchange = "SMART"
+            if sym_upper in ("QQQ", "TSLA"):
+                contract.primaryExchange = "NASDAQ"
+            elif sym_upper == "SPY":
+                contract.primaryExchange = "ARCA"
+            
         contract.currency = "USD"
 
         result = self.get_contract_detail(contract=contract)
         self.ticker_contract_cache[contract.symbol] = result
         return result
+
 
     # IB futures month code -> number (F=Jan .. Z=Dec)
     _FUT_MONTH = {"F": "01", "G": "02", "H": "03", "J": "04", "K": "05", "M": "06",
@@ -712,24 +721,24 @@ class TwsApiClient(EWrapper, EClient):
             if tick is None:
                 return
 
-            # Update the bid price of the tick data, if the tickType is 1
-            if tickType == 1:
+            # Update the bid price of the tick data, if the tickType is 1 or 66 (delayed bid)
+            if tickType in (1, 66):
                 tick.bid = price
                 if self.initialization_done and tick.contract.secType == "OPT":
                     self.event_queue.put({"tick": tick})
-            # Update the ask price of the tick data, if the tickType is 2
-            elif tickType == 2:
+            # Update the ask price of the tick data, if the tickType is 2 or 67 (delayed ask)
+            elif tickType in (2, 67):
                 tick.ask = price
                 if self.initialization_done and tick.contract.secType == "OPT":
                     self.event_queue.put({"tick": tick})
-            # Update the last price of the tick data, if the tickType is 4
+            # Update the last price of the tick data, if the tickType is 4 or 68 (delayed last)
             # Also, put an event in the event queue, which contains the tick data and the last price
-            elif tickType == 4:
+            elif tickType in (4, 68):
                 tick.last = price
                 if self.initialization_done:
                     self.event_queue.put({"tick": tick})
-            # Update the close price of the tick data, if the tickType is 9
-            elif tickType == 9:
+            # Update the close price of the tick data, if the tickType is 9 or 75 (delayed close)
+            elif tickType in (9, 75):
                 tick.close = price
 
     @iswrapper
@@ -753,7 +762,7 @@ class TwsApiClient(EWrapper, EClient):
             tick: Tick = self.tick_cache.get(reqId, None)
             if tick is None:
                 return
-            if tickType == 13:
+            if tickType in (10, 11, 12, 13):
                 tick.delta = delta
                 logger.debug(f"Delta for contract = {tick.delta}")
 
