@@ -18,6 +18,8 @@
 - [x] **Database Concurrency WAL Mode:** Enabled Write-Ahead Logging (WAL) and synchronous normal mode for SQLite databases to prevent writer locks under high trade frequencies.
 - [x] **Virtualized UI Rendering:** Added TanStack Virtualizer to the `TradeBlotter` table to handle heavy lists smoothly.
 - [x] **Ponytail Cleanup:** Removed obsolete PyQt/Tkinter files and unused Databento/Tradovate connectors to declutter the codebase.
+- [x] **Quantitative Options Research Report & Strategy Synthesis:** Completed comprehensive 9-role quantitative research desk evaluation into [quant_research_report.html](file:///Users/nitinsinghal/Documents/project/treetech/OPT_BOT/docs/quant_research_report.html).
+- [x] **Performance Engineering Master Research Report:** Built interactive HTML report at [performance_report.html](file:///Users/nitinsinghal/Documents/project/treetech/OPT_BOT/docs/performance_report.html) covering 25 performance techniques, sub-1ms/5ms/10ms latency guarantees, PyO3 Arrow PyCapsule zero-copy interop, Shared Memory IPC ring buffers, Numba JIT indicators, WebGPU chart rendering, QuestDB time-series streaming, and strategic top ROI rankings.
 
 ## What is Partially Done / In Progress
 - [ ] Validating runtime UI state binding when switching between Demo and Live accounts.
