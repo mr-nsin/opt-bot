@@ -300,6 +300,7 @@ class TwsApiClient(EWrapper, EClient):
             contract = self.get_stock_contract(symbol=symbol)
         
         ticker_id = self.nextTickerId()
+        self.ticker_strike_cache[ticker_id] = set()
         if symbol.lower() == "spx":
             self.reqSecDefOptParams(ticker_id, symbol,"", "IND", contract.conId)
         else:
@@ -309,7 +310,7 @@ class TwsApiClient(EWrapper, EClient):
         while self.ticker_strike_fetched != True:
             time.sleep(0.5)
 
-        return self.ticker_strike_cache[ticker_id]
+        return sorted(list(self.ticker_strike_cache[ticker_id]))
 
     """def get_contract_detail(self, contract: Contract):
         reqId = self.nextTickerId()
@@ -837,7 +838,10 @@ class TwsApiClient(EWrapper, EClient):
 
     @iswrapper
     def securityDefinitionOptionParameter(self, reqId: int, exchange: str, underlyingConId: int, tradingClass: str, multiplier: str, expirations: SetOfString, strikes: SetOfFloat):
-        self.ticker_strike_cache[reqId] = list(strikes)
+        if reqId not in self.ticker_strike_cache:
+            self.ticker_strike_cache[reqId] = set()
+        if isinstance(self.ticker_strike_cache[reqId], set):
+            self.ticker_strike_cache[reqId].update(strikes)
 
     @iswrapper
     def securityDefinitionOptionParameterEnd(self, reqId: int):
